@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
@@ -50,6 +51,17 @@ def _one_value(rows: Sequence[Mapping[str, Any]], key: str) -> Any:
     return None
 
 
+def _study_uid(rows: Sequence[Mapping[str, Any]], source_name: str) -> str | None:
+    canonical = _one_value(rows, "study_uid")
+    if canonical is not None:
+        return str(canonical)
+    source_study_id = _one_value(rows, "study_id")
+    if source_study_id is None:
+        return None
+    payload = f"{source_name}\0{source_study_id}".encode("utf-8")
+    return f"study_{hashlib.sha256(payload).hexdigest()[:24]}"
+
+
 def _curve_row(rows: Sequence[Mapping[str, Any]], selected: ModelAttempt, *, zero_tolerance: float) -> dict[str, Any] | None:
     supported_tiers = {str(row.get("series_eligibility_tier") or row.get("eligibility_tier") or "") for row in rows}
     if not supported_tiers.intersection({"A", "B"}):
@@ -77,7 +89,7 @@ def _curve_row(rows: Sequence[Mapping[str, Any]], selected: ModelAttempt, *, zer
         "selected_model_status": selected.status,
         "record_uids": tuple(str(row["record_uid"]) for row in rows),
         "source_name": source_name,
-        "study_uid": _one_value(rows, "study_uid") or _one_value(rows, "study_id") or series_uid,
+        "study_uid": _study_uid(rows, source_name),
         "trial_id": _one_value(rows, "trial_id"),
         "experiment_type": _one_value(rows, "experiment_type"),
         "experimental_design": _one_value(rows, "experimental_design"),
