@@ -13,7 +13,7 @@ nrc_run_curve_modification <- function(stage) {
     return(nrc_skip_result("N_RATE_TERM_REQUIRED"))
   }
   if (isTRUE(specification$require_quadratic_n) &&
-      !grepl(paste0("I(", n_rate_column, "^2)"), formula_text, fixed = TRUE)) {
+        !grepl(paste0("I(", n_rate_column, "^2)"), formula_text, fixed = TRUE)) {
     return(nrc_skip_result("QUADRATIC_N_TERM_REQUIRED"))
   }
   nrc_run_mixed_models(stage)
