@@ -104,12 +104,16 @@ nrc_run_mixed_models <- function(stage) {
       list(warning_messages = as.list(unique(warning_messages)))
     ))
   }
+  results <- nrc_apply_multiplicity(nrc_tidy_model(fitted), specification)
   list(
     status = "completed",
-    results = nrc_tidy_model(fitted),
-    metadata = c(
-      list(engine = "r", model_kind = model_kind, outcome_kind = outcome_kind),
-      nrc_model_diagnostics(fitted, warning_messages)
+    results = results,
+    metadata = list(
+      engine = "r",
+      model_kind = model_kind,
+      outcome_kind = outcome_kind,
+      multiplicity = specification$multiplicity,
+      diagnostics = nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
     )
   )
 }
