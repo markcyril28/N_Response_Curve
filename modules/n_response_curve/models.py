@@ -41,6 +41,8 @@ class ModelAttempt:
     model_attempt_uid: str
     response_series_uid: str
     model_name: str
+    input_snapshot_sha256: str
+    model_policy_sha256: str
     status: str
     reason_codes: tuple[str, ...]
     n_observations: int
@@ -60,8 +62,25 @@ class ModelAttempt:
 
 
 def _stable_identifier(*parts: object) -> str:
-    encoded = json.dumps(parts, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    encoded = json.dumps(
+        parts,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
     return f"model_{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
+def _stable_sha256(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _frozen_mapping(values: Mapping[str, float] | None = None) -> Mapping[str, float]:
@@ -72,6 +91,7 @@ def _attempt(
     *,
     response_series_uid: str,
     model_name: str,
+    identity_payload: Mapping[str, Any],
     status: str,
     reason_codes: Iterable[str] = (),
     n_observations: int = 0,
@@ -89,10 +109,19 @@ def _attempt(
     predicted_max_yield_t_ha: float | None = None,
     predictions: Iterable[Mapping[str, float]] = (),
 ) -> ModelAttempt:
+    input_snapshot_sha256 = _stable_sha256(identity_payload["observations"])
+    model_policy_sha256 = _stable_sha256(identity_payload["policy"])
     return ModelAttempt(
-        model_attempt_uid=_stable_identifier(response_series_uid, model_name),
+        model_attempt_uid=_stable_identifier(
+            response_series_uid,
+            model_name,
+            input_snapshot_sha256,
+            model_policy_sha256,
+        ),
         response_series_uid=response_series_uid,
         model_name=model_name,
+        input_snapshot_sha256=input_snapshot_sha256,
+        model_policy_sha256=model_policy_sha256,
         status=status,
         reason_codes=tuple(sorted(set(reason_codes))),
         n_observations=n_observations,
@@ -385,6 +414,7 @@ def fit_candidate_model(
     n_rates: Sequence[float | int],
     yields: Sequence[float | int],
     *,
+    record_uids: Sequence[str] | None = None,
     model_name: str,
     policy: Mapping[str, Any],
 ) -> ModelAttempt:
@@ -394,10 +424,24 @@ def fit_candidate_model(
         raise ValueError(f"Unknown response model: {model_name}")
     if not isinstance(response_series_uid, str) or not response_series_uid:
         raise ValueError("response_series_uid must be a nonempty string")
+    if record_uids is not None and len(record_uids) != len(n_rates):
+        raise ValueError("record_uids must align one-to-one with N-rate observations")
+    if len(n_rates) == len(yields):
+        identity_uids: Sequence[str | None] = record_uids if record_uids is not None else (None,) * len(n_rates)
+        observations: object = tuple(
+            sorted(
+                zip(identity_uids, n_rates, yields),
+                key=lambda row: json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str),
+            )
+        )
+    else:
+        observations = {"n_rates": list(n_rates), "yields": list(yields)}
+    identity_payload = {"observations": observations, "policy": dict(policy)}
     if len(n_rates) != len(yields):
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="unsupported",
             reason_codes=("N_RATE_YIELD_LENGTH_MISMATCH",),
         )
@@ -408,6 +452,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="unsupported",
             reason_codes=("NONFINITE_OR_MISSING_OBSERVATION",),
             n_observations=n_observations,
@@ -422,6 +467,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="unsupported",
             reason_codes=("N_RATE_OUTSIDE_CONFIGURED_BOUNDS",),
             n_observations=n_observations,
@@ -433,6 +479,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="unsupported",
             reason_codes=("INSUFFICIENT_DISTINCT_N_LEVELS",),
             n_observations=n_observations,
@@ -446,6 +493,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="unsupported",
             reason_codes=("INSUFFICIENT_RESIDUAL_INFORMATION",),
             n_observations=n_observations,
@@ -458,6 +506,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="unsupported",
             reason_codes=("OBSERVED_YIELD_OUTSIDE_PLAUSIBLE_RANGE",),
             n_observations=n_observations,
@@ -479,6 +528,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="failed",
             reason_codes=fit_reasons,
             n_observations=n_observations,
@@ -493,6 +543,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="failed",
             reason_codes=("NONFINITE_PREDICTION",),
             n_observations=n_observations,
@@ -518,6 +569,7 @@ def fit_candidate_model(
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
+            identity_payload=identity_payload,
             status="failed",
             reason_codes=("IMPLAUSIBLE_OR_NONFINITE_DOMAIN_PREDICTION",),
             n_observations=n_observations,
@@ -545,6 +597,7 @@ def fit_candidate_model(
     return _attempt(
         response_series_uid=response_series_uid,
         model_name=model_name,
+        identity_payload=identity_payload,
         status="fitted",
         reason_codes=reasons,
         n_observations=n_observations,
@@ -585,6 +638,7 @@ def fit_response_models(
     attempts: list[ModelAttempt] = []
     for series_uid in sorted(grouped):
         rows = sorted(grouped[series_uid], key=lambda row: str(row.get("record_uid", "")))
+        record_uids = [str(row.get("record_uid", "")) for row in rows]
         n_rates = [row.get("n_rate_kg_ha") for row in rows]
         yields = [row.get("yield_t_ha") for row in rows]
         for model_name in selected_models:
@@ -593,6 +647,7 @@ def fit_response_models(
                     series_uid,
                     n_rates,
                     yields,
+                    record_uids=record_uids,
                     model_name=model_name,
                     policy=policy,
                 )
@@ -624,6 +679,8 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "model_attempt_uid": attempt.model_attempt_uid,
         "response_series_uid": attempt.response_series_uid,
         "model_name": attempt.model_name,
+        "input_snapshot_sha256": attempt.input_snapshot_sha256,
+        "model_policy_sha256": attempt.model_policy_sha256,
         "status": attempt.status,
         "reason_codes": list(attempt.reason_codes),
         "n_observations": attempt.n_observations,
