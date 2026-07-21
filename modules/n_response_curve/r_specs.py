@@ -5,6 +5,9 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+import pandas as pd
+
 from .analysis_matrix import AnalysisCandidate
 from .factor_catalog import factor_value
 
@@ -111,6 +114,49 @@ def _observation_formula(
     return "yield_t_ha ~ " + " + ".join(terms)
 
 
+def _design_gate_reason(
+    rows: Sequence[Mapping[str, Any]],
+    factor_names: Sequence[str],
+    *,
+    outcome_name: str,
+    outcome_kind: str,
+    observation_level: bool,
+) -> str | None:
+    frame = pd.DataFrame([{name: row[name] for name in factor_names} for row in rows])
+    categorical: list[str] = []
+    for factor_name in factor_names:
+        values = tuple(frame[factor_name])
+        if len({str(value) for value in values}) < 2:
+            return "UNIDENTIFIED_FACTOR_VARIATION"
+        if all(not isinstance(value, bool) and _finite_number(value) is not None for value in values):
+            frame[factor_name] = [float(value) for value in values]
+        else:
+            categorical.append(factor_name)
+    design = pd.get_dummies(frame, columns=categorical, drop_first=True, dtype=float)
+    if observation_level:
+        n_rate = np.asarray([float(row["n_rate_kg_ha"]) for row in rows], dtype=float)
+        design["n_rate_kg_ha"] = n_rate
+        design["n_rate_squared"] = n_rate**2
+    matrix = np.column_stack((np.ones(len(design), dtype=float), design.to_numpy(dtype=float)))
+    rank = int(np.linalg.matrix_rank(matrix))
+    if rank < matrix.shape[1]:
+        return "ALIASED_DESIGN_MATRIX"
+    if matrix.shape[1] > 2 and not np.isfinite(np.linalg.cond(matrix)):
+        return "COLLINEAR_DESIGN_MATRIX"
+    if matrix.shape[1] > 2 and np.linalg.cond(matrix) > 1.0e8:
+        return "COLLINEAR_DESIGN_MATRIX"
+    if len(rows) - rank < 3:
+        return "INSUFFICIENT_RESIDUAL_INFORMATION"
+    if outcome_kind == "categorical":
+        outcome_by_pattern: dict[tuple[str, ...], set[str]] = {}
+        for row in rows:
+            pattern = tuple(str(row[name]) for name in factor_names)
+            outcome_by_pattern.setdefault(pattern, set()).add(str(row[outcome_name]))
+        if len(outcome_by_pattern) >= 2 and all(len(outcomes) == 1 for outcomes in outcome_by_pattern.values()):
+            return "COMPLETE_SEPARATION_RISK"
+    return None
+
+
 def prepare_r_analysis(
     *,
     candidate: AnalysisCandidate,
@@ -173,6 +219,15 @@ def prepare_r_analysis(
                 stable_key,
             )
         outcome_kind = "continuous"
+        gate_reason = _design_gate_reason(
+            normalized,
+            candidate.factor_names,
+            outcome_name=outcome_name,
+            outcome_kind=outcome_kind,
+            observation_level=True,
+        )
+        if gate_reason is not None:
+            return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
         model_kind = "lmer" if random_intercept else "lm"
         formula = _observation_formula(
             candidate.factor_names,
@@ -204,6 +259,15 @@ def prepare_r_analysis(
                 model_kind = "glmmTMB" if random_intercept else "glm"
         else:
             model_kind = "lmer" if random_intercept else "lm"
+        gate_reason = _design_gate_reason(
+            normalized,
+            candidate.factor_names,
+            outcome_name=outcome_name,
+            outcome_kind=outcome_kind,
+            observation_level=False,
+        )
+        if gate_reason is not None:
+            return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
         formula = _curve_formula(
             candidate,
             include_random_intercept=random_intercept,
@@ -222,6 +286,17 @@ def prepare_r_analysis(
         "model_formula": formula,
         "model_kind": model_kind,
         "outcome_kind": outcome_kind,
+        "multiplicity": {
+            "method": "BH",
+            "family_id": "|".join(
+                (
+                    candidate.dataset_version_id,
+                    candidate.source_combination_id,
+                    candidate.curve_outcome,
+                    candidate.analysis_family,
+                )
+            ),
+        },
         "grouping_column": "study_uid",
         "missing_data_policy": "factor-specific complete cases; no imputation",
     }
