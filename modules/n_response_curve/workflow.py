@@ -11,9 +11,10 @@ import subprocess
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 
-from .analysis_matrix import AnalysisRegistry, build_analysis_registry
+from .analysis_matrix import AnalysisRegistry, build_analysis_registry, build_source_combinations
 from .config import ConfigError, ValidatedConfig
 from .curve_evidence import CurveEvidenceResult, build_curve_evidence
+from .curve_views import DerivedCurveView, build_derived_curve_views
 from .dataset_versions import DatasetVersion, build_dataset_versions
 from .explanatory import PythonAnalysisResult, execute_python_candidates, select_candidate_curve_rows
 from .factor_catalog import FactorCatalogEntry, build_factor_catalog
@@ -32,6 +33,8 @@ class PhaseThreeResult:
 @dataclass(frozen=True)
 class PhaseFourResult:
     dataset_versions: tuple[DatasetVersion, ...]
+    derived_curve_views: tuple[DerivedCurveView, ...]
+    curve_rows: tuple[dict[str, Any], ...]
     factor_catalog: tuple[FactorCatalogEntry, ...]
     registry: AnalysisRegistry
     python_results: tuple[PythonAnalysisResult, ...]
@@ -139,6 +142,37 @@ def _runtime_inventory(rscript_command: str) -> dict[str, Any]:
     }
 
 
+def _git_inventory(project_root: Path) -> dict[str, Any]:
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(project_root), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+
+    commit = git("rev-parse", "HEAD")
+    if commit.returncode != 0:
+        return {
+            "status": "unavailable",
+            "reason": (commit.stderr or commit.stdout).strip() or "not a Git work tree",
+        }
+    branch = git("branch", "--show-current")
+    status = git("status", "--porcelain=v1", "--untracked-files=all")
+    if branch.returncode != 0 or status.returncode != 0:
+        raise ConfigError("Git provenance inventory failed for the controlled release")
+    changed_entries = tuple(line.rstrip() for line in status.stdout.splitlines() if line.strip())
+    return {
+        "status": "available",
+        "commit": commit.stdout.strip(),
+        "branch": branch.stdout.strip() or "DETACHED",
+        "dirty": bool(changed_entries),
+        "changed_entry_count": len(changed_entries),
+        "changed_entries": list(changed_entries),
+    }
+
+
 def _model_input_records(config: ValidatedConfig, ledger: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
     records = tuple(dict(record) for record in ledger)
     if config.run_mode != "test":
@@ -170,16 +204,28 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
     """Build immutable analysis views, factor coverage, and an exhaustive dispatch ledger."""
 
     versions = build_dataset_versions(
-        phase_two.eligibility.ledger,
+        phase_three.input_records,
         version_names=config.dataset_versions,
     )
+    source_combinations = build_source_combinations(
+        config.enabled_sources,
+        modes=config.source_combination_modes,
+    )
+    derived_curve_views = build_derived_curve_views(
+        phase_three.input_records,
+        dataset_versions=versions,
+        source_combinations=source_combinations,
+        model_names=config.enabled_models,
+        policy=config.raw["modeling"],
+    )
+    curve_rows = tuple(row for view in derived_curve_views for row in view.curve_rows)
     factor_catalog = build_factor_catalog(
         phase_three.evidence.curve_rows,
         factor_names=config.explanatory_factors,
     )
     support_policy = config.raw["analysis_matrix"].get("support_policy")
     registry = build_analysis_registry(
-        phase_three.evidence.curve_rows,
+        curve_rows,
         dataset_versions=versions,
         source_combination_modes=config.source_combination_modes,
         curve_outcomes=config.curve_outcomes,
@@ -192,15 +238,23 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
     )
     python_results = execute_python_candidates(
         registry.candidates,
-        curve_rows=phase_three.evidence.curve_rows,
+        curve_rows=curve_rows,
         dataset_versions=versions,
         factor_catalog=factor_catalog,
+        eligibility_records=phase_three.input_records,
     )
-    r_preparations = _prepare_r_candidates(registry, versions, phase_three)
+    r_preparations = _prepare_r_candidates(
+        registry,
+        versions,
+        input_records=phase_three.input_records,
+        curve_rows=curve_rows,
+    )
     if not registry.reconciles:
         raise ConfigError("Phase 4 analysis registry does not reconcile its configured candidate space")
     return PhaseFourResult(
         dataset_versions=versions,
+        derived_curve_views=derived_curve_views,
+        curve_rows=curve_rows,
         factor_catalog=factor_catalog,
         registry=registry,
         python_results=python_results,
@@ -248,7 +302,9 @@ def _select_candidate_observation_rows(
 def _prepare_r_candidates(
     registry: AnalysisRegistry,
     versions: Sequence[DatasetVersion],
-    phase_three: PhaseThreeResult,
+    *,
+    input_records: Sequence[Mapping[str, Any]],
+    curve_rows: Sequence[Mapping[str, Any]],
 ) -> tuple[tuple[str, RAnalysisPreparation], ...]:
     versions_by_id = {version.version_id: version for version in versions}
     preparations: list[tuple[str, RAnalysisPreparation]] = []
@@ -257,9 +313,9 @@ def _prepare_r_candidates(
             continue
         observation_level = candidate.analysis_family == "observation_level_curve_modification"
         selected_rows = (
-            _select_candidate_observation_rows(candidate, phase_three.input_records, versions_by_id)
+            _select_candidate_observation_rows(candidate, input_records, versions_by_id)
             if observation_level
-            else select_candidate_curve_rows(candidate, phase_three.evidence.curve_rows, versions_by_id)
+            else select_candidate_curve_rows(candidate, curve_rows, versions_by_id)
         )
         preparations.append(
             (
@@ -395,8 +451,8 @@ def _terminal_status_stage_writer(
         status_counts: dict[str, int] = {}
         for candidate in phase_four.registry.candidates:
             reason_codes: list[str]
-            if candidate.status == "pruned":
-                terminal_status = "pruned"
+            if candidate.status != "run":
+                terminal_status = candidate.status
                 reason_codes = list(candidate.reason_codes)
             elif candidate.engine == "python":
                 result = python_by_candidate.get(candidate.candidate_id)
@@ -408,7 +464,15 @@ def _terminal_status_stage_writer(
                 result = r_by_candidate.get(candidate.candidate_id)
                 if result is None:
                     raise ReportingError(f"R candidate lacks a terminal result: {candidate.candidate_id}")
-                terminal_status = "run" if result.get("status") == "completed" else str(result.get("status"))
+                diagnostics = result.get("metadata", {}).get("diagnostics", {})
+                if result.get("status") == "completed" and diagnostics.get("converged") is False:
+                    terminal_status = "nonconverged"
+                elif result.get("status") == "completed" and (
+                    diagnostics.get("singular") is True or diagnostics.get("boundary_fit") is True
+                ):
+                    terminal_status = "not_interpretable"
+                else:
+                    terminal_status = "run" if result.get("status") == "completed" else str(result.get("status"))
                 reason_codes = [str(reason) for reason in result.get("reason_codes", ())]
             else:
                 raise ReportingError(f"Candidate has an unknown terminal engine: {candidate.engine}")
@@ -576,6 +640,46 @@ def _table_artifacts(phase_two: Any, phase_three: PhaseThreeResult, phase_four: 
         ),
         "analysis_pruned_families": TableArtifact(rows=tuple(asdict(item) for item in phase_four.registry.pruned_families)),
         "curve_features": TableArtifact(rows=phase_three.evidence.curve_rows, stable_key="response_series_uid"),
+        "derived_curve_features": TableArtifact(
+            rows=phase_four.curve_rows,
+            stable_key="derived_curve_row_uid",
+        ),
+        "derived_curve_views": TableArtifact(
+            rows=tuple(
+                {
+                    "view_id": view.view_id,
+                    "status": view.status,
+                    "reason_codes": view.reason_codes,
+                    "dataset_version_id": view.dataset_version_id,
+                    "dataset_version_membership_sha256": view.dataset_version_membership_sha256,
+                    "source_combination_id": view.source_combination_id,
+                    "source_families": view.source_families,
+                    "record_uids": view.record_uids,
+                    "canonical_input_sha256": view.canonical_input_sha256,
+                    "model_policy_sha256": view.model_policy_sha256,
+                    "model_attempt_count": len(view.model_attempt_records),
+                    "selected_curve_count": len(view.curve_rows),
+                }
+                for view in phase_four.derived_curve_views
+            ),
+            stable_key="view_id",
+        ),
+        "derived_model_attempts": TableArtifact(
+            rows=tuple(
+                row
+                for view in phase_four.derived_curve_views
+                for row in view.model_attempt_records
+            ),
+            stable_key="derived_model_attempt_uid",
+        ),
+        "derived_model_predictions": TableArtifact(
+            rows=tuple(
+                row
+                for view in phase_four.derived_curve_views
+                for row in view.prediction_rows
+            ),
+            stable_key="derived_prediction_uid",
+        ),
         "dataset_versions": TableArtifact(
             rows=tuple(asdict(version) for version in phase_four.dataset_versions),
             stable_key="version_id",
@@ -676,11 +780,18 @@ def release_phases_three_to_five(
     }
     run_identity_sha256 = _stable_json_sha256(identity_payload)
     r_stage_statuses: list[dict[str, Any]] = []
+    r_preparation_status_counts: dict[str, int] = {}
+    for _, preparation in phase_four.r_preparations:
+        r_preparation_status_counts[preparation.status] = r_preparation_status_counts.get(preparation.status, 0) + 1
     manifest: dict[str, Any] = {
         "status": f"phase_5_{config.run_mode}_release_complete",
         "run_id": run_id,
         "run_identity_sha256": run_identity_sha256,
         "run_identity": identity_payload,
+        "code_provenance": {
+            "code_sha256": identity_payload["code_sha256"],
+            "git": _git_inventory(config.project_root),
+        },
         "effective_config": _redact(config.raw),
         "engine_assignments": dict(sorted(config.engine_assignments.items())),
         "runtime_inventory": _runtime_inventory(str(config.raw["engines"]["rscript_command"])),
@@ -699,6 +810,7 @@ def release_phases_three_to_five(
             "theoretical_candidate_count": phase_four.registry.theoretical_candidate_count,
             "accounted_candidate_count": phase_four.registry.accounted_candidate_count,
             "reconciles": phase_four.registry.reconciles,
+            "r_preparation_status_counts": dict(sorted(r_preparation_status_counts.items())),
         },
         "r_stage_statuses": r_stage_statuses,
     }
