@@ -167,6 +167,7 @@ def _predictive_result(
         name: [] for name in candidate.factor_names
     }
     selected_parameters: list[Mapping[str, float]] = []
+    outcome_classes = set(response) if not numeric_outcome else set()
     for fold, (train, test) in enumerate(
         outer.split(features, response, groups),
         start=1,
@@ -174,6 +175,8 @@ def _predictive_result(
         train_groups = groups[train]
         if not numeric_outcome and len(set(response[train])) < 2:
             return _skipped("GROUPED_FOLD_HAS_ONE_OUTCOME_CLASS")
+        if not numeric_outcome and set(response[train]) != outcome_classes:
+            return _skipped("GROUPED_FOLD_MISSING_OUTCOME_CLASS")
         best_score = -math.inf
         best_model: Pipeline | None = None
         best_parameters: Mapping[str, float] | None = None
@@ -186,11 +189,11 @@ def _predictive_result(
                 )
             else:
                 estimator = LogisticRegression(
-                    penalty="elasticnet",
                     solver="saga",
                     max_iter=10000,
                     random_state=20260720,
-                    **parameters,
+                    C=float(parameters["C"]),
+                    l1_ratio=float(parameters["l1_ratio"]),
                 )
             model = Pipeline(
                 [
