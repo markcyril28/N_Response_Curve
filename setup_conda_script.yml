@@ -1,0 +1,52 @@
+name: n_response
+channels:
+  - conda-forge
+  - nodefaults
+
+# This file is the sole Python/R dependency authority for the workflow.
+dependencies:
+  # Python-owned orchestration, provenance, bounded curve work, and tests.
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - statsmodels
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - pyarrow
+  - openpyxl
+  - pytest
+  - pytest-cov
+  - ruff
+  - shellcheck
+
+  # R-owned hierarchical/inferential stages and their contract tests.
+  - r-base=4.5.3
+  - r-data.table=1.18.4
+  - r-arrow=25.0.0
+  - r-jsonlite=2.0.0
+  - r-digest
+  - r-nlme=3.1_170
+  - r-lme4=2.0_6
+  - r-glmmtmb=1.1.14
+  - r-mgcv=1.9_4
+  - r-emmeans=2.0.4
+  - r-broom=1.0.13
+  - r-broom.mixed=0.2.9.7
+  - r-performance=0.17.1
+  - r-ggplot2=4.0.3
+  - r-testthat=3.3.2
+  - r-lintr=3.4.0
+
+variables:
+  PYTHONNOUSERSITE: "1"
+  R_ENVIRON_USER: "/dev/null"
+  R_PROFILE_USER: "/dev/null"
+  R_LIBS_USER: "/dev/null"
+  LANG: "C.UTF-8"
+  LC_ALL: "C.UTF-8"
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  BLIS_NUM_THREADS: "1"
