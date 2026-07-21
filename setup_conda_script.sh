@@ -230,15 +230,18 @@ run_in_env() {
     BLIS_NUM_THREADS=1
   )
 
-  # Every Rscript process receives --vanilla exactly once and a unique,
-  # disposable user/cache root. No history, workspace, profile, or user cache
-  # is read from or written to the operator's home directory.
+  # Every Rscript process receives the preferred fresh-session flags exactly
+  # once and a unique, disposable user/cache root. No history, workspace,
+  # profile, or user cache is read from or written to the operator's home.
   for argument in "$@"; do
     if [[ "${argument##*/}" == "Rscript" ]]; then
       is_rscript=1
-      run_arguments+=("$argument" --vanilla)
-    elif [[ "$is_rscript" -eq 1 && "$argument" == "--vanilla" ]]; then
-      continue
+      run_arguments+=("$argument" --vanilla --no-save --no-restore)
+    elif [[ "$is_rscript" -eq 1 ]]; then
+      case "$argument" in
+        --vanilla|--no-save|--no-restore) continue ;;
+      esac
+      run_arguments+=("$argument")
     else
       run_arguments+=("$argument")
     fi
