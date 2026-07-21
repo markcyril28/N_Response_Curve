@@ -17,6 +17,7 @@ from .explanatory import PythonAnalysisResult, execute_python_candidates, select
 from .factor_catalog import FactorCatalogEntry, build_factor_catalog
 from .plots import write_observed_series_figures, write_response_curve_figures
 from .r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
+from .r_specs import prepare_r_analysis
 from .reporting import ReleasePackage, ReportingError, TableArtifact, verify_release_package, write_release_package
 
 
@@ -188,6 +189,24 @@ def _r_input_rows(rows: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], ..
     )
 
 
+def _select_candidate_observation_rows(
+    candidate: Any,
+    records: Iterable[Mapping[str, Any]],
+    versions: Mapping[str, DatasetVersion],
+) -> tuple[dict[str, Any], ...]:
+    version = versions.get(candidate.dataset_version_id)
+    if version is None or version.status != "available":
+        return ()
+    membership = set(version.record_uids)
+    selected = [
+        dict(record)
+        for record in records
+        if str(record.get("record_uid") or "") in membership
+        and str(record.get("source_name") or "") in candidate.source_families
+    ]
+    return tuple(sorted(selected, key=lambda row: str(row.get("record_uid") or "")))
+
+
 def _r_stage_writer(
     config: ValidatedConfig,
     phase_three: PhaseThreeResult,
@@ -210,32 +229,33 @@ def _r_stage_writer(
         produced: list[Path] = []
         r_root = stage_root / "r_stages"
         for candidate in active_candidates:
-            selected_rows = select_candidate_curve_rows(candidate, phase_three.evidence.curve_rows, versions)
-            if not selected_rows:
+            observation_level = candidate.analysis_family == "observation_level_curve_modification"
+            selected_rows = (
+                _select_candidate_observation_rows(candidate, phase_three.input_records, versions)
+                if observation_level
+                else select_candidate_curve_rows(candidate, phase_three.evidence.curve_rows, versions)
+            )
+            prepared = prepare_r_analysis(
+                candidate=candidate,
+                rows=selected_rows,
+                observation_level=observation_level,
+            )
+            if prepared.status != "run":
                 statuses.append(
                     {
                         "candidate_id": candidate.candidate_id,
                         "status": "skipped",
-                        "reason_codes": ["NO_CANDIDATE_ROWS_AT_DISPATCH"],
+                        "reason_codes": list(prepared.reason_codes),
                     }
                 )
                 continue
             contract_root = r_root / candidate.candidate_id
-            specification = {
-                "analysis_family": candidate.analysis_family,
-                "curve_outcome": candidate.curve_outcome,
-                "candidate_id": candidate.candidate_id,
-                "dataset_version_id": candidate.dataset_version_id,
-                "source_families": candidate.source_families,
-                "factor_names": candidate.factor_names,
-                "support_gates_passed": True,
-            }
             try:
                 contract = write_r_stage_contract(
                     contract_root,
-                    specification=specification,
-                    rows=_r_input_rows(selected_rows),
-                    stable_key="response_series_uid",
+                    specification=prepared.specification,
+                    rows=_r_input_rows(prepared.rows),
+                    stable_key=prepared.stable_key,
                 )
                 result = invoke_r_stage(
                     contract,
