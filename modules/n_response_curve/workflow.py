@@ -19,7 +19,7 @@ from .explanatory import PythonAnalysisResult, execute_python_candidates, select
 from .factor_catalog import FactorCatalogEntry, build_factor_catalog
 from .plots import write_observed_series_figures, write_response_curve_figures
 from .r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
-from .r_specs import prepare_r_analysis
+from .r_specs import RAnalysisPreparation, prepare_r_analysis
 from .reporting import ReleasePackage, ReportingError, TableArtifact, verify_release_package, write_release_package
 
 
@@ -35,6 +35,7 @@ class PhaseFourResult:
     factor_catalog: tuple[FactorCatalogEntry, ...]
     registry: AnalysisRegistry
     python_results: tuple[PythonAnalysisResult, ...]
+    r_preparations: tuple[tuple[str, RAnalysisPreparation], ...]
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,7 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
         dataset_versions=versions,
         factor_catalog=factor_catalog,
     )
+    r_preparations = _prepare_r_candidates(registry, versions, phase_three)
     if not registry.reconciles:
         raise ConfigError("Phase 4 analysis registry does not reconcile its configured candidate space")
     return PhaseFourResult(
@@ -202,6 +204,7 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
         factor_catalog=factor_catalog,
         registry=registry,
         python_results=python_results,
+        r_preparations=r_preparations,
     )
 
 
@@ -242,13 +245,44 @@ def _select_candidate_observation_rows(
     return tuple(sorted(selected, key=lambda row: str(row.get("record_uid") or "")))
 
 
+def _prepare_r_candidates(
+    registry: AnalysisRegistry,
+    versions: Sequence[DatasetVersion],
+    phase_three: PhaseThreeResult,
+) -> tuple[tuple[str, RAnalysisPreparation], ...]:
+    versions_by_id = {version.version_id: version for version in versions}
+    preparations: list[tuple[str, RAnalysisPreparation]] = []
+    for candidate in registry.candidates:
+        if candidate.engine != "r" or candidate.status != "run":
+            continue
+        observation_level = candidate.analysis_family == "observation_level_curve_modification"
+        selected_rows = (
+            _select_candidate_observation_rows(candidate, phase_three.input_records, versions_by_id)
+            if observation_level
+            else select_candidate_curve_rows(candidate, phase_three.evidence.curve_rows, versions_by_id)
+        )
+        preparations.append(
+            (
+                candidate.candidate_id,
+                prepare_r_analysis(
+                    candidate=candidate,
+                    rows=selected_rows,
+                    observation_level=observation_level,
+                ),
+            )
+        )
+    return tuple(preparations)
+
+
 def _r_stage_writer(
     config: ValidatedConfig,
     phase_three: PhaseThreeResult,
     phase_four: PhaseFourResult,
     statuses: list[dict[str, Any]],
 ):
-    versions = {version.version_id: version for version in phase_four.dataset_versions}
+    preparations = dict(phase_four.r_preparations)
+    if len(preparations) != len(phase_four.r_preparations):
+        raise ConfigError("Phase 4 R preparations contain duplicate candidate identifiers")
     entrypoint_value = config.raw["engines"]["r_entrypoint"]
     entrypoint = (config.project_root / str(entrypoint_value)).resolve()
     rscript_command = config.raw["engines"]["rscript_command"]
@@ -264,17 +298,9 @@ def _r_stage_writer(
         produced: list[Path] = []
         r_root = stage_root / "r_stages"
         for candidate in active_candidates:
-            observation_level = candidate.analysis_family == "observation_level_curve_modification"
-            selected_rows = (
-                _select_candidate_observation_rows(candidate, phase_three.input_records, versions)
-                if observation_level
-                else select_candidate_curve_rows(candidate, phase_three.evidence.curve_rows, versions)
-            )
-            prepared = prepare_r_analysis(
-                candidate=candidate,
-                rows=selected_rows,
-                observation_level=observation_level,
-            )
+            prepared = preparations.get(candidate.candidate_id)
+            if prepared is None:
+                raise ConfigError(f"R candidate lacks its registry-only preparation: {candidate.candidate_id}")
             if prepared.status != "run":
                 statuses.append(
                     {
