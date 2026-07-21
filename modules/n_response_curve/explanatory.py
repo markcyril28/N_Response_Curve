@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
+from .advanced_analysis import execute_advanced_candidate
 from .analysis_matrix import AnalysisCandidate
 from .comparisons import build_descriptive_comparisons
 from .dataset_versions import DatasetVersion
@@ -90,7 +91,7 @@ def execute_python_candidates(
     dataset_versions: Sequence[DatasetVersion],
     factor_catalog: Sequence[FactorCatalogEntry],
 ) -> tuple[PythonAnalysisResult, ...]:
-    """Run only Python-owned descriptive candidates; R-owned candidates remain undispatched."""
+    """Run Python-owned candidates; R-owned candidates remain undispatched."""
 
     versions = {version.version_id: version for version in dataset_versions}
     if len(versions) != len(dataset_versions):
@@ -158,6 +159,19 @@ def execute_python_candidates(
                     result_type="descriptive_comparisons",
                     reason_codes=(),
                     records=tuple(asdict(comparison) for comparison in comparisons),
+                )
+            )
+            continue
+        advanced = execute_advanced_candidate(candidate, selected_rows, factor_entries)
+        if advanced is not None:
+            results.append(
+                PythonAnalysisResult(
+                    candidate_id=candidate.candidate_id,
+                    engine="python",
+                    status=advanced.status,
+                    result_type=advanced.result_type,
+                    reason_codes=advanced.reason_codes,
+                    records=advanced.records,
                 )
             )
             continue
