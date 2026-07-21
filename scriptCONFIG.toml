@@ -1,3 +1,6 @@
+# Frequently adjusted operator controls
+# Toggle a list member by commenting/uncommenting its individual line. Keep
+# routine run, selection, and analysis controls above the reference registries.
 [run]
 mode = "validate"
 overwrite = false
@@ -13,22 +16,6 @@ cpu_detection = "affinity"
 decisions_approved = [
 ]
 
-[paths]
-core_source_csv = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Literature_Data_Extraction_Template_Nutrient_Management_Data.csv"
-source_workbook = "WF/01_Curated_Dataset/00_Source_Workbook/Nutrient_Management_Literature_Data_Extraction_Template.xlsx"
-source_manifest = "WF/01_Curated_Dataset/MANIFEST.csv"
-source_checksums = "WF/01_Curated_Dataset/CHECKSUMS.sha256"
-schema_evidence = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/Nutrient_Management_Literature_Data_Extraction_Template_Data_Dictionary.csv"
-variety_lookup = "WF/01_Curated_Dataset/02_Context_Data/Nutrient_Management_Literature_Data_Extraction_Template_Variety_Crop_Duration.csv"
-analysis_ready_root = "WF/02_Analysis_Ready_Dataset"
-qc_root = "WF/03_Quality_Control"
-curves_root = "WF/04_Response_Curves"
-comparisons_root = "WF/04_Response_Curves/Comparisons"
-explanatory_root = "WF/05_Explanatory_Analysis"
-reports_root = "WF/06_Reports"
-run_metadata_root = "WF/99_Run_Metadata"
-test_output_root = "WF/98_Test_Outputs"
-
 [selection]
 # Comment one member to disable it; uncomment it to restore it. The parsed list is authoritative.
 enabled_sources = [
@@ -37,6 +24,7 @@ enabled_sources = [
   # "rcm_validation",
   # "nopt",
 ]
+
 enabled_models = [
   "linear",
   "quadratic",
@@ -44,6 +32,7 @@ enabled_models = [
   "quadratic_plateau",
   "mitscherlich",
 ]
+
 comparison_dimensions = [
   "water_regime",
   "season",
@@ -52,15 +41,18 @@ comparison_dimensions = [
   # "variety",
   # "recommendation_class",
 ]
+
 output_formats = [
   "csv",
   "parquet",
   # "xlsx",
 ]
+
 figure_formats = [
   "png",
-  "svg",
+  #"svg",
 ]
+
 fill_down_fields = [
   "Study_ID",
   "Trial ID",
@@ -68,6 +60,7 @@ fill_down_fields = [
   "Author(s)",
   "Year of Publication",
 ]
+
 treatment_classes = [
   "zero_n",
   "absolute_control",
@@ -78,6 +71,190 @@ treatment_classes = [
   "unresolved",
 ]
 
+# Eligibility and curve-fitting controls
+[eligibility]
+minimum_distinct_n_levels = 3
+minimum_complete_n_yield = 3
+minimum_model_residual_df = 1
+require_zero_n_for_primary = false
+primary_inorganic_only = true
+organic_policy = "retain_flagged"
+p_k_policy = "retain_flagged"
+zero_n_policy = "allow_flagged"
+constant_nutrient_tolerance = 1e-8
+high_n_review_threshold_kg_ha = 200.0
+
+# Only these row-level QC failures block a decision-approved Phase 2 full gate.
+critical_error_codes = [
+  "YIELD_UNIT_CONFLICT",
+]
+
+# Model fitting controls
+[modeling]
+no_extrapolation = true
+minimum_residual_df = 1
+convergence_tolerance = 1e-8
+plausible_yield_min_t_ha = 0.0
+plausible_yield_max_t_ha = 30.0
+plot_grid_points = 101
+model_selection_metric = "aicc_then_grouped_prediction"
+tie_breaking = "simpler_model_then_stable_domain"
+
+candidate_models = [
+  "linear",
+  "quadratic",
+  "linear_plateau",
+  "quadratic_plateau",
+  "mitscherlich",
+]
+
+parameter_bounds = { n_rate_min_kg_ha = 0.0, n_rate_max_kg_ha = 400.0 }
+allow_uncertainty = false
+uncertainty_method = "deferred_until_evidence_gate"
+
+# Output and logging controls
+[outputs]
+atomic_writes = true
+allow_source_targets = false
+row_level_qc = true
+collision_policy = "fail"
+
+[logging]
+level = "INFO"
+write_logs_in_validate = false
+
+# Runtime and engine controls
+[engines]
+python_command = "python"
+rscript_command = "Rscript"
+r_entrypoint = "modules/n_response_curve_r/run_explanatory.R"
+require_conda_environment = true
+require_linux_rscript = true
+allow_runtime_r_package_install = false
+allow_automatic_engine_fallback = false
+r_use_vanilla_session = true
+
+[engines.assignments]
+data_pipeline = "python"
+per_series_curve_fitting = "python"
+coverage_and_missingness = "python"
+one_factor_descriptive = "python"
+one_factor_inferential = "r"
+all_supported_interactions = "r"
+multivariable_mixed_effects = "r"
+observation_level_curve_modification = "r"
+penalized_predictive_models = "python"
+curve_feature_clustering = "python"
+dataset_and_source_robustness = "python"
+final_reporting = "python"
+marginal_contrasts = "r"
+
+# Analysis candidate controls
+[analysis_matrix]
+dataset_versions = [
+  "D00_inventory_all",
+  "D01_strict_primary_zero_n",
+  "D02_strict_primary_zero_optional",
+  "D03_primary_4plus_n_levels",
+  "D04_primary_5plus_n_levels",
+  "D05_pk_varying_sensitivity",
+  "D06_organic_bio_sensitivity",
+  "D07_high_n_full_range",
+  "D08_high_n_trimmed_sensitivity",
+  "D09_complete_recommendation_set",
+  "D10_factor_specific_complete_case",
+  "D11_balanced_interaction_cells",
+  # "D12_climate_enriched_future",
+]
+
+source_combination_modes = [
+  "each_family_alone",
+  "all_nonempty_family_subsets",
+  "all_families_deduplicated",
+  "leave_one_family_out",
+]
+
+curve_outcomes = [
+  "curve_shape_class",
+  "optimum_status",
+  "agronomic_optimum_n_kg_ha",
+  # "economic_optimum_n_kg_ha", # Enable only after price scenarios are approved.
+  "plateau_onset_n_kg_ha",
+  "predicted_max_yield_t_ha",
+  "observed_max_yield_t_ha",
+  "yield_at_zero_n_t_ha",
+  "yield_response_above_zero_n_t_ha",
+  "recommendation_yield_gap_t_ha",
+  "target_yield_gap_t_ha",
+]
+
+explanatory_factors = [
+  "source_family",
+  "experiment_type",
+  "experimental_design",
+  "water_regime",
+  "season",
+  "region",
+  "province",
+  "variety",
+  "planting_year",
+  "recommendation_class",
+  "n_level_count",
+  "observed_n_range",
+  "has_zero_n",
+  "has_high_n",
+  "p_rate",
+  "p_varies_with_n",
+  "k_rate",
+  "k_varies_with_n",
+  "organic_fertilizer_present",
+  "biofertilizer_present",
+  "n_split_pattern",
+  "n_timing_pattern",
+  "elevation_m",
+  "soil_texture",
+  "soil_ph",
+  "soil_organic_matter",
+  "soil_total_n",
+  "soil_available_p",
+  "soil_exchangeable_k",
+]
+
+analysis_families = [
+  "coverage_and_missingness",
+  "one_factor_descriptive",
+  "one_factor_inferential",
+  "all_supported_interactions",
+  "multivariable_mixed_effects",
+  "observation_level_curve_modification",
+  "penalized_predictive_models",
+  "curve_feature_clustering",
+  "dataset_and_source_robustness",
+  "marginal_contrasts",
+]
+
+interaction_orders = [
+  1,
+  2,
+  3,
+]
+
+combination_mode = "all_supported"
+run_supported_only = true
+group_cross_validation_by = "study_uid"
+multiple_testing_method = "benjamini_hochberg"
+
+# Conservative support gates applied before any inferential, predictive, or
+# higher-order factor candidate is allowed to run.
+[analysis_matrix.support_policy]
+minimum_independent_studies = 4
+minimum_factor_cell_count = 3
+maximum_factor_cardinality = 12
+minimum_residual_information = 3
+
+# Registered source and schema contract. Change this block only when a source
+# is added or its source evidence changes; source-specific path bindings stay
+# with their provenance metadata.
 [sources.core_trial_data]
 source_type = "literature"
 data_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Literature_Data_Extraction_Template_Nutrient_Management_Data.csv"
@@ -137,12 +314,14 @@ irrigated = [
   "Irrigated Lowland",
   "Irrigated (flush) lowland",
 ]
+
 rainfed = [
   "Rainfed",
   "rainfed",
   "RAIN FED",
   "Rainfed Lowland",
 ]
+
 upland = [
   "Upland",
   "upland",
@@ -155,6 +334,7 @@ dry = [
   "DS",
   "Early dry",
 ]
+
 wet = [
   "Wet",
   "wet",
@@ -189,161 +369,19 @@ invalid_numeric = [
   "not_parseable",
 ]
 
-[eligibility]
-minimum_distinct_n_levels = 3
-minimum_complete_n_yield = 3
-minimum_model_residual_df = 1
-require_zero_n_for_primary = false
-primary_inorganic_only = true
-organic_policy = "retain_flagged"
-p_k_policy = "retain_flagged"
-zero_n_policy = "allow_flagged"
-constant_nutrient_tolerance = 1e-8
-high_n_review_threshold_kg_ha = 200.0
-# Only these row-level QC failures block a decision-approved Phase 2 full gate.
-critical_error_codes = [
-  "YIELD_UNIT_CONFLICT",
-]
-
-[modeling]
-no_extrapolation = true
-minimum_residual_df = 1
-convergence_tolerance = 1e-8
-plausible_yield_min_t_ha = 0.0
-plausible_yield_max_t_ha = 30.0
-plot_grid_points = 101
-model_selection_metric = "aicc_then_grouped_prediction"
-tie_breaking = "simpler_model_then_stable_domain"
-candidate_models = [
-  "linear",
-  "quadratic",
-  "linear_plateau",
-  "quadratic_plateau",
-  "mitscherlich",
-]
-parameter_bounds = { n_rate_min_kg_ha = 0.0, n_rate_max_kg_ha = 400.0 }
-allow_uncertainty = false
-uncertainty_method = "deferred_until_evidence_gate"
-
-[outputs]
-atomic_writes = true
-allow_source_targets = false
-row_level_qc = true
-collision_policy = "fail"
-
-[logging]
-level = "INFO"
-write_logs_in_validate = false
-
-[engines]
-python_command = "python"
-rscript_command = "Rscript"
-r_entrypoint = "modules/n_response_curve_r/run_explanatory.R"
-require_conda_environment = true
-require_linux_rscript = true
-allow_runtime_r_package_install = false
-allow_automatic_engine_fallback = false
-r_use_vanilla_session = true
-
-[engines.assignments]
-data_pipeline = "python"
-per_series_curve_fitting = "python"
-coverage_and_missingness = "python"
-one_factor_descriptive = "python"
-one_factor_inferential = "r"
-all_supported_interactions = "r"
-multivariable_mixed_effects = "r"
-observation_level_curve_modification = "r"
-penalized_predictive_models = "python"
-curve_feature_clustering = "python"
-dataset_and_source_robustness = "python"
-final_reporting = "python"
-marginal_contrasts = "r"
-
-[analysis_matrix]
-dataset_versions = [
-  "D00_inventory_all",
-  "D01_strict_primary_zero_n",
-  "D02_strict_primary_zero_optional",
-  "D03_primary_4plus_n_levels",
-  "D04_primary_5plus_n_levels",
-  "D05_pk_varying_sensitivity",
-  "D06_organic_bio_sensitivity",
-  "D07_high_n_full_range",
-  "D08_high_n_trimmed_sensitivity",
-  "D09_complete_recommendation_set",
-  "D10_factor_specific_complete_case",
-  "D11_balanced_interaction_cells",
-  # "D12_climate_enriched_future",
-]
-source_combination_modes = [
-  "each_family_alone",
-  "all_nonempty_family_subsets",
-  "all_families_deduplicated",
-  "leave_one_family_out",
-]
-curve_outcomes = [
-  "curve_shape_class",
-  "optimum_status",
-  "agronomic_optimum_n_kg_ha",
-  # "economic_optimum_n_kg_ha", # Enable only after price scenarios are approved.
-  "plateau_onset_n_kg_ha",
-  "predicted_max_yield_t_ha",
-  "observed_max_yield_t_ha",
-  "yield_at_zero_n_t_ha",
-  "yield_response_above_zero_n_t_ha",
-  "recommendation_yield_gap_t_ha",
-  "target_yield_gap_t_ha",
-]
-explanatory_factors = [
-  "source_family",
-  "experiment_type",
-  "experimental_design",
-  "water_regime",
-  "season",
-  "region",
-  "province",
-  "variety",
-  "planting_year",
-  "recommendation_class",
-  "n_level_count",
-  "observed_n_range",
-  "has_zero_n",
-  "has_high_n",
-  "p_rate",
-  "p_varies_with_n",
-  "k_rate",
-  "k_varies_with_n",
-  "organic_fertilizer_present",
-  "biofertilizer_present",
-  "n_split_pattern",
-  "n_timing_pattern",
-  "elevation_m",
-  "soil_texture",
-  "soil_ph",
-  "soil_organic_matter",
-  "soil_total_n",
-  "soil_available_p",
-  "soil_exchangeable_k",
-]
-analysis_families = [
-  "coverage_and_missingness",
-  "one_factor_descriptive",
-  # R-owned families remain disabled until the Phase 4 R entry point is delivered and preflighted.
-  # "one_factor_inferential",
-  # "all_supported_interactions",
-  # "multivariable_mixed_effects",
-  # "observation_level_curve_modification",
-  "penalized_predictive_models",
-  "curve_feature_clustering",
-  "dataset_and_source_robustness",
-]
-interaction_orders = [
-  1,
-  2,
-  3,
-]
-combination_mode = "all_supported"
-run_supported_only = true
-group_cross_validation_by = "study_uid"
-multiple_testing_method = "benjamini_hochberg"
+# Project-relative paths. Keep the central path registry last.
+[paths]
+core_source_csv = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Literature_Data_Extraction_Template_Nutrient_Management_Data.csv"
+source_workbook = "WF/01_Curated_Dataset/00_Source_Workbook/Nutrient_Management_Literature_Data_Extraction_Template.xlsx"
+source_manifest = "WF/01_Curated_Dataset/MANIFEST.csv"
+source_checksums = "WF/01_Curated_Dataset/CHECKSUMS.sha256"
+schema_evidence = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/Nutrient_Management_Literature_Data_Extraction_Template_Data_Dictionary.csv"
+variety_lookup = "WF/01_Curated_Dataset/02_Context_Data/Nutrient_Management_Literature_Data_Extraction_Template_Variety_Crop_Duration.csv"
+analysis_ready_root = "WF/02_Analysis_Ready_Dataset"
+qc_root = "WF/03_Quality_Control"
+curves_root = "WF/04_Response_Curves"
+comparisons_root = "WF/04_Response_Curves/Comparisons"
+explanatory_root = "WF/05_Explanatory_Analysis"
+reports_root = "WF/06_Reports"
+run_metadata_root = "WF/99_Run_Metadata"
+test_output_root = "WF/98_Test_Outputs"
