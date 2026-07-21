@@ -102,11 +102,11 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
             "Phase 2 full-mode source gate failed for configured critical records: "
             + ", ".join(phase_two.qc.critical_record_uids)
         )
-    phase_three = run_phase_three(config, phase_two)
-    phase_four = run_phase_four(config, phase_two, phase_three)
     if config.run_mode == "validate":
         _print_validation_plan(config, phase_two)
         return 0
+    phase_three = run_phase_three(config, phase_two)
+    phase_four = run_phase_four(config, phase_two, phase_three)
     phase_five = release_phases_three_to_five(config, phase_two, phase_three, phase_four)
     print(f"mode={config.run_mode}")
     print("writes_outputs=true")
