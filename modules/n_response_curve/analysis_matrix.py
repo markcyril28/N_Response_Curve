@@ -163,7 +163,14 @@ def _record_uids_for_curve_row(row: Mapping[str, Any]) -> set[str]:
 
 
 def _row_is_in_dataset_version(row: Mapping[str, Any], version: DatasetVersion) -> bool:
-    return bool(_record_uids_for_curve_row(row).intersection(version.record_uids))
+    tagged_version = row.get("dataset_version_id")
+    if tagged_version is not None:
+        return (
+            tagged_version == version.version_id
+            and row.get("dataset_version_membership_sha256") == version.membership_sha256
+        )
+    record_uids = _record_uids_for_curve_row(row)
+    return bool(record_uids) and record_uids.issubset(version.record_uids)
 
 
 def _selected_rows(
@@ -177,6 +184,9 @@ def _selected_rows(
     rows: list[Mapping[str, Any]] = []
     for row in curve_rows:
         if str(row.get("source_name", "")) not in source_combination.source_families:
+            continue
+        tagged_combination = row.get("source_combination_id")
+        if tagged_combination is not None and tagged_combination != source_combination.combination_id:
             continue
         if not _row_is_in_dataset_version(row, version):
             continue
@@ -204,22 +214,28 @@ def _support_policy_values(policy: Mapping[str, Any] | None) -> dict[str, int] |
     return values
 
 
-def _support_summary(rows: Sequence[Mapping[str, Any]], factor_names: Sequence[str]) -> tuple[int, dict[str, int], int]:
+def _support_summary(
+    rows: Sequence[Mapping[str, Any]],
+    factor_names: Sequence[str],
+) -> tuple[int, dict[str, int], int, int]:
     complete_rows: list[Mapping[str, Any]] = []
     for row in rows:
         if all(factor_value(row, name) is not None for name in factor_names):
             complete_rows.append(row)
-    studies = {
-        str(row.get("study_uid") or row.get("response_series_uid") or "")
-        for row in complete_rows
-    }
+    studies = {str(row.get("study_uid") or "") for row in complete_rows}
     studies.discard("")
+    missing_group_count = sum(not str(row.get("study_uid") or "") for row in complete_rows)
     cell_counts: dict[str, int] = {}
     if factor_names:
         for row in complete_rows:
             cell = "|".join(str(factor_value(row, name)) for name in factor_names)
             cell_counts[cell] = cell_counts.get(cell, 0) + 1
-    return len(studies), {key: cell_counts[key] for key in sorted(cell_counts)}, len(complete_rows)
+    return (
+        len(studies),
+        {key: cell_counts[key] for key in sorted(cell_counts)},
+        len(complete_rows),
+        missing_group_count,
+    )
 
 
 def _reasons_for_candidate(
@@ -232,6 +248,8 @@ def _reasons_for_candidate(
 ) -> tuple[str, tuple[str, ...], int, Mapping[str, int]]:
     if version.status != "available":
         return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}
+    if version.version_id == "D00_inventory_all" and analysis_family != "coverage_and_missingness":
+        return "skipped", ("DATASET_VERSION_NOT_PERMITTED_FOR_ANALYSIS_FAMILY",), 0, {}
     if not rows:
         return "pruned", ("NO_OUTCOME_SUPPORT",), 0, {}
     if analysis_family in {
@@ -244,12 +262,17 @@ def _reasons_for_candidate(
         return "pruned", ("NO_CONFIGURED_FACTORS",), 0, {}
     if any(entry.leakage_restricted for entry in factor_entries):
         return "pruned", ("LEAKAGE_RESTRICTED_FACTOR",), 0, {}
-    independent_studies, cell_counts, complete_rows = _support_summary(rows, [entry.factor_name for entry in factor_entries])
+    independent_studies, cell_counts, complete_rows, missing_group_count = _support_summary(
+        rows,
+        [entry.factor_name for entry in factor_entries],
+    )
     if analysis_family == "one_factor_descriptive":
         return ("run", (), independent_studies, cell_counts) if complete_rows else ("pruned", ("NO_FACTOR_COMPLETE_CASES",), independent_studies, cell_counts)
     if support_policy is None:
         return "pruned", ("SUPPORT_POLICY_REQUIRED",), independent_studies, cell_counts
     reasons: list[str] = []
+    if missing_group_count:
+        reasons.append("MISSING_GROUP_IDENTITY")
     if independent_studies < support_policy["minimum_independent_studies"]:
         reasons.append("INSUFFICIENT_INDEPENDENT_STUDY_SUPPORT")
     if len(cell_counts) > support_policy["maximum_factor_cardinality"]:
