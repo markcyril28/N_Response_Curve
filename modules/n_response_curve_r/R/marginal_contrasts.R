@@ -60,7 +60,11 @@ nrc_run_marginal_contrasts <- function(stage) {
         fitted,
         specs = stats::as.formula(paste("~", factor_name))
       )
-      broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = adjustment))
+      raw <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = "none"))
+      adjusted <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = adjustment))
+      raw$p.value_raw <- raw$p.value
+      raw$p.value_adjusted <- adjusted$p.value
+      raw
     },
     error = function(error) error
   )
@@ -76,15 +80,13 @@ nrc_run_marginal_contrasts <- function(stage) {
   list(
     status = "completed",
     results = results,
-    metadata = c(
-      list(
-        engine = "r",
-        factor_name = factor_name,
-        multiple_testing_adjustment = adjustment,
-        model_kind = model_kind,
-        outcome_kind = outcome_kind
-      ),
-      nrc_model_diagnostics(fitted, warning_messages)
+    metadata = list(
+      engine = "r",
+      factor_name = factor_name,
+      multiple_testing_adjustment = adjustment,
+      model_kind = model_kind,
+      outcome_kind = outcome_kind,
+      diagnostics = nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
     )
   )
 }
