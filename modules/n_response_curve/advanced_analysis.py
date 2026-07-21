@@ -462,6 +462,13 @@ def _robustness_result(
     records: list[dict[str, Any]] = []
     for source, values in sorted(grouped.items()):
         mean = source_means[source]
+        leave_one_source_out_values = [
+            value
+            for other_source, other_values in grouped.items()
+            if other_source != source
+            for value in other_values
+        ]
+        leave_one_source_out_mean = statistics.fmean(leave_one_source_out_values)
         standard_error = (
             statistics.stdev(values) / math.sqrt(len(values))
             if len(values) > 1
@@ -477,6 +484,8 @@ def _robustness_result(
                 "source_mean": mean,
                 "pooled_mean": pooled_mean,
                 "difference_from_pooled": mean - pooled_mean,
+                "leave_one_source_out_mean": leave_one_source_out_mean,
+                "leave_one_source_out_difference": leave_one_source_out_mean - pooled_mean,
                 "interval_low": mean - 1.96 * standard_error,
                 "interval_high": mean + 1.96 * standard_error,
                 "direction": (
@@ -485,6 +494,11 @@ def _robustness_result(
                     else "negative"
                     if mean < 0
                     else "null"
+                ),
+                "direction_stable_after_source_omission": (
+                    (pooled_mean > 0 and leave_one_source_out_mean > 0)
+                    or (pooled_mean < 0 and leave_one_source_out_mean < 0)
+                    or (pooled_mean == 0 and leave_one_source_out_mean == 0)
                 ),
                 "conclusion_concordant_across_sources": concordant,
             }
