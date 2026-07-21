@@ -110,13 +110,21 @@ def build_source_combinations(
 
 def _factor_combinations(analysis_family: str, factors: Sequence[FactorCatalogEntry], interaction_orders: Sequence[int]) -> tuple[tuple[str, ...], ...]:
     names = tuple(entry.factor_name for entry in factors)
-    if analysis_family == "coverage_and_missingness":
+    if analysis_family in {
+        "coverage_and_missingness",
+        "curve_feature_clustering",
+        "dataset_and_source_robustness",
+    }:
         return ((),)
     if not names:
         return ((),)
     if analysis_family == "all_supported_interactions":
         orders = tuple(order for order in interaction_orders if 1 <= order <= len(names))
-    elif analysis_family in {"multivariable_mixed_effects", "observation_level_curve_modification"}:
+    elif analysis_family in {
+        "multivariable_mixed_effects",
+        "observation_level_curve_modification",
+        "penalized_predictive_models",
+    }:
         orders = tuple(order for order in interaction_orders if 1 <= order <= len(names))
     else:
         orders = (1,)
@@ -226,7 +234,11 @@ def _reasons_for_candidate(
         return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}
     if not rows:
         return "pruned", ("NO_OUTCOME_SUPPORT",), 0, {}
-    if analysis_family == "coverage_and_missingness":
+    if analysis_family in {
+        "coverage_and_missingness",
+        "curve_feature_clustering",
+        "dataset_and_source_robustness",
+    }:
         return "run", (), len(rows), {}
     if not factor_entries:
         return "pruned", ("NO_CONFIGURED_FACTORS",), 0, {}
@@ -355,12 +367,50 @@ def build_analysis_registry(
     combinations = build_source_combinations(configured_source_families, modes=source_combination_modes)
 
     candidates: list[AnalysisCandidate] = []
+    theoretical_count = 0
+    compressed_prune_count = 0
+    expansion_families = {
+        "all_supported_interactions",
+        "multivariable_mixed_effects",
+        "observation_level_curve_modification",
+        "penalized_predictive_models",
+    }
     for version in versions:
         for combination in combinations:
             for outcome in outcomes:
                 applicable_rows = _selected_rows(rows, version, combination, outcome)
                 for family in family_names:
-                    for factor_names in _factor_combinations(family, tuple(known_factors.values()), orders):
+                    factor_sets = _factor_combinations(family, tuple(known_factors.values()), orders)
+                    theoretical_count += len(factor_sets)
+                    if family not in expansion_families or not any(len(names) > 1 for names in factor_sets):
+                        materialized_factor_sets = factor_sets
+                    else:
+                        single_factor_sets = tuple(names for names in factor_sets if len(names) == 1)
+                        single_candidates: list[AnalysisCandidate] = []
+                        supported_factors: set[str] = set()
+                        for factor_names in single_factor_sets:
+                            entries = tuple(known_factors[name] for name in factor_names)
+                            concrete = _candidate(
+                                version=version,
+                                combination=combination,
+                                outcome=outcome,
+                                analysis_family=family,
+                                factor_entries=entries,
+                                engine=engine_assignments[family],
+                                rows=applicable_rows,
+                                support_policy=policy,
+                            )
+                            single_candidates.append(concrete)
+                            if concrete.status == "run":
+                                supported_factors.update(factor_names)
+                        candidates.extend(single_candidates)
+                        materialized_factor_sets = tuple(
+                            names
+                            for names in factor_sets
+                            if len(names) > 1 and set(names).issubset(supported_factors)
+                        )
+                        compressed_prune_count += len(factor_sets) - len(single_factor_sets) - len(materialized_factor_sets)
+                    for factor_names in materialized_factor_sets:
                         entries = tuple(known_factors[name] for name in factor_names)
                         candidates.append(
                             _candidate(
@@ -389,12 +439,16 @@ def build_analysis_registry(
             continue
         for reason in candidate.reason_codes:
             prune_counts[reason] = prune_counts.get(reason, 0) + 1
+    if compressed_prune_count:
+        prune_counts["FACTOR_PROFILE_PRUNED_BEFORE_EXPANSION"] = compressed_prune_count
     pruned_families = tuple(
         PrunedFamily(reason_code=reason, candidate_count=count)
         for reason, count in sorted(prune_counts.items())
     )
-    theoretical_count = len(candidates)
-    accounted_count = sum(1 for candidate in candidates if candidate.status in {"run", "skipped", "pruned", "failed"})
+    accounted_count = (
+        sum(1 for candidate in candidates if candidate.status in {"run", "skipped", "pruned", "failed"})
+        + compressed_prune_count
+    )
     return AnalysisRegistry(
         candidates=tuple(candidates),
         pruned_families=pruned_families,
