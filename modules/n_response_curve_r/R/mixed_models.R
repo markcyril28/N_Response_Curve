@@ -82,6 +82,8 @@ nrc_run_mixed_models <- function(stage) {
             nrc_abort("Categorical glm requires exactly two supported outcome levels")
           }
           stats::glm(model_formula, data = stage$data, family = stats::binomial())
+        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "multinom")) {
+          nnet::multinom(model_formula, data = stage$data, trace = FALSE, Hess = TRUE, model = TRUE)
         } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glmmTMB")) {
           glmmTMB::glmmTMB(model_formula, data = stage$data, family = stats::binomial())
         } else {
