@@ -6,6 +6,8 @@ import importlib.metadata
 import json
 from pathlib import Path
 import platform
+import shutil
+import subprocess
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -88,18 +90,51 @@ def _redact(value: Any, *, key: str = "") -> Any:
     return value
 
 
-def _runtime_inventory() -> dict[str, Any]:
-    packages = ("matplotlib", "numpy", "pandas", "pyarrow", "scipy")
+def _runtime_inventory(rscript_command: str) -> dict[str, Any]:
+    packages = ("matplotlib", "numpy", "pandas", "pyarrow", "scikit-learn", "scipy")
     versions: dict[str, str | None] = {}
     for package in packages:
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
+    r_executable = shutil.which(str(rscript_command))
+    if r_executable is None:
+        raise ConfigError(f"Unable to inventory unavailable Rscript command: {rscript_command}")
+    r_packages = ("arrow", "broom", "emmeans", "glmmTMB", "jsonlite", "lme4", "lmerTest", "nnet", "TMB", "testthat")
+    package_vector = ",".join(json.dumps(package) for package in r_packages)
+    r_expression = (
+        f"packages <- c({package_vector}); "
+        "installed <- installed.packages()[, 'Version']; "
+        "versions <- lapply(packages, function(package) "
+        "if (package %in% names(installed)) unname(installed[[package]]) else NA_character_); "
+        "names(versions) <- packages; "
+        "cat(jsonlite::toJSON(list(version = R.version.string, "
+        "executable = normalizePath(Sys.which('Rscript'), winslash = '/', mustWork = TRUE), "
+        "packages = versions), auto_unbox = TRUE, null = 'null'))"
+    )
+    try:
+        completed = subprocess.run(
+            [r_executable, "--vanilla", "-e", r_expression],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        r_inventory = json.loads(completed.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        raise ConfigError(f"Unable to capture the R runtime inventory: {exc}") from exc
+    if completed.returncode != 0 or not isinstance(r_inventory, Mapping):
+        detail = completed.stderr.strip() or f"exit code {completed.returncode}"
+        raise ConfigError(f"Unable to capture the R runtime inventory: {detail}")
     return {
-        "python": sys.version.split()[0],
         "platform": platform.platform(),
-        "python_packages": versions,
+        "python": {
+            "version": sys.version.split()[0],
+            "executable": str(Path(sys.executable).resolve()),
+            "packages": versions,
+        },
+        "r": dict(r_inventory),
     }
 
 
@@ -285,6 +320,9 @@ def _r_stage_writer(
                         "reason_codes": [],
                         "result_count": len(result.results),
                         "metadata": dict(result.metadata),
+                        "contract_version": 1,
+                        "contract_sha256": contract.contract_sha256,
+                        "input_sha256": contract.input_sha256,
                     }
                 )
                 if result.status == "failed" and fail_fast:
@@ -298,6 +336,168 @@ def _r_stage_writer(
         return tuple(produced)
 
     return write_r_stages
+
+
+def _nested_warning_messages(value: Any) -> tuple[str, ...]:
+    messages: list[str] = []
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if str(key).casefold() == "warnings" and isinstance(nested, (list, tuple)):
+                messages.extend(str(message).strip() for message in nested if str(message).strip())
+            else:
+                messages.extend(_nested_warning_messages(nested))
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            messages.extend(_nested_warning_messages(nested))
+    return tuple(messages)
+
+
+def _terminal_status_stage_writer(
+    phase_three: PhaseThreeResult,
+    phase_four: PhaseFourResult,
+    r_statuses: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    report_sections: dict[str, list[str]],
+):
+    python_by_candidate = {result.candidate_id: result for result in phase_four.python_results}
+
+    def write_terminal_statuses(stage_root: Path) -> tuple[Path, ...]:
+        r_by_candidate = {str(status["candidate_id"]): status for status in r_statuses}
+        if len(r_by_candidate) != len(r_statuses):
+            raise ReportingError("R stage status ledger contains duplicate candidate identifiers")
+        status_rows: list[dict[str, Any]] = []
+        status_counts: dict[str, int] = {}
+        for candidate in phase_four.registry.candidates:
+            reason_codes: list[str]
+            if candidate.status == "pruned":
+                terminal_status = "pruned"
+                reason_codes = list(candidate.reason_codes)
+            elif candidate.engine == "python":
+                result = python_by_candidate.get(candidate.candidate_id)
+                if result is None:
+                    raise ReportingError(f"Python candidate lacks a terminal result: {candidate.candidate_id}")
+                terminal_status = "run" if result.status == "completed" else result.status
+                reason_codes = list(result.reason_codes)
+            elif candidate.engine == "r":
+                result = r_by_candidate.get(candidate.candidate_id)
+                if result is None:
+                    raise ReportingError(f"R candidate lacks a terminal result: {candidate.candidate_id}")
+                terminal_status = "run" if result.get("status") == "completed" else str(result.get("status"))
+                reason_codes = [str(reason) for reason in result.get("reason_codes", ())]
+            else:
+                raise ReportingError(f"Candidate has an unknown terminal engine: {candidate.engine}")
+            if terminal_status not in {"run", "skipped", "failed", "nonconverged", "not_interpretable", "pruned"}:
+                raise ReportingError(
+                    f"Candidate {candidate.candidate_id} has an unsupported terminal status: {terminal_status}"
+                )
+            status_counts[terminal_status] = status_counts.get(terminal_status, 0) + 1
+            status_rows.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "analysis_family": candidate.analysis_family,
+                    "engine": candidate.engine,
+                    "terminal_status": terminal_status,
+                    "reason_codes": reason_codes,
+                }
+            )
+        compressed_pruned_count = sum(item.candidate_count for item in phase_four.registry.pruned_families)
+        status_counts["pruned"] = status_counts.get("pruned", 0) + compressed_pruned_count
+        terminal_accounted = sum(status_counts.values())
+        terminal_reconciles = (
+            phase_four.registry.reconciles
+            and terminal_accounted == phase_four.registry.accounted_candidate_count
+            and terminal_accounted == phase_four.registry.theoretical_candidate_count
+        )
+        if not terminal_reconciles:
+            raise ReportingError("Analysis terminal statuses do not reconcile to the theoretical candidate space")
+
+        contract_inventory = [
+            {
+                "candidate_id": status["candidate_id"],
+                "contract_version": status["contract_version"],
+                "contract_sha256": status["contract_sha256"],
+                "input_sha256": status["input_sha256"],
+            }
+            for status in r_statuses
+            if "contract_sha256" in status
+        ]
+        warnings = sorted({message for status in r_statuses for message in _nested_warning_messages(status)})
+        model_failures = [
+            {
+                "model_attempt_uid": attempt.model_attempt_uid,
+                "response_series_uid": attempt.response_series_uid,
+                "model_name": attempt.model_name,
+                "status": attempt.status,
+                "reason_codes": list(attempt.reason_codes),
+            }
+            for attempt in phase_three.evidence.model_attempts
+            if attempt.status != "fitted"
+        ]
+        model_failures.extend(
+            {
+                "candidate_id": status["candidate_id"],
+                "status": "failed",
+                "reason_codes": list(status.get("reason_codes", ())),
+                "error": status.get("error"),
+            }
+            for status in r_statuses
+            if status.get("status") == "failed"
+        )
+        manifest["analysis_registry"].update(
+            {
+                "concrete_candidate_count": len(status_rows),
+                "compressed_pruned_candidate_count": compressed_pruned_count,
+                "terminal_accounted_candidate_count": terminal_accounted,
+                "terminal_status_counts": dict(sorted(status_counts.items())),
+                "terminal_reconciles": terminal_reconciles,
+            }
+        )
+        manifest["warnings"] = warnings
+        manifest["model_failures"] = model_failures
+        manifest["contract_inventory"] = contract_inventory
+
+        supported_factors = sum(
+            entry.coverage_count > 0 and entry.cardinality > 1 and not entry.leakage_restricted
+            for entry in phase_four.factor_catalog
+        )
+        available_versions = sum(version.status == "available" for version in phase_four.dataset_versions)
+        source_robustness_runs = sum(
+            row["analysis_family"] == "dataset_and_source_robustness" and row["terminal_status"] == "run"
+            for row in status_rows
+        )
+        predictive_runs = sum(
+            row["analysis_family"] == "penalized_predictive_models" and row["terminal_status"] == "run"
+            for row in status_rows
+        )
+        report_sections["sensitivity"].append(
+            f"Factor evidence covered {supported_factors} supported non-leakage factors across "
+            f"{available_versions} available dataset versions; {source_robustness_runs} source/dataset robustness analyses completed."
+        )
+        report_sections["sensitivity"].append(
+            f"Model robustness retained {len(phase_three.evidence.model_attempts)} curve-model attempts and "
+            f"{len(phase_three.evidence.selected_attempts)} selected models; nonselected or failed attempts remain explicit."
+        )
+        report_sections["predictive"].append(
+            f"{predictive_runs} study-grouped predictive candidates completed; predictive results are not causal estimates."
+        )
+        report_sections["unsupported"].append(
+            f"Terminal analysis reconciliation accounted for {terminal_accounted} of "
+            f"{phase_four.registry.theoretical_candidate_count} theoretical candidates."
+        )
+
+        payload = {
+            "concrete_candidates": status_rows,
+            "compressed_pruned_families": [asdict(item) for item in phase_four.registry.pruned_families],
+            "terminal_status_counts": dict(sorted(status_counts.items())),
+            "terminal_accounted_candidate_count": terminal_accounted,
+            "theoretical_candidate_count": phase_four.registry.theoretical_candidate_count,
+            "reconciles": terminal_reconciles,
+        }
+        status_path = stage_root / "analysis_terminal_statuses.json"
+        status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return (status_path,)
+
+    return write_terminal_statuses
 
 
 def _figure_stage_writer(config: ValidatedConfig, phase_three: PhaseThreeResult):
@@ -457,7 +657,7 @@ def release_phases_three_to_five(
         "run_identity": identity_payload,
         "effective_config": _redact(config.raw),
         "engine_assignments": dict(sorted(config.engine_assignments.items())),
-        "runtime_inventory": _runtime_inventory(),
+        "runtime_inventory": _runtime_inventory(str(config.raw["engines"]["rscript_command"])),
         "source_integrity": {
             "checked_files": integrity.checked_files,
             "artifact_sha256": dict(integrity.artifact_sha256),
@@ -484,16 +684,18 @@ def release_phases_three_to_five(
             raise ConfigError(f"Existing release package cannot be safely reused: {target}") from exc
         if existing_manifest.get("run_identity_sha256") == run_identity_sha256:
             return PhaseFiveResult(package=existing, reused_existing_package=True)
+    report_sections = _report_sections(phase_three, phase_four)
     stage_writers = (
         _figure_stage_writer(config, phase_three),
         _r_stage_writer(config, phase_three, phase_four, r_stage_statuses),
+        _terminal_status_stage_writer(phase_three, phase_four, r_stage_statuses, manifest, report_sections),
     )
     try:
         package = write_release_package(
             target,
             tables=_table_artifacts(phase_two, phase_three, phase_four),
             manifest=manifest,
-            report_sections=_report_sections(phase_three, phase_four),
+            report_sections=report_sections,
             output_formats=config.output_formats,
             overwrite=bool(config.raw["run"]["overwrite"]),
             source_roots=_source_target_paths(config),
