@@ -87,7 +87,7 @@ nrc_read_contract <- function(contract_path) {
   input_path <- normalizePath(input$path, winslash = "/", mustWork = TRUE)
   output_path <- normalizePath(output$path, winslash = "/", mustWork = FALSE)
   if (!nrc_is_within_directory(input_path, stage_root) ||
-      !nrc_is_within_directory(output_path, stage_root)) {
+        !nrc_is_within_directory(output_path, stage_root)) {
     nrc_abort("R contract input and output must remain inside the isolated stage root")
   }
   if (!identical(nrc_sha256_file(input_path), input$sha256)) {
