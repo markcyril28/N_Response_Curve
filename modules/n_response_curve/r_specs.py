@@ -141,10 +141,13 @@ def _design_gate_reason(
     rank = int(np.linalg.matrix_rank(matrix))
     if rank < matrix.shape[1]:
         return "ALIASED_DESIGN_MATRIX"
-    if matrix.shape[1] > 2 and not np.isfinite(np.linalg.cond(matrix)):
-        return "COLLINEAR_DESIGN_MATRIX"
-    if matrix.shape[1] > 2 and np.linalg.cond(matrix) > 1.0e8:
-        return "COLLINEAR_DESIGN_MATRIX"
+    predictors = design.to_numpy(dtype=float)
+    if predictors.shape[1] > 1:
+        scales = predictors.std(axis=0)
+        standardized = (predictors - predictors.mean(axis=0)) / scales
+        condition_number = np.linalg.cond(standardized)
+        if not np.isfinite(condition_number) or condition_number > 1.0e8:
+            return "COLLINEAR_DESIGN_MATRIX"
     if len(rows) - rank < 3:
         return "INSUFFICIENT_RESIDUAL_INFORMATION"
     if outcome_kind == "categorical":
