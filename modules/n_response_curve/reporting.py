@@ -257,9 +257,6 @@ def write_release_package(
             metadata, artifact_hashes = _write_table(stage, name, artifact, formats)
             table_metadata[name] = metadata
             artifact_sha256.update(artifact_hashes)
-        report_path = stage / "report.md"
-        report_path.write_text(_render_report(report_sections), encoding="utf-8")
-        artifact_sha256[report_path.relative_to(stage).as_posix()] = _sha256(report_path)
         for writer in stage_writers:
             if not callable(writer):
                 raise ReportingError("Each stage writer must be callable")
@@ -274,6 +271,9 @@ def write_release_package(
                 if relative_path in artifact_sha256:
                     raise ReportingError(f"Stage writer artifact collides with an existing package artifact: {relative_path}")
                 artifact_sha256[relative_path] = _sha256(artifact_path)
+        report_path = stage / "report.md"
+        report_path.write_text(_render_report(report_sections), encoding="utf-8")
+        artifact_sha256[report_path.relative_to(stage).as_posix()] = _sha256(report_path)
         manifest_path = stage / "run_manifest.json"
         manifest_payload = dict(_json_value(manifest))
         manifest_payload["tables"] = table_metadata
