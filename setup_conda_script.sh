@@ -8,6 +8,8 @@ MANIFEST_FILE="${MANIFEST_FILE:-$PROJECT_ROOT/setup_conda_script.yml}"
 METADATA_ROOT="${METADATA_ROOT:-$PROJECT_ROOT/WF/99_Run_Metadata/environment}"
 MAMBA_BIN="${MAMBA_BIN:-}"
 CONDA_BIN="${CONDA_BIN:-}"
+LOG_HELPER="$PROJECT_ROOT/modules/run_logging.sh"
+LOG_ROOT="${N_RESPONSE_LOG_ROOT:-$PROJECT_ROOT/logs}"
 DRY_RUN_ONLY=0
 MANAGER=""
 RUNNER=""
@@ -22,8 +24,13 @@ BACKUP_PREFIX=""
 CANDIDATE_PREFIX=""
 RUN_STAMP=""
 ROLLBACK_FAILED=0
+SETUP_MODE="apply"
+SETUP_LOG_PATH=""
 
 die() {
+  if declare -F nrc_log >/dev/null 2>&1 && [[ "${NRC_LOG_INITIALIZED:-0}" -eq 1 ]]; then
+    nrc_log ERROR "setup_failed" "mode=$SETUP_MODE" "error=$*" || true
+  fi
   printf 'setup_conda_script.sh: %s\n' "$*" >&2
   exit 2
 }
@@ -48,6 +55,24 @@ for argument in "$@"; do
 done
 
 [[ -f "$MANIFEST_FILE" ]] || die "missing Conda manifest: $MANIFEST_FILE"
+[[ -f "$LOG_HELPER" ]] || die "missing logging helper: $LOG_HELPER"
+# shellcheck source=modules/run_logging.sh
+. "$LOG_HELPER"
+RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+if [[ "$DRY_RUN_ONLY" -eq 1 ]]; then
+  SETUP_MODE="dry_run"
+else
+  SETUP_MODE="apply"
+fi
+nrc_setup_logging "$PROJECT_ROOT" "setup_conda" "setup_${RUN_STAMP}_$$" "INFO" "$LOG_ROOT"
+SETUP_LOG_PATH="$NRC_LOG_FILE"
+trap 'nrc_teardown_logging' EXIT
+nrc_log INFO "setup_started" \
+  "mode=$SETUP_MODE" \
+  "manifest_path=$MANIFEST_FILE" \
+  "full_log_path=$NRC_FULL_LOG_FILE" \
+  "event_log_path=$NRC_LOG_FILE" \
+  "error_log_path=$NRC_ERROR_WARN_FILE"
 
 validate_linux_executable() {
   local candidate="$1"
@@ -196,12 +221,79 @@ validate_absent_target_prefix() {
   [[ ! -e "$ENV_PREFIX" ]] || die "incomplete environment prefix exists but is not registered: $ENV_PREFIX"
 }
 
+run_strict_manager() {
+  CONDA_CHANNEL_PRIORITY=strict \
+    MAMBA_CHANNEL_PRIORITY=strict \
+    "$MANAGER" "$@"
+}
+
 manager_env_create() {
-  "$MANAGER" env create --strict-channel-priority --file "$MANIFEST_FILE" "$@"
+  run_strict_manager env create --file "$MANIFEST_FILE" "$@"
+}
+
+manager_env_update() {
+  local -a arguments=(
+    env update
+    --name "$ENV_NAME"
+    --file "$MANIFEST_FILE"
+    --prune
+  )
+  if [[ -n "$MAMBA_MANAGER" && "$MANAGER" == "$MAMBA_MANAGER" ]]; then
+    arguments+=(--yes)
+  fi
+  run_strict_manager "${arguments[@]}"
 }
 
 manager_env_remove() {
   "$MANAGER" env remove "$@"
+}
+
+clone_environment_with_fallback() {
+  local reason="$1" destination="$2" status
+  shift 2
+
+  if "$MANAGER" create --clone "$@" --yes; then
+    return 0
+  else
+    status=$?
+  fi
+  if switch_to_conda_after_failure "$reason"; then
+    rm -rf -- "$destination"
+    if "$MANAGER" create --clone "$@" --yes; then
+      return 0
+    else
+      status=$?
+    fi
+  fi
+  return "$status"
+}
+
+remove_candidate_prefix() {
+  local prefix status=0 remove_status
+  prefix="$CANDIDATE_PREFIX"
+  CANDIDATE_PREFIX=""
+  [[ -n "$prefix" ]] || return 0
+  [[ -e "$prefix" ]] || return 0
+
+  # Only ask the manager to remove a prefix that became an environment.
+  # Failed creates can leave either no path or an incomplete directory, both
+  # of which libmamba rejects with a noisy "No prefix found" backtrace.
+  if [[ -f "$prefix/conda-meta/history" ]]; then
+    if manager_env_remove --prefix "$prefix" --yes; then
+      :
+    else
+      status=$?
+    fi
+  fi
+  if [[ -e "$prefix" ]]; then
+    if rm -rf -- "$prefix"; then
+      :
+    else
+      remove_status=$?
+      [[ "$status" -ne 0 ]] || status="$remove_status"
+    fi
+  fi
+  return "$status"
 }
 
 # Invoked indirectly through run_stage/capture_evidence.
@@ -303,12 +395,15 @@ run_stage() {
   shift
   mkdir -p "$METADATA_ROOT"
   log_path="$METADATA_ROOT/${stage}_${RUN_STAMP}.log"
+  nrc_log INFO "stage_started" "stage=$stage" "artifact_path=$log_path" || true
   if "$@" >"$log_path" 2>&1; then
+    nrc_log INFO "stage_completed" "stage=$stage" "artifact_path=$log_path" || true
     printf 'Verification stage passed: %s (log: %s)\n' "$stage" "$log_path"
     return 0
   else
     status=$?
   fi
+  nrc_log ERROR "stage_failed" "stage=$stage" "artifact_path=$log_path" "status=$status" || true
   printf 'Verification stage failed: %s (inspect: %s)\n' "$stage" "$log_path" >&2
   sed -n '1,160p' "$log_path" >&2
   return "$status"
@@ -317,11 +412,14 @@ run_stage() {
 capture_evidence() {
   local destination="$1" status
   shift
+  nrc_log INFO "evidence_capture_started" "artifact_path=$destination" || true
   if "$@" >"$destination" 2>&1; then
+    nrc_log INFO "evidence_capture_completed" "artifact_path=$destination" || true
     return 0
   else
     status=$?
   fi
+  nrc_log ERROR "evidence_capture_failed" "artifact_path=$destination" "status=$status" || true
   printf 'Evidence capture failed (inspect: %s)\n' "$destination" >&2
   sed -n '1,160p' "$destination" >&2
   return "$status"
@@ -516,7 +614,8 @@ print("python-runtime-ok")
     status=$?
     return "$status"
   fi
-  if run_stage "${label}_r_version" run_in_env "$selector" "$target" Rscript --version; then
+  if run_stage "${label}_r_version" run_in_env "$selector" "$target" \
+    Rscript -e 'writeLines(R.version.string)'; then
     :
   else
     status=$?
@@ -558,7 +657,8 @@ capture_environment_evidence() {
   fi
 
   destination="$METADATA_ROOT/r_version.txt"
-  if capture_evidence "$destination" run_in_env --name "$ENV_NAME" Rscript --version; then
+  if capture_evidence "$destination" run_in_env --name "$ENV_NAME" \
+    Rscript -e 'writeLines(R.version.string)'; then
     :
   else
     status=$?
@@ -589,6 +689,7 @@ solver_and_candidate() {
   solver_log="$METADATA_ROOT/solver_${stamp}.log"
   candidate_prefix="$(mktemp -d "${TMPDIR:-/tmp}/n_response_candidate.XXXXXX")"
   rmdir "$candidate_prefix"
+  CANDIDATE_PREFIX="$candidate_prefix"
   printf 'Solving candidate environment from %s...\n' "$MANIFEST_FILE"
   if manager_env_create --dry-run --prefix "$candidate_prefix" --yes >"$solver_log" 2>&1; then
     :
@@ -596,6 +697,8 @@ solver_and_candidate() {
     status=$?
     if switch_to_conda_after_failure "solver dry-run"; then
       cat "$solver_log" >&2
+      remove_candidate_prefix || true
+      CANDIDATE_PREFIX="$candidate_prefix"
       solver_log="$METADATA_ROOT/solver_conda_fallback_${stamp}.log"
       if manager_env_create --dry-run --prefix "$candidate_prefix" --yes >"$solver_log" 2>&1; then
         :
@@ -611,8 +714,13 @@ solver_and_candidate() {
       return "$status"
     fi
   fi
+  if remove_candidate_prefix; then
+    :
+  else
+    status=$?
+    return "$status"
+  fi
   if [[ "$DRY_RUN_ONLY" -eq 1 ]]; then
-    CANDIDATE_PREFIX=""
     printf 'solver-dry-run-ok\n'
     return 0
   fi
@@ -623,8 +731,7 @@ solver_and_candidate() {
   else
     status=$?
     if switch_to_conda_after_failure "candidate creation"; then
-      "$MANAGER" env remove --prefix "$CANDIDATE_PREFIX" --yes >/dev/null 2>&1 || true
-      rm -rf -- "$CANDIDATE_PREFIX"
+      remove_candidate_prefix || true
       if candidate_prefix="$(mktemp -d "${TMPDIR:-/tmp}/n_response_candidate.XXXXXX")"; then
         rmdir "$candidate_prefix"
         CANDIDATE_PREFIX="$candidate_prefix"
@@ -637,13 +744,11 @@ solver_and_candidate() {
         :
       else
         status=$?
-        manager_env_remove --prefix "$CANDIDATE_PREFIX" --yes || true
-        CANDIDATE_PREFIX=""
+        remove_candidate_prefix || true
         return "$status"
       fi
     else
-      manager_env_remove --prefix "$CANDIDATE_PREFIX" --yes || true
-      CANDIDATE_PREFIX=""
+      remove_candidate_prefix || true
       return "$status"
     fi
   fi
@@ -651,16 +756,15 @@ solver_and_candidate() {
     :
   else
     status=$?
-    manager_env_remove --prefix "$CANDIDATE_PREFIX" --yes || true
+    remove_candidate_prefix || true
     return "$status"
   fi
-  if manager_env_remove --prefix "$CANDIDATE_PREFIX" --yes; then
+  if remove_candidate_prefix; then
     :
   else
     status=$?
     return "$status"
   fi
-  CANDIDATE_PREFIX=""
   return 0
 }
 
@@ -668,7 +772,9 @@ make_backup() {
   local status
   BACKUP_PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/n_response_backup.XXXXXX")"
   rmdir "$BACKUP_PREFIX"
-  if "$MANAGER" create --clone "$ENV_NAME" --prefix "$BACKUP_PREFIX" --yes; then
+  if clone_environment_with_fallback \
+    "backup clone" "$BACKUP_PREFIX" \
+    "$ENV_NAME" --prefix "$BACKUP_PREFIX"; then
     return 0
   else
     status=$?
@@ -678,10 +784,18 @@ make_backup() {
 }
 
 restore_backup() {
+  local status
   [[ -n "$BACKUP_PREFIX" ]] || return 0
   printf 'Restoring the previous verified environment...\n' >&2
   manager_env_remove --name "$ENV_NAME" --yes || true
-  "$MANAGER" create --clone "$BACKUP_PREFIX" --name "$ENV_NAME" --yes
+  if clone_environment_with_fallback \
+    "backup restore" "$ENV_PREFIX" \
+    "$BACKUP_PREFIX" --name "$ENV_NAME"; then
+    return 0
+  else
+    status=$?
+  fi
+  return "$status"
 }
 
 rollback() {
@@ -712,7 +826,7 @@ rollback() {
 apply_named_environment_state() {
   local state="$1"
   if [[ "$state" == "1" ]]; then
-    "$MANAGER" env update --strict-channel-priority --name "$ENV_NAME" --file "$MANIFEST_FILE" --prune --yes
+    manager_env_update
     return $?
   fi
   if [[ "$state" == "0" ]]; then
@@ -730,10 +844,7 @@ apply_named_environment_state() {
 }
 
 cleanup() {
-  if [[ -n "$CANDIDATE_PREFIX" ]]; then
-    manager_env_remove --prefix "$CANDIDATE_PREFIX" --yes || true
-    CANDIDATE_PREFIX=""
-  fi
+  remove_candidate_prefix || true
   if [[ -n "$BACKUP_PREFIX" && -d "$BACKUP_PREFIX" ]]; then
     if [[ "$ROLLBACK_FAILED" -eq 0 ]]; then
       rm -rf -- "$BACKUP_PREFIX"
@@ -749,7 +860,6 @@ main() {
   resolve_runner
   read_environment_name
   validate_manifest_shape
-  RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
   environment_exists || die "could not inspect Conda environments with valid JSON"
   state="$ENV_STATE"
   if [[ "$state" == "1" ]]; then
@@ -820,4 +930,13 @@ if [[ "$status" -ne 0 ]]; then
   rollback "$status" || status=$?
 fi
 cleanup
+if [[ "$status" -eq 0 ]]; then
+  nrc_log INFO "setup_completed" "mode=$SETUP_MODE" "environment=$ENV_NAME" || true
+  printf 'Setup full log: %s\n' "$NRC_FULL_LOG_FILE"
+  printf 'Setup event log: %s\n' "$SETUP_LOG_PATH"
+else
+  nrc_log ERROR "setup_failed" "mode=$SETUP_MODE" "environment=$ENV_NAME" "status=$status" || true
+fi
+nrc_teardown_logging
+trap - EXIT
 exit "$status"
