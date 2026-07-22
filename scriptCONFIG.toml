@@ -2,8 +2,16 @@
 # Toggle a list member by commenting/uncommenting its individual line. Keep
 # routine run, selection, and analysis controls above the reference registries.
 [run]
-mode = "validate"
-overwrite = false
+# Mode choices:
+#   "validate" checks configuration, sources, ingestion, canonicalization,
+#              response-series resolution, eligibility, and QC; it does not
+#              run modeling or write pipeline outputs.
+#   "test"     runs the complete pipeline on at most test_group_limit resolved
+#              series and writes under paths.test_output_root.
+#   "full"     runs all resolved series and writes under paths.reports_root;
+#              it requires explicit domain-prefixed decision approval IDs.
+mode = "test"
+overwrite = true
 random_seed = 20260720
 test_group_limit = 12
 fail_fast = true
@@ -12,7 +20,8 @@ max_parallel_r_jobs = 1
 r_stage_timeout_seconds = 1800
 r_termination_grace_seconds = 15
 cpu_detection = "affinity"
-# Full mode is blocked until Decisions 1–6 are explicitly recorded.
+# Full mode is blocked until the applicable domain-prefixed decision IDs are
+# explicitly listed here.
 decisions_approved = [
 ]
 
@@ -261,6 +270,9 @@ data_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Litera
 schema_map = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/Nutrient_Management_Literature_Data_Extraction_Template_Data_Dictionary.csv"
 provider = "provenance_preserving_intake_package"
 provenance_notes = "Exact source copy; 1490 nonblank data rows, 302 physical columns, duplicate and blank headers retained."
+availability = "available"
+confirmation_status = "verified"
+shape_adapter_version = "core-trial-csv-v1"
 
 [sources.ltcce]
 source_type = "ltcce"
@@ -268,6 +280,9 @@ data_path = "WF/01_Curated_Dataset/future_sources/ltcce.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/ltcce_schema.csv"
 provider = "pending_team_source"
 provenance_notes = "Inactive until the long-term experiment source and Decision 1 are confirmed."
+availability = "expected_unavailable"
+confirmation_status = "pending"
+shape_adapter_version = "unassigned"
 
 [sources.rcm_validation]
 source_type = "rcm_validation"
@@ -275,6 +290,9 @@ data_path = "WF/01_Curated_Dataset/future_sources/rcm_validation.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/rcm_validation_schema.csv"
 provider = "pending_team_source"
 provenance_notes = "Inactive until the RCM validation source is registered."
+availability = "expected_unavailable"
+confirmation_status = "pending"
+shape_adapter_version = "unassigned"
 
 [sources.nopt]
 source_type = "nopt"
@@ -282,6 +300,9 @@ data_path = "WF/01_Curated_Dataset/future_sources/nopt.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/nopt_schema.csv"
 provider = "pending_team_source"
 provenance_notes = "Inactive until the NOPT source is registered."
+availability = "expected_unavailable"
+confirmation_status = "pending"
+shape_adapter_version = "unassigned"
 
 [schema]
 expected_physical_columns = 302
