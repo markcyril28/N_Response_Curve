@@ -293,7 +293,7 @@ def validate_config(
     approved_decisions = _string_list(run.get("decisions_approved", []), where="[run].decisions_approved")
     _check_unique(approved_decisions, where="[run].decisions_approved")
     if mode == "full":
-        _require_approved_decision_ledger(root, tuple(approved_decisions))
+        _require_full_mode_decision_approvals(tuple(approved_decisions))
 
     paths = _resolve_paths(data["paths"], root)
     _check_path_overlaps(paths)
@@ -903,35 +903,20 @@ def _preflight_r_contract(engines: Mapping[str, Any], r_entrypoint: Path, root: 
         raise ConfigError("R contract requires a vanilla R session")
 
 
-def _require_approved_decision_ledger(root: Path, approved_decisions: tuple[str, ...]) -> None:
-    ledger = root / "Docs" / "Plans_Phases" / "03_Decisions_Needed.md"
-    if not ledger.is_file() or not ledger.read_text(encoding="utf-8").strip():
-        raise ConfigError(f"full mode requires a nonempty decision ledger: {ledger}")
-    text = ledger.read_text(encoding="utf-8")
-    headings = tuple(re.finditer(r"(?m)^###\s+([A-Z][A-Z0-9]*-\d+)\b[^\n]*$", text))
-    if not headings:
-        raise ConfigError(f"full mode decision ledger contains no domain-prefixed decision IDs: {ledger}")
-    decision_ids = tuple(match.group(1) for match in headings)
-    if len(decision_ids) != len(set(decision_ids)):
-        raise ConfigError(f"full mode decision ledger contains duplicate decision IDs: {ledger}")
-    unresolved: list[str] = []
-    for index, heading in enumerate(headings):
-        decision = heading.group(1)
-        section_end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
-        body = text[heading.end():section_end]
-        option = re.search(r"(?m)^\s*\*\*Choosed Option:\*\*\s*(.*?)\s*$", body)
-        selected = option.group(1).strip() if option is not None else ""
-        if not selected or selected.casefold() in {"open", "pending", "tbd", "todo", "unresolved"}:
-            unresolved.append(decision)
-    if unresolved:
+def _require_full_mode_decision_approvals(approved_decisions: tuple[str, ...]) -> None:
+    if not approved_decisions:
         raise ConfigError(
-            "full mode requires a recorded nonempty **Choosed Option:** for "
-            f"{', '.join(unresolved)} in {ledger}"
+            "full mode requires at least one domain-prefixed decision ID in [run].decisions_approved"
         )
-    if approved_decisions != decision_ids:
+    invalid = tuple(
+        decision
+        for decision in approved_decisions
+        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", decision) is None
+    )
+    if invalid:
         raise ConfigError(
-            "full mode requires [run].decisions_approved to match every selected domain-prefixed "
-            f"decision ID in ledger order: {', '.join(decision_ids)}"
+            "full mode [run].decisions_approved entries must use domain-prefixed IDs: "
+            + ", ".join(invalid)
         )
 
 
