@@ -490,7 +490,14 @@ def _terminal_status_stage_writer(
                     "reason_codes": reason_codes,
                 }
             )
-        compressed_pruned_count = sum(item.candidate_count for item in phase_four.registry.pruned_families)
+        compressed_pruned_count = next(
+            (
+                item.candidate_count
+                for item in phase_four.registry.pruned_families
+                if item.reason_code == "FACTOR_PROFILE_PRUNED_BEFORE_EXPANSION"
+            ),
+            0,
+        )
         status_counts["pruned"] = status_counts.get("pruned", 0) + compressed_pruned_count
         terminal_accounted = sum(status_counts.values())
         terminal_reconciles = (
