@@ -8,7 +8,7 @@ MANIFEST_FILE="${MANIFEST_FILE:-$PROJECT_ROOT/setup_conda_script.yml}"
 METADATA_ROOT="${METADATA_ROOT:-$PROJECT_ROOT/WF/99_Run_Metadata/environment}"
 MAMBA_BIN="${MAMBA_BIN:-}"
 CONDA_BIN="${CONDA_BIN:-}"
-LOG_HELPER="$PROJECT_ROOT/modules/run_logging.sh"
+LOG_HELPER="$PROJECT_ROOT/modules/n_response_curve/logging/run_logging.sh"
 LOG_ROOT="${N_RESPONSE_LOG_ROOT:-$PROJECT_ROOT/logs}"
 DRY_RUN_ONLY=0
 MANAGER=""
@@ -27,11 +27,22 @@ ROLLBACK_FAILED=0
 SETUP_MODE="apply"
 SETUP_LOG_PATH=""
 
+print_setup_log_paths() {
+  printf 'Setup full log: %s\n' "$NRC_FULL_LOG_FILE"
+  printf 'Setup event log: %s\n' "$SETUP_LOG_PATH"
+  printf 'Setup error/warning log: %s\n' "$NRC_ERROR_WARN_FILE"
+}
+
 die() {
   if declare -F nrc_log >/dev/null 2>&1 && [[ "${NRC_LOG_INITIALIZED:-0}" -eq 1 ]]; then
     nrc_log ERROR "setup_failed" "mode=$SETUP_MODE" "error=$*" || true
+    printf 'setup_conda_script.sh: %s\n' "$*" >&2
+    print_setup_log_paths || true
+    nrc_teardown_logging || true
+    trap - EXIT
+  else
+    printf 'setup_conda_script.sh: %s\n' "$*" >&2
   fi
-  printf 'setup_conda_script.sh: %s\n' "$*" >&2
   exit 2
 }
 
@@ -56,7 +67,7 @@ done
 
 [[ -f "$MANIFEST_FILE" ]] || die "missing Conda manifest: $MANIFEST_FILE"
 [[ -f "$LOG_HELPER" ]] || die "missing logging helper: $LOG_HELPER"
-# shellcheck source=modules/run_logging.sh
+# shellcheck source=modules/n_response_curve/logging/run_logging.sh
 . "$LOG_HELPER"
 RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 if [[ "$DRY_RUN_ONLY" -eq 1 ]]; then
@@ -64,7 +75,10 @@ if [[ "$DRY_RUN_ONLY" -eq 1 ]]; then
 else
   SETUP_MODE="apply"
 fi
-nrc_setup_logging "$PROJECT_ROOT" "setup_conda" "setup_${RUN_STAMP}_$$" "INFO" "$LOG_ROOT"
+if ! nrc_setup_logging "$PROJECT_ROOT" "setup_conda" "setup_${RUN_STAMP}_$$" "INFO" "$LOG_ROOT"; then
+  printf 'setup_conda_script.sh: failed to initialize logging under: %s\n' "$LOG_ROOT" >&2
+  exit 2
+fi
 SETUP_LOG_PATH="$NRC_LOG_FILE"
 trap 'nrc_teardown_logging' EXIT
 nrc_log INFO "setup_started" \
@@ -932,11 +946,10 @@ fi
 cleanup
 if [[ "$status" -eq 0 ]]; then
   nrc_log INFO "setup_completed" "mode=$SETUP_MODE" "environment=$ENV_NAME" || true
-  printf 'Setup full log: %s\n' "$NRC_FULL_LOG_FILE"
-  printf 'Setup event log: %s\n' "$SETUP_LOG_PATH"
 else
   nrc_log ERROR "setup_failed" "mode=$SETUP_MODE" "environment=$ENV_NAME" "status=$status" || true
 fi
+print_setup_log_paths
 nrc_teardown_logging
 trap - EXIT
 exit "$status"
