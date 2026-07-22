@@ -53,6 +53,8 @@ class ModelAttempt:
     residual_df: int | None
     rss: float | None
     aicc: float | None
+    grouped_prediction_rmse: float | None
+    grouped_prediction_fold_count: int
     parameters: Mapping[str, float]
     curve_shape_class: str | None
     optimum_status: str
@@ -80,6 +82,8 @@ def _attempt(
     residual_df: int | None = None,
     rss: float | None = None,
     aicc: float | None = None,
+    grouped_prediction_rmse: float | None = None,
+    grouped_prediction_fold_count: int = 0,
     parameters: Mapping[str, float] | None = None,
     curve_shape_class: str | None = None,
     optimum_status: str = "NOT_FITTED",
@@ -113,6 +117,8 @@ def _attempt(
         residual_df=residual_df,
         rss=rss,
         aicc=aicc,
+        grouped_prediction_rmse=grouped_prediction_rmse,
+        grouped_prediction_fold_count=grouped_prediction_fold_count,
         parameters=_frozen_mapping(parameters),
         curve_shape_class=curve_shape_class,
         optimum_status=optimum_status,
@@ -309,6 +315,55 @@ def _parameter_mapping(model_name: str, values: np.ndarray) -> dict[str, float]:
         "mitscherlich": ("asymptote", "amplitude", "rate"),
     }[model_name]
     return {name: float(value) for name, value in zip(names, values, strict=True)}
+
+
+def _grouped_prediction_summary(
+    model_name: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    minimum_yield: float,
+    maximum_yield: float,
+    minimum_residual_df: int,
+    tolerance: float,
+) -> tuple[float | None, int]:
+    """Evaluate a fitted model by leaving out every distinct N-rate level once."""
+
+    squared_errors: list[float] = []
+    held_out_levels = sorted(set(float(value) for value in x))
+    parameter_count = _MODEL_PARAMETER_COUNTS[model_name]
+    for held_out_level in held_out_levels:
+        test_mask = np.isclose(x, held_out_level, rtol=0.0, atol=tolerance)
+        train_mask = ~test_mask
+        training_x = x[train_mask]
+        training_y = y[train_mask]
+        if (
+            len(set(float(value) for value in training_x)) < _minimum_distinct_levels(model_name)
+            or len(training_x) - parameter_count < minimum_residual_df
+        ):
+            return None, 0
+        parameters, _ = _fit_parameters(
+            model_name,
+            training_x,
+            training_y,
+            minimum_yield=minimum_yield,
+            maximum_yield=maximum_yield,
+            tolerance=tolerance,
+        )
+        if parameters is None:
+            return None, 0
+        parameter_map = _parameter_mapping(model_name, parameters)
+        predicted = evaluate_model(model_name, x[test_mask].tolist(), parameter_map)
+        if (
+            not np.isfinite(predicted).all()
+            or np.min(predicted) < minimum_yield - tolerance
+            or np.max(predicted) > maximum_yield + tolerance
+        ):
+            return None, 0
+        squared_errors.extend(float(value) for value in (predicted - y[test_mask]) ** 2)
+    if not squared_errors:
+        return None, 0
+    return float(math.sqrt(float(np.mean(squared_errors)))), len(held_out_levels)
 
 
 def _aicc(rss: float, n_observations: int, parameter_count: int) -> float | None:
@@ -574,6 +629,17 @@ def fit_candidate_model(
     aicc = _aicc(rss, n_observations, parameter_count)
     if aicc is None:
         reasons.append("AICC_UNAVAILABLE")
+    grouped_prediction_rmse, grouped_prediction_fold_count = _grouped_prediction_summary(
+        model_name,
+        x,
+        y,
+        minimum_yield=minimum_yield,
+        maximum_yield=maximum_yield,
+        minimum_residual_df=minimum_residual_df,
+        tolerance=tolerance,
+    )
+    if grouped_prediction_rmse is None:
+        reasons.append("GROUPED_PREDICTION_UNAVAILABLE")
     if policy.get("allow_uncertainty") is not True:
         reasons.append("UNCERTAINTY_DISABLED_BY_CONFIG")
     return _attempt(
@@ -589,6 +655,8 @@ def fit_candidate_model(
         residual_df=residual_df,
         rss=rss,
         aicc=aicc,
+        grouped_prediction_rmse=grouped_prediction_rmse,
+        grouped_prediction_fold_count=grouped_prediction_fold_count,
         parameters=parameter_map,
         curve_shape_class=curve_shape,
         optimum_status=optimum_status,
@@ -647,6 +715,7 @@ def select_reportable_model(attempts: Iterable[ModelAttempt]) -> ModelAttempt | 
         fitted,
         key=lambda attempt: (
             math.inf if attempt.aicc is None else attempt.aicc,
+            math.inf if attempt.grouped_prediction_rmse is None else attempt.grouped_prediction_rmse,
             _MODEL_COMPLEXITY[attempt.model_name],
             MODEL_ORDER.index(attempt.model_name),
             attempt.model_attempt_uid,
@@ -672,6 +741,8 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "residual_df": attempt.residual_df,
         "rss": attempt.rss,
         "aicc": attempt.aicc,
+        "grouped_prediction_rmse": attempt.grouped_prediction_rmse,
+        "grouped_prediction_fold_count": attempt.grouped_prediction_fold_count,
         "parameters": dict(attempt.parameters),
         "curve_shape_class": attempt.curve_shape_class,
         "optimum_status": attempt.optimum_status,
