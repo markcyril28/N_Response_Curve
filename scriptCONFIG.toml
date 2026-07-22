@@ -127,7 +127,7 @@ write_logs_in_validate = false
 [engines]
 python_command = "python"
 rscript_command = "Rscript"
-r_entrypoint = "modules/n_response_curve_r/run_explanatory.R"
+r_entrypoint = "modules/n_response_curve/pipeline/run_explanatory.R"
 require_conda_environment = true
 require_linux_rscript = true
 allow_runtime_r_package_install = false
