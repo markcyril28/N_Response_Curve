@@ -713,18 +713,124 @@ def _table_artifacts(phase_two: Any, phase_three: PhaseThreeResult, phase_four: 
     }
 
 
-def _report_sections(phase_three: PhaseThreeResult, phase_four: PhaseFourResult) -> dict[str, list[str]]:
+def _source_registry(
+    config: ValidatedConfig,
+    source_artifact_sha256: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    source_root = config.paths["source_manifest"].parent.resolve()
+    registry: dict[str, dict[str, Any]] = {}
+    for source_name, source in sorted(config.sources.items()):
+        source_path = (config.project_root / str(source["data_path"])).resolve()
+        try:
+            manifest_artifact_path = source_path.relative_to(source_root).as_posix()
+        except ValueError:
+            manifest_artifact_path = None
+        digest = (
+            source_artifact_sha256.get(manifest_artifact_path)
+            if manifest_artifact_path is not None
+            else None
+        )
+        registry[source_name] = {
+            "source_type": source["source_type"],
+            "data_path": source["data_path"],
+            "schema_map": source["schema_map"],
+            "provider": source["provider"],
+            "availability": source["availability"],
+            "confirmation_status": source["confirmation_status"],
+            "shape_adapter_version": source["shape_adapter_version"],
+            "enabled": source_name in config.enabled_sources,
+            "manifest_artifact_path": manifest_artifact_path,
+            "sha256": digest,
+            "checksum_status": (
+                "verified"
+                if source_name in config.enabled_sources and digest is not None
+                else "registered_not_enabled"
+                if digest is not None
+                else "not_registered"
+            ),
+        }
+    return registry
+
+
+def _contextual_coverage_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    rows = tuple(records)
+
+    def finite_present(value: object) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and value == value
+        )
+
+    replication_fields = tuple(
+        sorted(
+            {
+                key
+                for row in rows
+                for key in ("replication_count", "replicate_count", "replications")
+                if key in row
+            }
+        )
+    )
+    standard_error_fields = tuple(
+        sorted(
+            {
+                key
+                for row in rows
+                for key in ("standard_error", "yield_standard_error", "yield_se")
+                if key in row
+            }
+        )
+    )
+    return {
+        "inventory_rows": len(rows),
+        "treatment_classified_rows": sum(
+            str(row.get("treatment_text_class") or "").strip().casefold()
+            not in {"", "unresolved"}
+            for row in rows
+        ),
+        "zero_n_rows": sum(bool(row.get("is_zero_n")) for row in rows),
+        "absolute_control_rows": sum(bool(row.get("is_absolute_control")) for row in rows),
+        "high_n_rows": sum(bool(row.get("is_high_n")) for row in rows),
+        "organic_fertilizer_rows": sum(bool(row.get("organic_fertilizer_present")) for row in rows),
+        "biofertilizer_rows": sum(bool(row.get("biofertilizer_present")) for row in rows),
+        "p_rate_observed_rows": sum(finite_present(row.get("p_rate_kg_p2o5_ha")) for row in rows),
+        "k_rate_observed_rows": sum(finite_present(row.get("k_rate_kg_k2o_ha")) for row in rows),
+        "replication_evidence": {
+            "registered_fields": list(replication_fields),
+            "rows": sum(any(row.get(field) not in {None, ""} for field in replication_fields) for row in rows),
+        },
+        "standard_error_evidence": {
+            "registered_fields": list(standard_error_fields),
+            "rows": sum(any(row.get(field) not in {None, ""} for field in standard_error_fields) for row in rows),
+        },
+    }
+
+
+def _report_sections(
+    config: ValidatedConfig,
+    phase_two: Any,
+    phase_three: PhaseThreeResult,
+    phase_four: PhaseFourResult,
+) -> dict[str, list[str]]:
     completed_python = sum(result.status == "completed" for result in phase_four.python_results)
     r_owned = sum(result.engine == "r" for result in phase_four.python_results)
     pruned = sum(candidate.status == "pruned" for candidate in phase_four.registry.candidates)
     unsupported_models = sum(attempt.status != "fitted" for attempt in phase_three.evidence.model_attempts)
+    contextual_coverage = _contextual_coverage_summary(phase_two.curation.records)
+    unavailable_sources = sum(
+        source["availability"] == "expected_unavailable"
+        for source in config.sources.values()
+    )
     return {
         "primary": [
+            f"{contextual_coverage['inventory_rows']} canonical source rows were retained; treatment/control, high-N, P/K, organic/biofertilizer, replication, and standard-error coverage is recorded in the run manifest.",
             f"{len(phase_three.evidence.curve_rows)} supported curve-level outcome rows were generated from selected reportable curve models.",
             f"{len(phase_three.evidence.selected_attempts)} response-series model selections were retained with all candidate attempts.",
         ],
         "sensitivity": [
             f"{len(phase_four.dataset_versions)} immutable dataset versions were registered; unavailable contextual versions remain explicit in the ledger.",
+            f"{unavailable_sources} registered source families are explicitly marked expected-unavailable and were not silently omitted.",
         ],
         "exploratory": [f"{completed_python} Python-owned descriptive/coverage candidates completed without inferential claims."],
         "predictive": ["Predictive modeling remains non-reportable unless an approved predictive candidate passes its support and validation gates."],
@@ -797,6 +903,8 @@ def release_phases_three_to_five(
         "source_artifact_sha256": dict(integrity.artifact_sha256),
     }
     run_identity_sha256 = stable_json_sha256(identity_payload)
+    source_registry = _source_registry(config, integrity.artifact_sha256)
+    contextual_coverage = _contextual_coverage_summary(phase_two.curation.records)
     r_stage_statuses: list[dict[str, Any]] = []
     r_preparation_status_counts: dict[str, int] = {}
     for _, preparation in phase_four.r_preparations:
@@ -817,6 +925,8 @@ def release_phases_three_to_five(
             "checked_files": integrity.checked_files,
             "artifact_sha256": dict(integrity.artifact_sha256),
         },
+        "source_registry": source_registry,
+        "contextual_coverage": contextual_coverage,
         "canonical_rows": len(phase_two.curation.records),
         "eligibility_rows": len(phase_two.eligibility.ledger),
         "tier_counts": dict(phase_two.qc.tier_counts),
@@ -846,7 +956,7 @@ def release_phases_three_to_five(
         if existing_manifest.get("run_identity_sha256") == run_identity_sha256:
             run_log.info("controlled_release_reused", release_target=target)
             return PhaseFiveResult(package=existing, reused_existing_package=True)
-    report_sections = _report_sections(phase_three, phase_four)
+    report_sections = _report_sections(config, phase_two, phase_three, phase_four)
 
     def write_run_log(stage_root: Path) -> tuple[Path, ...]:
         run_log.info("release_package_ready", release_target=target)
