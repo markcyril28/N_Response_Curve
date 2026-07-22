@@ -130,9 +130,42 @@ def _add_duplicate_relationship(record: dict[str, Any], relationship: str) -> No
     )
 
 
+def _add_duplicate_group(
+    record: dict[str, Any],
+    *,
+    duplicate_group_uid: str,
+    relationship: str,
+    confidence: str,
+    evidence_codes: tuple[str, ...],
+    review_status: str,
+    canonical_record_uid: str | None,
+) -> None:
+    groups = [dict(group) for group in record.get("duplicate_groups", ())]
+    groups.append(
+        {
+            "duplicate_group_uid": duplicate_group_uid,
+            "relationship": relationship,
+            "confidence": confidence,
+            "evidence_codes": tuple(evidence_codes),
+            "review_status": review_status,
+            "canonical_record_uid": canonical_record_uid,
+        }
+    )
+    record["duplicate_groups"] = tuple(
+        sorted(
+            groups,
+            key=lambda group: (
+                str(group["duplicate_group_uid"]),
+                str(group["relationship"]),
+            ),
+        )
+    )
+
+
 def _initialize_duplicate_statuses(records: list[dict[str, Any]]) -> None:
     for record in records:
         record["duplicate_relationships"] = ()
+        record["duplicate_groups"] = ()
         record["duplicate_status"] = "unique"
         record["duplicate_of_record_uid"] = None
 
@@ -146,10 +179,33 @@ def _initialize_duplicate_statuses(records: list[dict[str, Any]]) -> None:
         if len(ordered) == 1:
             continue
         canonical = ordered[0]
+        signature = (
+            str(canonical.get("source_uid", "")),
+            tuple(str(value) for value in canonical.get("raw_cells", ())),
+        )
+        group_uid = _stable_identifier("duplicate", ("exact_source_raw_cells", *signature))
         _add_duplicate_relationship(canonical, "exact_duplicate_canonical")
+        _add_duplicate_group(
+            canonical,
+            duplicate_group_uid=group_uid,
+            relationship="exact_duplicate_canonical",
+            confidence="exact",
+            evidence_codes=("SAME_SOURCE_UID", "IDENTICAL_RAW_CELLS"),
+            review_status="auto_classified",
+            canonical_record_uid=str(canonical["record_uid"]),
+        )
         for duplicate in ordered[1:]:
             _add_duplicate_relationship(duplicate, "exact_duplicate_noncanonical")
             duplicate["duplicate_of_record_uid"] = canonical["record_uid"]
+            _add_duplicate_group(
+                duplicate,
+                duplicate_group_uid=group_uid,
+                relationship="exact_duplicate_noncanonical",
+                confidence="exact",
+                evidence_codes=("SAME_SOURCE_UID", "IDENTICAL_RAW_CELLS"),
+                review_status="auto_classified",
+                canonical_record_uid=str(canonical["record_uid"]),
+            )
 
     by_probable_signature: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     for record in records:
@@ -160,8 +216,24 @@ def _initialize_duplicate_statuses(records: list[dict[str, Any]]) -> None:
         source_uids = {str(record.get("source_uid", "")) for record in candidates}
         if len(source_uids) < 2:
             continue
+        signature = _probable_cross_source_signature(candidates[0])
+        if signature is None:
+            continue
+        group_uid = _stable_identifier("duplicate", ("probable_cross_source", *signature))
         for record in candidates:
             _add_duplicate_relationship(record, "probable_cross_source_duplicate")
+            _add_duplicate_group(
+                record,
+                duplicate_group_uid=group_uid,
+                relationship="probable_cross_source_duplicate",
+                confidence="probable",
+                evidence_codes=(
+                    "CROSS_SOURCE_MATCH",
+                    "MATCHING_STUDY_TRIAL_N_TREATMENT_SIGNATURE",
+                ),
+                review_status="review_required",
+                canonical_record_uid=None,
+            )
 
 
 def resolve_response_series(
