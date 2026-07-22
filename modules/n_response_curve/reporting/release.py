@@ -93,6 +93,7 @@ def _write_table(stage_root: Path, name: str, artifact: TableArtifact, formats: 
     normalized_rows = [{str(key): _flat_value(value) for key, value in row.items()} for row in rows]
     frame = pd.DataFrame(normalized_rows)
     artifacts: dict[str, str] = {}
+    readback_row_counts: dict[str, int] = {}
     for output_format in formats:
         destination = tables_root / f"{name}.{output_format}"
         if output_format == "csv":
@@ -103,11 +104,37 @@ def _write_table(stage_root: Path, name: str, artifact: TableArtifact, formats: 
             frame.to_excel(destination, index=False)
         else:
             raise ReportingError(f"Unsupported output format: {output_format}")
+        try:
+            if output_format == "csv":
+                if frame.empty and not len(frame.columns):
+                    readback = pd.DataFrame()
+                else:
+                    readback = pd.read_csv(destination)
+            elif output_format == "parquet":
+                readback = pd.read_parquet(destination)
+            else:
+                readback = pd.read_excel(destination)
+        except (ImportError, OSError, TypeError, ValueError, pd.errors.ParserError) as exc:
+            raise ReportingError(f"Table {name!r} {output_format} artifact failed read-back validation") from exc
+        if len(readback) != len(frame):
+            raise ReportingError(
+                f"Table {name!r} {output_format} read-back row count {len(readback)} does not match {len(frame)}"
+            )
+        if set(map(str, readback.columns)) != set(map(str, frame.columns)):
+            raise ReportingError(f"Table {name!r} {output_format} read-back columns do not match")
+        if artifact.stable_key is not None and artifact.stable_key in readback:
+            stable_values = readback[artifact.stable_key]
+            if bool(stable_values.isna().any()) or bool(stable_values.astype(str).duplicated().any()):
+                raise ReportingError(
+                    f"Table {name!r} {output_format} read-back stable key is missing or duplicated"
+                )
+        readback_row_counts[output_format] = len(readback)
         artifacts[destination.relative_to(stage_root).as_posix()] = sha256_file(destination)
     metadata = {
         "row_count": len(rows),
         "stable_key": artifact.stable_key,
         "artifact_paths": sorted(artifacts),
+        "readback_row_counts": dict(sorted(readback_row_counts.items())),
     }
     return metadata, artifacts
 
@@ -157,11 +184,22 @@ def _promote_stage(stage: Path, target: Path, *, overwrite: bool) -> None:
             backup = target.with_name(f".{target.name}.backup-{uuid4().hex}")
             os.replace(target, backup)
         os.replace(stage, target)
-    except OSError as exc:
-        if backup is not None and backup.exists() and not target.exists():
-            os.replace(backup, target)
-        raise ReportingError(f"Unable to atomically promote release package: {exc}") from exc
-    finally:
+    except BaseException as exc:
+        try:
+            if backup is not None and backup.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+                os.replace(backup, target)
+        except OSError as restore_error:
+            raise ReportingError(
+                f"Unable to restore the previous release package after promotion failure: {restore_error}"
+            ) from exc
+        if isinstance(exc, OSError):
+            raise ReportingError(f"Unable to atomically promote release package: {exc}") from exc
+        raise
+    else:
         if backup is not None and backup.exists():
             shutil.rmtree(backup)
 
@@ -264,6 +302,16 @@ def write_release_package(
                 if relative_path in artifact_sha256:
                     raise ReportingError(f"Stage writer artifact collides with an existing package artifact: {relative_path}")
                 artifact_sha256[relative_path] = sha256_file(artifact_path)
+        staged_paths = {
+            path.relative_to(stage).as_posix()
+            for path in stage.rglob("*")
+            if path.is_file()
+        }
+        if staged_paths != set(artifact_sha256):
+            raise ReportingError("Stage artifact inventory does not account for every staged file")
+        for relative_path, digest in artifact_sha256.items():
+            if sha256_file(stage / relative_path) != digest:
+                raise ReportingError(f"Stage artifact changed after registration: {relative_path}")
         report_path = stage / "report.md"
         report_path.write_text(_render_report(report_sections), encoding="utf-8")
         artifact_sha256[report_path.relative_to(stage).as_posix()] = sha256_file(report_path)
@@ -278,15 +326,10 @@ def write_release_package(
             "".join(f"{digest}  {relative}\n" for relative, digest in sorted(artifact_sha256.items())),
             encoding="utf-8",
         )
+        verify_release_package(stage)
         _promote_stage(stage, target, overwrite=overwrite)
-        return ReleasePackage(
-            target_path=target,
-            manifest_path=target / "run_manifest.json",
-            report_path=target / "report.md",
-            checksums_path=target / "CHECKSUMS.sha256",
-            artifact_sha256=dict(sorted(artifact_sha256.items())),
-        )
-    except Exception:
+        return verify_release_package(target)
+    except BaseException:
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
         raise
