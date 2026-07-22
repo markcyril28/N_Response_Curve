@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -13,6 +14,7 @@ from n_response_curve.eligibility import EligibilityResult, assign_eligibility
 from n_response_curve.ingest import IngestionResult, ingest_configured_sources
 from n_response_curve.provenance import SourceIntegrityReport, verify_source_integrity  # noqa: F401  (Phase 1 compatibility re-export)
 from n_response_curve.qc import QcReport, build_qc_report
+from n_response_curve.run_logging import RunLogger
 from n_response_curve.workflow import release_phases_three_to_five, run_phase_four, run_phase_three
 
 
@@ -96,7 +98,25 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
 
 def run(config_path: str | Path, *, project_root: str | Path) -> int:
     config = load_config(config_path, project_root=project_root, check_files=True, preflight_engines=True)
-    phase_two = run_phase_two(config)
+    run_id = f"n_response_{config.run_mode}_{config.raw['run']['random_seed']}"
+    run_log = RunLogger(level=str(config.raw["logging"]["level"]), run_id=run_id)
+    run_context = {
+        "mode": config.run_mode,
+        "writes_outputs": config.writes_outputs,
+        "config_path": config.config_path,
+    }
+    launcher_run_id = os.environ.get("N_RESPONSE_LAUNCHER_RUN_ID")
+    if launcher_run_id:
+        run_context["launcher_run_id"] = launcher_run_id
+    run_log.info("run_started", **run_context)
+    with run_log.stage("phase_2"):
+        phase_two = run_phase_two(config)
+    run_log.debug(
+        "phase_2_summary",
+        canonical_rows=len(phase_two.curation.records),
+        eligibility_rows=len(phase_two.eligibility.ledger),
+        critical_records=len(phase_two.qc.critical_record_uids),
+    )
     if config.run_mode == "full" and phase_two.qc.critical_record_uids:
         raise ConfigError(
             "Phase 2 full-mode source gate failed for configured critical records: "
@@ -104,10 +124,35 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         )
     if config.run_mode == "validate":
         _print_validation_plan(config, phase_two)
+        run_log.info("validation_completed", writes_outputs=False)
         return 0
-    phase_three = run_phase_three(config, phase_two)
-    phase_four = run_phase_four(config, phase_two, phase_three)
-    phase_five = release_phases_three_to_five(config, phase_two, phase_three, phase_four)
+    with run_log.stage("phase_3"):
+        phase_three = run_phase_three(config, phase_two)
+    run_log.debug(
+        "phase_3_summary",
+        model_attempts=len(phase_three.evidence.model_attempts),
+        selected_models=len(phase_three.evidence.selected_attempts),
+        curve_rows=len(phase_three.evidence.curve_rows),
+    )
+    with run_log.stage("phase_4"):
+        phase_four = run_phase_four(config, phase_two, phase_three)
+    run_log.debug(
+        "phase_4_summary",
+        concrete_candidates=len(phase_four.registry.candidates),
+        theoretical_candidates=phase_four.registry.theoretical_candidate_count,
+    )
+    phase_five = release_phases_three_to_five(
+        config,
+        phase_two,
+        phase_three,
+        phase_four,
+        run_log=run_log,
+    )
+    run_log.info(
+        "run_completed",
+        release_package=phase_five.package.target_path,
+        release_reused=phase_five.reused_existing_package,
+    )
     print(f"mode={config.run_mode}")
     print("writes_outputs=true")
     print(f"status=phase_5_{config.run_mode}_release_complete")
