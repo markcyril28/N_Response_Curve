@@ -1,0 +1,75 @@
+source(testthat::test_path("..", "..", "analysis", "stages", "contracts.R"))
+source(testthat::test_path("..", "..", "analysis", "stages", "diagnostics.R"))
+source(testthat::test_path("..", "..", "analysis", "stages", "mixed_models.R"))
+
+test_that("supported continuous R formulas produce tidy model output", {
+  stage <- list(
+    contract = list(
+      specification = list(
+        analysis_family = "one_factor_inferential",
+        engine = "r",
+        support_gates_passed = TRUE,
+        model_kind = "lm",
+        outcome_kind = "continuous",
+        model_formula = "outcome ~ water_regime",
+        multiplicity = list(method = "BH", family_id = "primary-yield-one-factor")
+      )
+    ),
+    data = data.frame(
+      outcome = c(5, 6, 7, 8),
+      water_regime = c("rainfed", "rainfed", "irrigated", "irrigated")
+    )
+  )
+  result <- nrc_run_mixed_models(stage)
+
+  expect_identical(result$status, "completed")
+  expect_true(length(result$results) >= 2L)
+  expect_identical(result$metadata$engine, "r")
+  expect_true(all(c(
+    "converged", "singular", "boundary_fit", "dropped_row_count",
+    "residual_summary", "influence", "contrast_coding"
+  ) %in% names(result$metadata$diagnostics)))
+  expect_identical(result$metadata$diagnostics$dropped_row_count, 0L)
+  p_rows <- Filter(function(row) !is.null(row$p.value), result$results)
+  expect_true(all(vapply(p_rows, function(row) !is.null(row$p.value_adjusted), logical(1))))
+  expect_true(all(vapply(
+    p_rows,
+    function(row) identical(row$multiplicity_family_id, "primary-yield-one-factor"),
+    logical(1)
+  )))
+})
+
+test_that("supported multiclass outcomes use an explicit multinomial model", {
+  stage <- list(
+    contract = list(
+      specification = list(
+        analysis_family = "one_factor_inferential",
+        engine = "r",
+        support_gates_passed = TRUE,
+        model_kind = "multinom",
+        outcome_kind = "categorical",
+        model_formula = "outcome ~ water_regime"
+      )
+    ),
+    data = data.frame(
+      outcome = rep(c("linear", "quadratic", "plateau"), each = 4L),
+      water_regime = rep(c("rainfed", "irrigated"), 6L)
+    )
+  )
+  result <- nrc_run_mixed_models(stage)
+
+  expect_identical(result$status, "completed")
+  expect_true(length(result$results) >= 2L)
+  expect_identical(result$metadata$model_kind, "multinom")
+})
+
+test_that("missing formulas remain explicit skips", {
+  stage <- list(
+    contract = list(specification = list(engine = "r")),
+    data = data.frame(outcome = c(5, 6))
+  )
+  result <- nrc_run_mixed_models(stage)
+
+  expect_identical(result$status, "skipped")
+  expect_identical(result$results[[1L]]$reason_codes[[1L]], "MODEL_SPECIFICATION_REQUIRED")
+})
