@@ -134,7 +134,7 @@ nrc_write_stage_result <- function(stage, result) {
     metadata = result$metadata
   )
   jsonlite::write_json(payload, temporary_path, auto_unbox = TRUE, null = "null", pretty = FALSE)
-  if (file.exists(output_path) && !unlink(output_path)) {
+  if (file.exists(output_path) && !file.remove(output_path)) {
     nrc_abort("Unable to replace an existing R stage result")
   }
   if (!file.rename(temporary_path, output_path)) {
