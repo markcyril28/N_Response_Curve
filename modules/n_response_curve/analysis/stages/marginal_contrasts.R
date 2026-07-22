@@ -23,31 +23,15 @@ nrc_run_marginal_contrasts <- function(stage) {
 
   model_kind <- specification$model_kind
   outcome_kind <- specification$outcome_kind
-  warning_messages <- character()
-  fitted <- tryCatch(
-    withCallingHandlers(
-      {
-        if (identical(outcome_kind, "continuous") && identical(model_kind, "lm")) {
-          stats::lm(model_formula, data = stage$data)
-        } else if (identical(outcome_kind, "continuous") && identical(model_kind, "lmer")) {
-          lme4::lmer(model_formula, data = stage$data, REML = FALSE)
-        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glm")) {
-          stats::glm(model_formula, data = stage$data, family = stats::binomial())
-        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "multinom")) {
-          nnet::multinom(model_formula, data = stage$data, trace = FALSE, Hess = TRUE, model = TRUE)
-        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glmmTMB")) {
-          glmmTMB::glmmTMB(model_formula, data = stage$data, family = stats::binomial())
-        } else {
-          nrc_abort("Unsupported R model kind for marginal contrasts")
-        }
-      },
-      warning = function(warning) {
-        warning_messages <<- c(warning_messages, conditionMessage(warning))
-        invokeRestart("muffleWarning")
-      }
-    ),
-    error = function(error) error
+  fit <- nrc_fit_model(
+    model_formula,
+    stage$data,
+    outcome_kind,
+    model_kind,
+    "Unsupported R model kind for marginal contrasts"
   )
+  fitted <- fit$model
+  warning_messages <- fit$warnings
   if (inherits(fitted, "error")) {
     return(nrc_failed_result(
       "R_CONTRAST_MODEL_FAILED",

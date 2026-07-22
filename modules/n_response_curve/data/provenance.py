@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import csv
 import hashlib
+import json
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -31,6 +32,25 @@ def sha256_file(path: str | Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def stable_json_sha256(payload: object) -> str:
+    """Return the SHA-256 digest of the repository's canonical JSON encoding."""
+
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def stable_identifier(prefix: str, payload: object) -> str:
+    """Return a prefixed identifier using the canonical 24-character digest."""
+
+    return f"{prefix}_{stable_json_sha256(payload)[:24]}"
 
 
 def _resolve_artifact_path(source_root: Path, relative: str, *, where: str) -> Path:
@@ -122,4 +142,10 @@ def verify_source_integrity(manifest_path: str | Path, checksums_path: str | Pat
     )
 
 
-__all__ = ["SourceIntegrityReport", "sha256_file", "verify_source_integrity"]
+__all__ = [
+    "SourceIntegrityReport",
+    "sha256_file",
+    "stable_identifier",
+    "stable_json_sha256",
+    "verify_source_integrity",
+]

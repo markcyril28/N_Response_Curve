@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Any, Iterable, Mapping, Sequence
+
+from .values import finite_number, is_missing_text
 
 
 @dataclass(frozen=True)
@@ -57,29 +58,19 @@ _FACTOR_METADATA: Mapping[str, Mapping[str, Any]] = {
 KNOWN_FACTORS = frozenset(_FACTOR_METADATA)
 
 
-def _number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
-
-
 def _missing(value: object, data_type: str) -> bool:
     if value is None:
         return True
     if data_type == "numeric":
-        return _number(value) is None
+        return finite_number(value) is None
     if isinstance(value, str):
-        return not value.strip() or value.strip().casefold() in {"na", "n/a", "not stated", "unresolved"}
+        return is_missing_text(value)
     return False
 
 
 def _canonical_value(value: object, data_type: str) -> object:
     if data_type == "numeric":
-        parsed = _number(value)
+        parsed = finite_number(value)
         if parsed is None:
             return None
         return parsed
@@ -97,8 +88,8 @@ def factor_value(record: Mapping[str, Any], factor_name: str) -> object:
     if metadata is None:
         raise ValueError(f"Unknown explanatory factor: {factor_name}")
     if factor_name == "observed_n_range":
-        minimum = _number(record.get("series_observed_n_min_kg_ha"))
-        maximum = _number(record.get("series_observed_n_max_kg_ha"))
+        minimum = finite_number(record.get("series_observed_n_min_kg_ha"))
+        maximum = finite_number(record.get("series_observed_n_max_kg_ha"))
         return None if minimum is None or maximum is None else maximum - minimum
     if factor_name == "p_varies_with_n":
         constant = record.get("series_p_constant")

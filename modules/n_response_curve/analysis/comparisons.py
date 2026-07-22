@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
 from .factor_catalog import FactorCatalogEntry, factor_value
+from .values import finite_number
 
 
 @dataclass(frozen=True)
@@ -25,23 +25,13 @@ class DescriptiveComparison:
     reason_codes: tuple[str, ...]
 
 
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
-
-
 def _summary(
     comparison_type: str,
     outcome_name: str,
     group_label: str,
     rows: Sequence[Mapping[str, Any]],
 ) -> DescriptiveComparison:
-    values = [_finite_number(row.get(outcome_name)) for row in rows]
+    values = [finite_number(row.get(outcome_name)) for row in rows]
     observed = [value for value in values if value is not None]
     return DescriptiveComparison(
         comparison_type=comparison_type,

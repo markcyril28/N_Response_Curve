@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..reporting.plots import prediction_rows
 from .models import ModelAttempt, fit_response_models, model_attempt_record, select_reportable_model
-from .plots import prediction_rows
+from .values import finite_number
 
 
 @dataclass(frozen=True)
@@ -19,16 +19,6 @@ class CurveEvidenceResult:
     model_attempt_records: tuple[dict[str, Any], ...]
     curve_rows: tuple[dict[str, Any], ...]
     prediction_rows: tuple[dict[str, Any], ...]
-
-
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
 
 
 def _series_rows(records: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -69,8 +59,8 @@ def _curve_row(rows: Sequence[Mapping[str, Any]], selected: ModelAttempt, *, zer
     complete = [
         (n_rate, yield_value)
         for row in rows
-        if (n_rate := _finite_number(row.get("n_rate_kg_ha"))) is not None
-        and (yield_value := _finite_number(row.get("yield_t_ha"))) is not None
+        if (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
+        and (yield_value := finite_number(row.get("yield_t_ha"))) is not None
     ]
     if not complete:
         return None
@@ -108,8 +98,8 @@ def _curve_row(rows: Sequence[Mapping[str, Any]], selected: ModelAttempt, *, zer
         "series_has_high_n": any(bool(row.get("is_high_n")) for row in rows),
         "series_p_constant": rows[0].get("series_p_constant"),
         "series_k_constant": rows[0].get("series_k_constant"),
-        "p_rate_kg_p2o5_ha": _finite_number(rows[0].get("p_rate_kg_p2o5_ha")),
-        "k_rate_kg_k2o_ha": _finite_number(rows[0].get("k_rate_kg_k2o_ha")),
+        "p_rate_kg_p2o5_ha": finite_number(rows[0].get("p_rate_kg_p2o5_ha")),
+        "k_rate_kg_k2o_ha": finite_number(rows[0].get("k_rate_kg_k2o_ha")),
         "series_observed_n_min_kg_ha": float(min(n_rates)),
         "series_observed_n_max_kg_ha": float(max(n_rates)),
         "curve_shape_class": selected.curve_shape_class,

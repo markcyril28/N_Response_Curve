@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,9 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 import pandas as pd
+
+from n_response_curve.contracts import SUPPORTED_TABLE_FORMATS
+from n_response_curve.data.provenance import sha256_file
 
 
 class ReportingError(RuntimeError):
@@ -38,15 +40,6 @@ class ReleasePackage:
 
 
 _SAFE_TABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-_SUPPORTED_FORMATS = frozenset({"csv", "parquet", "xlsx"})
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _json_value(value: Any) -> Any:
@@ -110,7 +103,7 @@ def _write_table(stage_root: Path, name: str, artifact: TableArtifact, formats: 
             frame.to_excel(destination, index=False)
         else:
             raise ReportingError(f"Unsupported output format: {output_format}")
-        artifacts[destination.relative_to(stage_root).as_posix()] = _sha256(destination)
+        artifacts[destination.relative_to(stage_root).as_posix()] = sha256_file(destination)
     metadata = {
         "row_count": len(rows),
         "stable_key": artifact.stable_key,
@@ -209,7 +202,7 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
         raise ReportingError("Release checksum ledger does not cover the complete package")
     for relative, digest in expected.items():
         artifact_path = target / relative
-        if not artifact_path.is_file() or _sha256(artifact_path) != digest:
+        if not artifact_path.is_file() or sha256_file(artifact_path) != digest:
             raise ReportingError(f"Release checksum mismatch: {relative}")
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -244,7 +237,7 @@ def write_release_package(
     target = Path(target_path).resolve()
     _assert_safe_target(target, source_roots)
     formats = tuple(str(item).lower().lstrip(".") for item in output_formats)
-    if not formats or set(formats) - _SUPPORTED_FORMATS or len(formats) != len(set(formats)):
+    if not formats or set(formats) - SUPPORTED_TABLE_FORMATS or len(formats) != len(set(formats)):
         raise ReportingError("Output formats must be unique members of csv, parquet, xlsx")
     if target.exists() and not overwrite:
         raise ReportingError(f"Release package collision at {target}; set overwrite explicitly to replace it")
@@ -270,16 +263,16 @@ def write_release_package(
                 relative_path = artifact_path.relative_to(stage).as_posix()
                 if relative_path in artifact_sha256:
                     raise ReportingError(f"Stage writer artifact collides with an existing package artifact: {relative_path}")
-                artifact_sha256[relative_path] = _sha256(artifact_path)
+                artifact_sha256[relative_path] = sha256_file(artifact_path)
         report_path = stage / "report.md"
         report_path.write_text(_render_report(report_sections), encoding="utf-8")
-        artifact_sha256[report_path.relative_to(stage).as_posix()] = _sha256(report_path)
+        artifact_sha256[report_path.relative_to(stage).as_posix()] = sha256_file(report_path)
         manifest_path = stage / "run_manifest.json"
         manifest_payload = dict(_json_value(manifest))
         manifest_payload["tables"] = table_metadata
         manifest_payload["artifact_sha256_before_manifest"] = dict(sorted(artifact_sha256.items()))
         _write_json(manifest_path, manifest_payload)
-        artifact_sha256[manifest_path.relative_to(stage).as_posix()] = _sha256(manifest_path)
+        artifact_sha256[manifest_path.relative_to(stage).as_posix()] = sha256_file(manifest_path)
         checksums_path = stage / "CHECKSUMS.sha256"
         checksums_path.write_text(
             "".join(f"{digest}  {relative}\n" for relative, digest in sorted(artifact_sha256.items())),

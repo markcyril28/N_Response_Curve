@@ -4,11 +4,12 @@ from dataclasses import dataclass
 import hashlib
 import itertools
 import json
-import math
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..data.provenance import stable_identifier
 from .dataset_versions import DatasetVersion
 from .factor_catalog import FactorCatalogEntry, factor_value
+from .values import outcome_is_present, record_uids
 
 
 KNOWN_SOURCE_COMBINATION_MODES = frozenset(
@@ -17,6 +18,14 @@ KNOWN_SOURCE_COMBINATION_MODES = frozenset(
         "all_nonempty_family_subsets",
         "all_families_deduplicated",
         "leave_one_family_out",
+    }
+)
+_INTERACTION_ORDER_FAMILIES = frozenset(
+    {
+        "all_supported_interactions",
+        "multivariable_mixed_effects",
+        "observation_level_curve_modification",
+        "penalized_predictive_models",
     }
 )
 
@@ -68,11 +77,6 @@ class AnalysisRegistry:
     reconciles: bool
 
 
-def _stable_token(prefix: str, payload: object) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    return f"{prefix}_{hashlib.sha256(encoded).hexdigest()[:24]}"
-
-
 def build_source_combinations(
     source_families: Sequence[str],
     *,
@@ -101,7 +105,7 @@ def build_source_combinations(
             combinations.update(tuple(source for source in normalized_sources if source != omitted) for omitted in normalized_sources)
     return tuple(
         SourceCombination(
-            combination_id=_stable_token("sources", combination),
+            combination_id=stable_identifier("sources", combination),
             source_families=combination,
         )
         for combination in sorted(combinations, key=lambda item: (len(item), item))
@@ -118,13 +122,7 @@ def _factor_combinations(analysis_family: str, factors: Sequence[FactorCatalogEn
         return ((),)
     if not names:
         return ((),)
-    if analysis_family == "all_supported_interactions":
-        orders = tuple(order for order in interaction_orders if 1 <= order <= len(names))
-    elif analysis_family in {
-        "multivariable_mixed_effects",
-        "observation_level_curve_modification",
-        "penalized_predictive_models",
-    }:
+    if analysis_family in _INTERACTION_ORDER_FAMILIES:
         orders = tuple(order for order in interaction_orders if 1 <= order <= len(names))
     else:
         orders = (1,)
@@ -135,33 +133,6 @@ def _factor_combinations(analysis_family: str, factors: Sequence[FactorCatalogEn
     ) or ((),)
 
 
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
-
-
-def _outcome_is_present(value: object) -> bool:
-    if _finite_number(value) is not None:
-        return True
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        return bool(normalized) and normalized not in {"na", "n/a", "not stated", "unresolved"}
-    return False
-
-
-def _record_uids_for_curve_row(row: Mapping[str, Any]) -> set[str]:
-    values = row.get("record_uids")
-    if isinstance(values, (list, tuple, set, frozenset)):
-        return {str(value) for value in values if str(value)}
-    value = row.get("record_uid")
-    return {str(value)} if value else set()
-
-
 def _row_is_in_dataset_version(row: Mapping[str, Any], version: DatasetVersion) -> bool:
     tagged_version = row.get("dataset_version_id")
     if tagged_version is not None:
@@ -169,8 +140,8 @@ def _row_is_in_dataset_version(row: Mapping[str, Any], version: DatasetVersion) 
             tagged_version == version.version_id
             and row.get("dataset_version_membership_sha256") == version.membership_sha256
         )
-    record_uids = _record_uids_for_curve_row(row)
-    return bool(record_uids) and record_uids.issubset(version.record_uids)
+    row_record_uids = record_uids(row)
+    return bool(row_record_uids) and row_record_uids.issubset(version.record_uids)
 
 
 def _selected_rows(
@@ -190,7 +161,7 @@ def _selected_rows(
             continue
         if not _row_is_in_dataset_version(row, version):
             continue
-        if not _outcome_is_present(row.get(outcome)):
+        if not outcome_is_present(row.get(outcome)):
             continue
         rows.append(row)
     return rows
@@ -319,7 +290,7 @@ def _candidate(
         json.dumps(specification, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     specification_hash = f"{engine}_{raw_hash}"
-    candidate_id = _stable_token("analysis", specification)
+    candidate_id = stable_identifier("analysis", specification)
     return AnalysisCandidate(
         candidate_id=candidate_id,
         specification_hash=specification_hash,

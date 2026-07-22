@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-import math
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -10,6 +9,7 @@ import pandas as pd
 
 from .analysis_matrix import AnalysisCandidate
 from .factor_catalog import factor_value
+from .values import finite_number
 
 
 @dataclass(frozen=True)
@@ -24,18 +24,8 @@ class RAnalysisPreparation:
 _CATEGORICAL_OUTCOMES = frozenset({"curve_shape_class", "optimum_status"})
 
 
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
-
-
 def _present(value: object) -> bool:
-    if _finite_number(value) is not None:
+    if finite_number(value) is not None:
         return True
     return isinstance(value, (str, bool)) and bool(str(value).strip())
 
@@ -68,7 +58,7 @@ def _normalized_rows(
             or any(not _present(value) for value in factors.values())
         ):
             continue
-        if observation_level and _finite_number(row.get("n_rate_kg_ha")) is None:
+        if observation_level and finite_number(row.get("n_rate_kg_ha")) is None:
             continue
         row.update(factors)
         normalized.append(row)
@@ -128,7 +118,7 @@ def _design_gate_reason(
         values = tuple(frame[factor_name])
         if len({str(value) for value in values}) < 2:
             return "UNIDENTIFIED_FACTOR_VARIATION"
-        if all(not isinstance(value, bool) and _finite_number(value) is not None for value in values):
+        if all(not isinstance(value, bool) and finite_number(value) is not None for value in values):
             frame[factor_name] = [float(value) for value in values]
         else:
             categorical.append(factor_name)
@@ -209,7 +199,7 @@ def prepare_r_analysis(
     random_intercept = _has_supported_random_intercept(normalized)
     if observation_level:
         n_levels = {
-            _finite_number(row.get("n_rate_kg_ha"))
+            finite_number(row.get("n_rate_kg_ha"))
             for row in normalized
         }
         n_levels.discard(None)

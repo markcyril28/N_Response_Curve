@@ -1,24 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
-import json
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..data.provenance import stable_identifier, stable_json_sha256
 from .analysis_matrix import SourceCombination
 from .curve_evidence import CurveEvidenceResult, build_curve_evidence
 from .dataset_versions import DatasetVersion, select_dataset_version_records
-
-
-def _stable_sha256(payload: object) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -76,7 +64,7 @@ def build_derived_curve_views(
     """
 
     canonical_records = tuple(dict(record) for record in records)
-    model_policy_sha256 = _stable_sha256(dict(policy))
+    model_policy_sha256 = stable_json_sha256(dict(policy))
     views: list[DerivedCurveView] = []
     for version in dataset_versions:
         version_records = select_dataset_version_records(canonical_records, version)
@@ -88,7 +76,7 @@ def build_derived_curve_views(
             )
             view_records = tuple(sorted(view_records, key=lambda row: str(row.get("record_uid", ""))))
             record_uids = tuple(str(record["record_uid"]) for record in view_records)
-            canonical_input_sha256 = _stable_sha256(view_records)
+            canonical_input_sha256 = stable_json_sha256(view_records)
             metadata = _view_metadata(
                 version=version,
                 source_combination=source_combination,
@@ -96,7 +84,7 @@ def build_derived_curve_views(
                 canonical_input_sha256=canonical_input_sha256,
                 model_policy_sha256=model_policy_sha256,
             )
-            view_id = f"curve_view_{_stable_sha256(metadata)[:24]}"
+            view_id = stable_identifier("curve_view", metadata)
             evidence = build_curve_evidence(
                 view_records,
                 model_names=model_names,
@@ -116,8 +104,8 @@ def build_derived_curve_views(
                 {
                     **record,
                     **common_fields,
-                    "derived_model_attempt_uid": (
-                        f"derived_attempt_{_stable_sha256((view_id, record['model_attempt_uid']))[:24]}"
+                    "derived_model_attempt_uid": stable_identifier(
+                        "derived_attempt", (view_id, record["model_attempt_uid"])
                     ),
                     "selected_for_view": record["model_attempt_uid"] in selected_ids,
                 }
@@ -127,8 +115,8 @@ def build_derived_curve_views(
                 {
                     **row,
                     **common_fields,
-                    "derived_curve_row_uid": (
-                        f"derived_curve_{_stable_sha256((view_id, row['response_series_uid']))[:24]}"
+                    "derived_curve_row_uid": stable_identifier(
+                        "derived_curve", (view_id, row["response_series_uid"])
                     ),
                 }
                 for row in evidence.curve_rows
@@ -137,8 +125,8 @@ def build_derived_curve_views(
                 {
                     **row,
                     **common_fields,
-                    "derived_prediction_uid": (
-                        f"derived_prediction_{_stable_sha256((view_id, row, index))[:24]}"
+                    "derived_prediction_uid": stable_identifier(
+                        "derived_prediction", (view_id, row, index)
                     ),
                 }
                 for index, row in enumerate(evidence.prediction_rows)

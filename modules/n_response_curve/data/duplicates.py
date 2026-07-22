@@ -100,14 +100,20 @@ def _probable_cross_source_signature(record: Mapping[str, Any]) -> tuple[str, ..
     )
 
 
+def _add_sorted_unique(record: dict[str, Any], field: str, value: str) -> tuple[str, ...]:
+    existing = record.get(field, ())
+    values = {
+        str(item)
+        for item in existing
+    } if isinstance(existing, (list, tuple, set, frozenset)) else set()
+    values.add(value)
+    normalized = tuple(sorted(values))
+    record[field] = normalized
+    return normalized
+
+
 def _append_reason(record: dict[str, Any], reason: str) -> None:
-    existing_reasons = record.get("series_reason_codes", ())
-    reasons: set[str] = {
-        str(existing_reason)
-        for existing_reason in existing_reasons
-    } if isinstance(existing_reasons, (list, tuple, set, frozenset)) else set()
-    reasons.add(reason)
-    record["series_reason_codes"] = tuple(sorted(reasons))
+    _add_sorted_unique(record, "series_reason_codes", reason)
 
 
 def _mark_unresolved(record: dict[str, Any], reason: str) -> None:
@@ -117,13 +123,7 @@ def _mark_unresolved(record: dict[str, Any], reason: str) -> None:
 
 
 def _add_duplicate_relationship(record: dict[str, Any], relationship: str) -> None:
-    existing = record.get("duplicate_relationships", ())
-    relationships = {
-        str(item)
-        for item in existing
-    } if isinstance(existing, (list, tuple, set, frozenset)) else set()
-    relationships.add(relationship)
-    record["duplicate_relationships"] = tuple(sorted(relationships))
+    relationships = _add_sorted_unique(record, "duplicate_relationships", relationship)
     record["duplicate_status"] = min(
         relationships,
         key=lambda item: _DUPLICATE_STATUS_PRIORITY[item],

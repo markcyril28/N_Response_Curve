@@ -27,6 +27,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from .analysis_matrix import AnalysisCandidate
 from .factor_catalog import FactorCatalogEntry, factor_value
+from .values import finite_number, outcome_is_present
 
 
 @dataclass(frozen=True)
@@ -35,30 +36,6 @@ class AdvancedAnalysisResult:
     result_type: str | None
     reason_codes: tuple[str, ...]
     records: tuple[Mapping[str, Any], ...]
-
-
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
-
-
-def _outcome_present(value: object) -> bool:
-    if _finite_number(value) is not None:
-        return True
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        return bool(normalized) and normalized not in {
-            "na",
-            "n/a",
-            "not stated",
-            "unresolved",
-        }
-    return False
 
 
 def _skipped(reason: str) -> AdvancedAnalysisResult:
@@ -88,7 +65,7 @@ def _predictive_result(
         group = str(row.get("study_uid") or "")
         if (
             not group
-            or not _outcome_present(outcome)
+            or not outcome_is_present(outcome)
             or any(value is None for value in values.values())
         ):
             continue
@@ -133,7 +110,7 @@ def _predictive_result(
         remainder="drop",
     )
     numeric_outcome = all(
-        _finite_number(value) is not None
+        finite_number(value) is not None
         for value in frame["__outcome"]
     )
     if numeric_outcome:
@@ -343,7 +320,7 @@ def _clustering_result(
         name
         for name in _CLUSTER_FEATURES
         if sum(
-            _finite_number(row.get(name)) is not None
+            finite_number(row.get(name)) is not None
             for row in rows
         )
         >= 6
@@ -353,7 +330,7 @@ def _clustering_result(
         for row in rows
         if row.get("response_series_uid")
         and all(
-            _finite_number(row.get(name)) is not None
+            finite_number(row.get(name)) is not None
             for name in features
         )
     ]
@@ -436,7 +413,7 @@ def _robustness_result(
 ) -> AdvancedAnalysisResult:
     grouped: dict[str, list[float]] = {}
     for row in rows:
-        value = _finite_number(row.get(candidate.curve_outcome))
+        value = finite_number(row.get(candidate.curve_outcome))
         source = str(row.get("source_name") or "")
         if value is not None and source:
             grouped.setdefault(source, []).append(value)

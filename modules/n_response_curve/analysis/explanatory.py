@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass
-import math
 from typing import Any, Iterable, Mapping, Sequence
 
 from .advanced_analysis import execute_advanced_candidate
@@ -10,6 +9,7 @@ from .analysis_matrix import AnalysisCandidate
 from .comparisons import build_descriptive_comparisons
 from .dataset_versions import DatasetVersion
 from .factor_catalog import FactorCatalogEntry
+from .values import outcome_is_present, record_uids
 
 
 @dataclass(frozen=True)
@@ -22,33 +22,6 @@ class PythonAnalysisResult:
     result_type: str | None
     reason_codes: tuple[str, ...]
     records: tuple[Mapping[str, Any], ...]
-
-
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
-
-
-def _outcome_is_present(value: object) -> bool:
-    if _finite_number(value) is not None:
-        return True
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        return bool(normalized) and normalized not in {"na", "n/a", "not stated", "unresolved"}
-    return False
-
-
-def _record_uids(row: Mapping[str, Any]) -> set[str]:
-    values = row.get("record_uids")
-    if isinstance(values, (list, tuple, set, frozenset)):
-        return {str(value) for value in values if str(value)}
-    value = row.get("record_uid")
-    return {str(value)} if value else set()
 
 
 def select_candidate_curve_rows(
@@ -73,7 +46,7 @@ def select_candidate_curve_rows(
         ):
             continue
         if tagged_version is None and not (
-            (record_uids := _record_uids(row)) and record_uids.issubset(version.record_uids)
+            (row_record_uids := record_uids(row)) and row_record_uids.issubset(version.record_uids)
         ):
             continue
         tagged_combination = row.get("source_combination_id")
@@ -88,9 +61,9 @@ def _coverage_record(
     outcome_name: str,
     eligibility_rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    observed = [row for row in rows if _outcome_is_present(row.get(outcome_name))]
+    observed = [row for row in rows if outcome_is_present(row.get(outcome_name))]
     source_families = sorted({str(row.get("source_name", "")) for row in rows})
-    selected_record_uids = set().union(*(_record_uids(row) for row in rows)) if rows else set()
+    selected_record_uids = set().union(*(record_uids(row) for row in rows)) if rows else set()
     eligibility_uids = {
         str(row.get("record_uid"))
         for row in eligibility_rows

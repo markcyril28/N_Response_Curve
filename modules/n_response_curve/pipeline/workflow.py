@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from n_response_curve.analysis.analysis_matrix import AnalysisRegistry, build_analysis_registry, build_source_combinations
 from n_response_curve.data.config import ConfigError, ValidatedConfig
+from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_curve_evidence
 from n_response_curve.analysis.curve_views import DerivedCurveView, build_derived_curve_views
 from n_response_curve.analysis.dataset_versions import DatasetVersion, build_dataset_versions
@@ -52,19 +53,6 @@ class PhaseFourResult:
 class PhaseFiveResult:
     package: ReleasePackage
     reused_existing_package: bool
-
-
-def _stable_json_sha256(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _code_fingerprint() -> str:
@@ -802,13 +790,13 @@ def release_phases_three_to_five(
         raise ConfigError("Run logger identity does not match the controlled release target")
     run_log.info("controlled_release_started", release_target=target)
     identity_payload = {
-        "config_sha256": _sha256_path(config.config_path),
+        "config_sha256": sha256_file(config.config_path),
         "code_sha256": _code_fingerprint(),
         "mode": config.run_mode,
         "random_seed": config.raw["run"]["random_seed"],
         "source_artifact_sha256": dict(integrity.artifact_sha256),
     }
-    run_identity_sha256 = _stable_json_sha256(identity_payload)
+    run_identity_sha256 = stable_json_sha256(identity_payload)
     r_stage_statuses: list[dict[str, Any]] = []
     r_preparation_status_counts: dict[str, int] = {}
     for _, preparation in phase_four.r_preparations:

@@ -45,6 +45,46 @@ nrc_model_formula <- function(specification, data) {
   model_formula
 }
 
+nrc_fit_model <- function(
+    model_formula,
+    data,
+    outcome_kind,
+    model_kind,
+    unsupported_message,
+    require_binary_glm = FALSE) {
+  warning_messages <- character()
+  fitted <- tryCatch(
+    withCallingHandlers(
+      {
+        if (identical(outcome_kind, "continuous") && identical(model_kind, "lm")) {
+          stats::lm(model_formula, data = data)
+        } else if (identical(outcome_kind, "continuous") && identical(model_kind, "lmer")) {
+          lme4::lmer(model_formula, data = data, REML = FALSE)
+        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glm")) {
+          outcome_name <- all.vars(model_formula)[[1L]]
+          if (isTRUE(require_binary_glm) &&
+                length(unique(stats::na.omit(data[[outcome_name]]))) != 2L) {
+            nrc_abort("Categorical glm requires exactly two supported outcome levels")
+          }
+          stats::glm(model_formula, data = data, family = stats::binomial())
+        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "multinom")) {
+          nnet::multinom(model_formula, data = data, trace = FALSE, Hess = TRUE, model = TRUE)
+        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glmmTMB")) {
+          glmmTMB::glmmTMB(model_formula, data = data, family = stats::binomial())
+        } else {
+          nrc_abort(unsupported_message)
+        }
+      },
+      warning = function(warning) {
+        warning_messages <<- c(warning_messages, conditionMessage(warning))
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(error) error
+  )
+  list(model = fitted, warnings = warning_messages)
+}
+
 nrc_run_mixed_models <- function(stage) {
   specification <- stage$contract$specification
   if (!identical(specification$engine, "r")) {
@@ -68,35 +108,16 @@ nrc_run_mixed_models <- function(stage) {
   if (is.null(outcome_kind)) {
     outcome_kind <- "continuous"
   }
-  warning_messages <- character()
-  fitted <- tryCatch(
-    withCallingHandlers(
-      {
-        if (identical(outcome_kind, "continuous") && identical(model_kind, "lm")) {
-          stats::lm(model_formula, data = stage$data)
-        } else if (identical(outcome_kind, "continuous") && identical(model_kind, "lmer")) {
-          lme4::lmer(model_formula, data = stage$data, REML = FALSE)
-        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glm")) {
-          outcome_name <- all.vars(model_formula)[[1L]]
-          if (length(unique(stats::na.omit(stage$data[[outcome_name]]))) != 2L) {
-            nrc_abort("Categorical glm requires exactly two supported outcome levels")
-          }
-          stats::glm(model_formula, data = stage$data, family = stats::binomial())
-        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "multinom")) {
-          nnet::multinom(model_formula, data = stage$data, trace = FALSE, Hess = TRUE, model = TRUE)
-        } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glmmTMB")) {
-          glmmTMB::glmmTMB(model_formula, data = stage$data, family = stats::binomial())
-        } else {
-          nrc_abort("Unsupported R model kind for the declared outcome type")
-        }
-      },
-      warning = function(warning) {
-        warning_messages <<- c(warning_messages, conditionMessage(warning))
-        invokeRestart("muffleWarning")
-      }
-    ),
-    error = function(error) error
+  fit <- nrc_fit_model(
+    model_formula,
+    stage$data,
+    outcome_kind,
+    model_kind,
+    "Unsupported R model kind for the declared outcome type",
+    require_binary_glm = TRUE
   )
+  fitted <- fit$model
+  warning_messages <- fit$warnings
   if (inherits(fitted, "error")) {
     return(nrc_failed_result(
       "R_MODEL_FIT_FAILED",

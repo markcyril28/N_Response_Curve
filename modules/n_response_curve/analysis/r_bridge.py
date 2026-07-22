@@ -10,6 +10,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from ..data.provenance import sha256_file
+
 
 class RBridgeError(RuntimeError):
     """A contract, dispatch, or result validation violation at the Python/R boundary."""
@@ -46,14 +48,6 @@ _FORBIDDEN_SPECIFICATION_KEY_FRAGMENTS = (
     "source_file_path",
     "toml_path",
 )
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _canonical_json_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -119,7 +113,7 @@ def write_r_stage_contract(
         frame.to_parquet(input_path, index=False)
     except (ImportError, OSError, TypeError, ValueError) as exc:
         raise RBridgeError("Unable to write normalized R-stage Parquet input") from exc
-    input_sha256 = _sha256_path(input_path)
+    input_sha256 = sha256_file(input_path)
     stable_values = {str(row[stable_key]) for row in normalized_rows}
     normalized_specification = json.loads(_canonical_json_bytes(specification).decode("utf-8"))
     payload: dict[str, Any] = {

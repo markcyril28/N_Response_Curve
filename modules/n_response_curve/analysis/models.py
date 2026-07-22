@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 import math
 from types import MappingProxyType
@@ -9,6 +8,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 from scipy.optimize import least_squares
+
+from ..data.provenance import stable_identifier, stable_json_sha256
 
 
 MODEL_ORDER = (
@@ -61,28 +62,6 @@ class ModelAttempt:
     predictions: tuple[Mapping[str, float], ...]
 
 
-def _stable_identifier(*parts: object) -> str:
-    encoded = json.dumps(
-        parts,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return f"model_{hashlib.sha256(encoded).hexdigest()[:24]}"
-
-
-def _stable_sha256(payload: object) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _frozen_mapping(values: Mapping[str, float] | None = None) -> Mapping[str, float]:
     return MappingProxyType(dict(values or {}))
 
@@ -109,14 +88,17 @@ def _attempt(
     predicted_max_yield_t_ha: float | None = None,
     predictions: Iterable[Mapping[str, float]] = (),
 ) -> ModelAttempt:
-    input_snapshot_sha256 = _stable_sha256(identity_payload["observations"])
-    model_policy_sha256 = _stable_sha256(identity_payload["policy"])
+    input_snapshot_sha256 = stable_json_sha256(identity_payload["observations"])
+    model_policy_sha256 = stable_json_sha256(identity_payload["policy"])
     return ModelAttempt(
-        model_attempt_uid=_stable_identifier(
-            response_series_uid,
-            model_name,
-            input_snapshot_sha256,
-            model_policy_sha256,
+        model_attempt_uid=stable_identifier(
+            "model",
+            (
+                response_series_uid,
+                model_name,
+                input_snapshot_sha256,
+                model_policy_sha256,
+            ),
         ),
         response_series_uid=response_series_uid,
         model_name=model_name,

@@ -10,6 +10,11 @@ import tomllib
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from ..contracts import (
+    SUPPORTED_FIGURE_FORMATS as _SUPPORTED_FIGURE_FORMATS,
+    SUPPORTED_TABLE_FORMATS as _SUPPORTED_TABLE_FORMATS,
+)
+
 
 class ConfigError(ValueError):
     """Raised when the operator configuration is unsafe or incoherent."""
@@ -20,8 +25,8 @@ REQUIRED_DECISIONS = tuple(f"D{i}" for i in range(1, 7))
 KNOWN_MODELS = {"linear", "quadratic", "linear_plateau", "quadratic_plateau", "mitscherlich"}
 KNOWN_SOURCE_TYPES = {"literature", "ltcce", "rcm_validation", "nopt", "future"}
 KNOWN_COMPARISON_DIMENSIONS = {"water_regime", "season", "region", "province", "variety", "recommendation_class"}
-KNOWN_OUTPUT_FORMATS = {"csv", "parquet", "xlsx"}
-KNOWN_FIGURE_FORMATS = {"png", "svg"}
+KNOWN_OUTPUT_FORMATS = set(_SUPPORTED_TABLE_FORMATS)
+KNOWN_FIGURE_FORMATS = set(_SUPPORTED_FIGURE_FORMATS)
 KNOWN_TREATMENT_CLASSES = {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK", "other", "unresolved"}
 KNOWN_FILL_DOWN_FIELDS = {"Study_ID", "Trial ID", "Source", "Author(s)", "Year of Publication"}
 KNOWN_CRITICAL_ERROR_CODES = {"YIELD_UNIT_CONFLICT"}
