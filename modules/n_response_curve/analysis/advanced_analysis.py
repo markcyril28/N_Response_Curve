@@ -139,21 +139,47 @@ def _predictive_result(
         scoring = "balanced_accuracy"
 
     outer = GroupKFold(n_splits=min(5, len(set(groups))))
+    outer_splits = tuple(outer.split(features, response, groups))
     performance: list[dict[str, float]] = []
     importances: dict[str, list[float]] = {
         name: [] for name in candidate.factor_names
     }
     selected_parameters: list[Mapping[str, float]] = []
     outcome_classes = set(response) if not numeric_outcome else set()
+    if not numeric_outcome and any(
+        set(response[train]) != outcome_classes
+        for train, _ in outer_splits
+    ):
+        return _skipped("GROUPED_FOLD_MISSING_OUTCOME_CLASS")
+    if not numeric_outcome and any(
+        set(response[test]) != outcome_classes
+        for _, test in outer_splits
+    ):
+        return _skipped("GROUPED_HELD_OUT_FOLD_MISSING_OUTCOME_CLASS")
     for fold, (train, test) in enumerate(
-        outer.split(features, response, groups),
+        outer_splits,
         start=1,
     ):
         train_groups = groups[train]
         if not numeric_outcome and len(set(response[train])) < 2:
             return _skipped("GROUPED_FOLD_HAS_ONE_OUTCOME_CLASS")
-        if not numeric_outcome and set(response[train]) != outcome_classes:
-            return _skipped("GROUPED_FOLD_MISSING_OUTCOME_CLASS")
+        inner_group_count = len(set(train_groups))
+        inner = GroupKFold(
+            n_splits=min(3, inner_group_count)
+        )
+        inner_splits = tuple(
+            inner.split(
+                features.iloc[train],
+                response[train],
+                train_groups,
+            )
+        )
+        if not numeric_outcome and any(
+            set(response[train][inner_train]) != outcome_classes
+            or set(response[train][inner_validation]) != outcome_classes
+            for inner_train, inner_validation in inner_splits
+        ):
+            return _skipped("INNER_GROUPED_FOLD_MISSING_OUTCOME_CLASS")
         best_score = -math.inf
         best_model: Pipeline | None = None
         best_parameters: Mapping[str, float] | None = None
@@ -178,17 +204,13 @@ def _predictive_result(
                     ("model", estimator),
                 ]
             )
-            inner_group_count = len(set(train_groups))
-            inner = GroupKFold(
-                n_splits=min(3, inner_group_count)
-            )
             try:
                 scores = cross_val_score(
                     model,
                     features.iloc[train],
                     response[train],
                     groups=train_groups,
-                    cv=inner,
+                    cv=inner_splits,
                     scoring=scoring,
                     error_score="raise",
                 )
@@ -343,18 +365,28 @@ def _clustering_result(
         ],
         dtype=float,
     )
+    if np.any(np.var(matrix, axis=0) <= np.finfo(float).eps):
+        return _skipped("ZERO_VARIANCE_CLUSTER_FEATURE")
     scaled = StandardScaler().fit_transform(matrix)
+    distinct_point_count = len(np.unique(scaled, axis=0))
+    if distinct_point_count < 2:
+        return _skipped("INSUFFICIENT_DISTINCT_CLUSTER_POINTS")
     best: tuple[float, int, np.ndarray] | None = None
     for cluster_count in range(
         2,
-        min(5, len(complete) - 1) + 1,
+        min(5, len(complete) - 1, distinct_point_count) + 1,
     ):
-        labels = KMeans(
-            n_clusters=cluster_count,
-            random_state=20260720,
-            n_init=20,
-        ).fit_predict(scaled)
-        score = float(silhouette_score(scaled, labels))
+        try:
+            labels = KMeans(
+                n_clusters=cluster_count,
+                random_state=20260720,
+                n_init=20,
+            ).fit_predict(scaled)
+            if len(set(int(label) for label in labels)) < 2:
+                continue
+            score = float(silhouette_score(scaled, labels))
+        except (FloatingPointError, ValueError):
+            continue
         if best is None or (score, -cluster_count) > (
             best[0],
             -best[1],
@@ -363,14 +395,17 @@ def _clustering_result(
     if best is None:
         return _skipped("CLUSTER_SELECTION_FAILED")
     silhouette, cluster_count, labels = best
-    alternate = [
-        KMeans(
-            n_clusters=cluster_count,
-            random_state=20260721 + seed,
-            n_init=20,
-        ).fit_predict(scaled)
-        for seed in range(5)
-    ]
+    try:
+        alternate = [
+            KMeans(
+                n_clusters=cluster_count,
+                random_state=20260721 + seed,
+                n_init=20,
+            ).fit_predict(scaled)
+            for seed in range(5)
+        ]
+    except (FloatingPointError, ValueError):
+        return _skipped("CLUSTER_STABILITY_ESTIMATION_FAILED")
     stability = statistics.fmean(
         adjusted_rand_score(labels, other)
         for other in alternate
@@ -431,8 +466,16 @@ def _robustness_result(
         source: statistics.fmean(values)
         for source, values in grouped.items()
     }
+
+    def direction(value: float) -> str:
+        if value > 0:
+            return "positive"
+        if value < 0:
+            return "negative"
+        return "null"
+
     signs = {
-        0 if mean == 0 else (1 if mean > 0 else -1)
+        direction(mean - pooled_mean)
         for mean in source_means.values()
     }
     concordant = len(signs) == 1
@@ -446,6 +489,8 @@ def _robustness_result(
             for value in other_values
         ]
         leave_one_source_out_mean = statistics.fmean(leave_one_source_out_values)
+        difference_from_pooled = mean - pooled_mean
+        leave_one_source_out_difference = leave_one_source_out_mean - pooled_mean
         standard_error = (
             statistics.stdev(values) / math.sqrt(len(values))
             if len(values) > 1
@@ -460,22 +505,14 @@ def _robustness_result(
                 "row_count": len(values),
                 "source_mean": mean,
                 "pooled_mean": pooled_mean,
-                "difference_from_pooled": mean - pooled_mean,
+                "difference_from_pooled": difference_from_pooled,
                 "leave_one_source_out_mean": leave_one_source_out_mean,
-                "leave_one_source_out_difference": leave_one_source_out_mean - pooled_mean,
+                "leave_one_source_out_difference": leave_one_source_out_difference,
                 "interval_low": mean - 1.96 * standard_error,
                 "interval_high": mean + 1.96 * standard_error,
-                "direction": (
-                    "positive"
-                    if mean > 0
-                    else "negative"
-                    if mean < 0
-                    else "null"
-                ),
+                "direction": direction(difference_from_pooled),
                 "direction_stable_after_source_omission": (
-                    (pooled_mean > 0 and leave_one_source_out_mean > 0)
-                    or (pooled_mean < 0 and leave_one_source_out_mean < 0)
-                    or (pooled_mean == 0 and leave_one_source_out_mean == 0)
+                    direction(difference_from_pooled) == direction(leave_one_source_out_difference)
                 ),
                 "conclusion_concordant_across_sources": concordant,
             }
