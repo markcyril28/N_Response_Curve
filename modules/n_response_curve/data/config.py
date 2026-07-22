@@ -21,9 +21,10 @@ class ConfigError(ValueError):
 
 
 RUN_MODES = {"validate", "test", "full"}
-REQUIRED_DECISIONS = tuple(f"D{i}" for i in range(1, 7))
 KNOWN_MODELS = {"linear", "quadratic", "linear_plateau", "quadratic_plateau", "mitscherlich"}
 KNOWN_SOURCE_TYPES = {"literature", "ltcce", "rcm_validation", "nopt", "future"}
+KNOWN_SOURCE_AVAILABILITY = {"available", "expected_unavailable"}
+KNOWN_SOURCE_CONFIRMATION_STATUSES = {"verified", "pending"}
 KNOWN_COMPARISON_DIMENSIONS = {"water_regime", "season", "region", "province", "variety", "recommendation_class"}
 KNOWN_OUTPUT_FORMATS = set(_SUPPORTED_TABLE_FORMATS)
 KNOWN_FIGURE_FORMATS = set(_SUPPORTED_FIGURE_FORMATS)
@@ -291,12 +292,8 @@ def validate_config(
         raise ConfigError("[run].cpu_detection must be 'affinity'")
     approved_decisions = _string_list(run.get("decisions_approved", []), where="[run].decisions_approved")
     _check_unique(approved_decisions, where="[run].decisions_approved")
-    if mode == "full" and tuple(approved_decisions) != REQUIRED_DECISIONS:
-        raise ConfigError(
-            "full mode is blocked until [run].decisions_approved lists D1 through D6 in order"
-        )
     if mode == "full":
-        _require_approved_decision_ledger(root)
+        _require_approved_decision_ledger(root, tuple(approved_decisions))
 
     paths = _resolve_paths(data["paths"], root)
     _check_path_overlaps(paths)
@@ -352,15 +349,37 @@ def validate_config(
             {
                 "source_type", "data_path", "schema_map", "provider", "provenance_notes",
                 "workbook", "sheet", "checksum", "manifest_reference",
+                "availability", "confirmation_status", "shape_adapter_version",
             },
             where=f"[sources.{source_name}]",
         )
-        for key in ("source_type", "data_path", "schema_map", "provider", "provenance_notes"):
+        for key in (
+            "source_type",
+            "data_path",
+            "schema_map",
+            "provider",
+            "provenance_notes",
+            "availability",
+            "confirmation_status",
+            "shape_adapter_version",
+        ):
             if key not in source:
                 raise ConfigError(f"[sources.{source_name}] is missing {key!r}")
         _require_string(source, "source_type", where=f"[sources.{source_name}]")
         if source["source_type"] not in KNOWN_SOURCE_TYPES:
             raise ConfigError(f"[sources.{source_name}].source_type is unknown: {source['source_type']!r}")
+        _require_string(source, "availability", where=f"[sources.{source_name}]")
+        if source["availability"] not in KNOWN_SOURCE_AVAILABILITY:
+            raise ConfigError(
+                f"[sources.{source_name}].availability must be one of {sorted(KNOWN_SOURCE_AVAILABILITY)}"
+            )
+        _require_string(source, "confirmation_status", where=f"[sources.{source_name}]")
+        if source["confirmation_status"] not in KNOWN_SOURCE_CONFIRMATION_STATUSES:
+            raise ConfigError(
+                f"[sources.{source_name}].confirmation_status must be one of "
+                f"{sorted(KNOWN_SOURCE_CONFIRMATION_STATUSES)}"
+            )
+        _require_string(source, "shape_adapter_version", where=f"[sources.{source_name}]")
         source_paths[source_name] = _resolve_relative_path(source["data_path"], root, f"[sources.{source_name}].data_path")
         _resolve_relative_path(source["schema_map"], root, f"[sources.{source_name}].schema_map")
         for key in ("provider", "provenance_notes"):
@@ -377,6 +396,11 @@ def validate_config(
         if source_name not in sources:
             raise ConfigError(f"[selection].enabled_sources references unknown source: {source_name}")
         source = sources[source_name]
+        if source["availability"] != "available":
+            raise ConfigError(
+                f"[selection].enabled_sources cannot enable {source_name!r} while its availability is "
+                f"{source['availability']!r}"
+            )
         if check_files:
             _require_file(source_paths[source_name], f"enabled source {source_name}")
             _require_file(_resolve_relative_path(source["schema_map"], root, f"[sources.{source_name}].schema_map"), f"schema map for {source_name}")
@@ -879,28 +903,35 @@ def _preflight_r_contract(engines: Mapping[str, Any], r_entrypoint: Path, root: 
         raise ConfigError("R contract requires a vanilla R session")
 
 
-def _require_approved_decision_ledger(root: Path) -> None:
-    ledger = root / "Docs" / "Decisions_Needed.md"
+def _require_approved_decision_ledger(root: Path, approved_decisions: tuple[str, ...]) -> None:
+    ledger = root / "Docs" / "Plans_Phases" / "03_Decisions_Needed.md"
     if not ledger.is_file() or not ledger.read_text(encoding="utf-8").strip():
         raise ConfigError(f"full mode requires a nonempty decision ledger: {ledger}")
     text = ledger.read_text(encoding="utf-8")
+    headings = tuple(re.finditer(r"(?m)^###\s+([A-Z][A-Z0-9]*-\d+)\b[^\n]*$", text))
+    if not headings:
+        raise ConfigError(f"full mode decision ledger contains no domain-prefixed decision IDs: {ledger}")
+    decision_ids = tuple(match.group(1) for match in headings)
+    if len(decision_ids) != len(set(decision_ids)):
+        raise ConfigError(f"full mode decision ledger contains duplicate decision IDs: {ledger}")
     unresolved: list[str] = []
-    for decision in REQUIRED_DECISIONS:
-        number = decision[1:]
-        section = re.search(
-            rf"(?ms)^#+[^\n]*(?:\b{re.escape(decision)}\b|\bDecision\s+{number}\b)[^\n]*\n(?P<body>.*?)(?=^#+\s|\Z)",
-            text,
-        )
-        if section is None:
-            unresolved.append(decision)
-            continue
-        option = re.search(r"(?m)^\s*\*\*Choosed Option:\*\*\s*(\S.*?)\s*$", section.group("body"))
-        if option is None:
+    for index, heading in enumerate(headings):
+        decision = heading.group(1)
+        section_end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        body = text[heading.end():section_end]
+        option = re.search(r"(?m)^\s*\*\*Choosed Option:\*\*\s*(.*?)\s*$", body)
+        selected = option.group(1).strip() if option is not None else ""
+        if not selected or selected.casefold() in {"open", "pending", "tbd", "todo", "unresolved"}:
             unresolved.append(decision)
     if unresolved:
         raise ConfigError(
             "full mode requires a recorded nonempty **Choosed Option:** for "
             f"{', '.join(unresolved)} in {ledger}"
+        )
+    if approved_decisions != decision_ids:
+        raise ConfigError(
+            "full mode requires [run].decisions_approved to match every selected domain-prefixed "
+            f"decision ID in ledger order: {', '.join(decision_ids)}"
         )
 
 
