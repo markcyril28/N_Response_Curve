@@ -148,7 +148,7 @@ def _selected_rows(
     curve_rows: Sequence[Mapping[str, Any]],
     version: DatasetVersion,
     source_combination: SourceCombination,
-    outcome: str,
+    outcome: str | None,
 ) -> list[Mapping[str, Any]]:
     if version.status != "available":
         return []
@@ -161,7 +161,7 @@ def _selected_rows(
             continue
         if not _row_is_in_dataset_version(row, version):
             continue
-        if not outcome_is_present(row.get(outcome)):
+        if outcome is not None and not outcome_is_present(row.get(outcome)):
             continue
         rows.append(row)
     return rows
@@ -371,9 +371,15 @@ def build_analysis_registry(
     }
     for version in versions:
         for combination in combinations:
-            for outcome in outcomes:
-                applicable_rows = _selected_rows(rows, version, combination, outcome)
-                for family in family_names:
+            for family in family_names:
+                if family == "observation_level_curve_modification":
+                    family_outcomes = (("yield_t_ha", None),)
+                elif family == "curve_feature_clustering":
+                    family_outcomes = (("curve_feature_profile", None),)
+                else:
+                    family_outcomes = tuple((outcome, outcome) for outcome in outcomes)
+                for outcome, support_outcome in family_outcomes:
+                    applicable_rows = _selected_rows(rows, version, combination, support_outcome)
                     factor_sets = _factor_combinations(family, tuple(known_factors.values()), orders)
                     theoretical_count += len(factor_sets)
                     if family not in expansion_families or not any(len(names) > 1 for names in factor_sets):
