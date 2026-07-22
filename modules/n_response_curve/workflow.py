@@ -9,7 +9,7 @@ import platform
 import shutil
 import subprocess
 import sys
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .analysis_matrix import AnalysisRegistry, build_analysis_registry, build_source_combinations
 from .config import ConfigError, ValidatedConfig
@@ -22,6 +22,7 @@ from .plots import write_observed_series_figures, write_response_curve_figures
 from .r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
 from .r_specs import RAnalysisPreparation, prepare_r_analysis
 from .reporting import ReleasePackage, ReportingError, TableArtifact, verify_release_package, write_release_package
+from .run_logging import RunLogger
 
 
 @dataclass(frozen=True)
@@ -763,11 +764,27 @@ def _source_target_paths(config: ValidatedConfig) -> tuple[Path, ...]:
     return tuple(source_paths)
 
 
+def _logged_stage_writer(
+    run_log: RunLogger,
+    stage_name: str,
+    writer: Callable[[Path], Iterable[str | Path]],
+) -> Callable[[Path], tuple[str | Path, ...]]:
+    def write_with_logging(stage_root: Path) -> tuple[str | Path, ...]:
+        with run_log.stage(stage_name):
+            written_paths = tuple(writer(stage_root))
+        run_log.debug("stage_artifacts_written", stage=stage_name, artifact_count=len(written_paths))
+        return written_paths
+
+    return write_with_logging
+
+
 def release_phases_three_to_five(
     config: ValidatedConfig,
     phase_two: Any,
     phase_three: PhaseThreeResult,
     phase_four: PhaseFourResult,
+    *,
+    run_log: RunLogger,
 ) -> PhaseFiveResult:
     """Write the complete Phase 3–5 evidence package only after in-memory gates reconcile."""
 
@@ -778,6 +795,9 @@ def release_phases_three_to_five(
         raise ConfigError("Source-integrity report is required before a release")
     target = _release_target(config)
     run_id = target.name
+    if run_log.run_id != run_id:
+        raise ConfigError("Run logger identity does not match the controlled release target")
+    run_log.info("controlled_release_started", release_target=target)
     identity_payload = {
         "config_sha256": _sha256_path(config.config_path),
         "code_sha256": _code_fingerprint(),
@@ -820,6 +840,11 @@ def release_phases_three_to_five(
             "r_preparation_status_counts": dict(sorted(r_preparation_status_counts.items())),
         },
         "r_stage_statuses": r_stage_statuses,
+        "logging": {
+            "artifact_path": "logs/pipeline.jsonl",
+            "format": "jsonl",
+            "level": run_log.level,
+        },
     }
     if target.exists() and not bool(config.raw["run"]["overwrite"]):
         try:
@@ -828,12 +853,29 @@ def release_phases_three_to_five(
         except (OSError, ReportingError, json.JSONDecodeError) as exc:
             raise ConfigError(f"Existing release package cannot be safely reused: {target}") from exc
         if existing_manifest.get("run_identity_sha256") == run_identity_sha256:
+            run_log.info("controlled_release_reused", release_target=target)
             return PhaseFiveResult(package=existing, reused_existing_package=True)
     report_sections = _report_sections(phase_three, phase_four)
+
+    def write_run_log(stage_root: Path) -> tuple[Path, ...]:
+        run_log.info("release_package_ready", release_target=target)
+        log_path = run_log.write_jsonl(stage_root)
+        manifest["logging"]["record_count"] = len(run_log.records)
+        return (log_path,)
+
     stage_writers = (
-        _figure_stage_writer(config, phase_three),
-        _r_stage_writer(config, phase_three, phase_four, r_stage_statuses),
-        _terminal_status_stage_writer(phase_three, phase_four, r_stage_statuses, manifest, report_sections),
+        _logged_stage_writer(run_log, "figures", _figure_stage_writer(config, phase_three)),
+        _logged_stage_writer(
+            run_log,
+            "r_stages",
+            _r_stage_writer(config, phase_three, phase_four, r_stage_statuses),
+        ),
+        _logged_stage_writer(
+            run_log,
+            "terminal_statuses",
+            _terminal_status_stage_writer(phase_three, phase_four, r_stage_statuses, manifest, report_sections),
+        ),
+        write_run_log,
     )
     try:
         package = write_release_package(
