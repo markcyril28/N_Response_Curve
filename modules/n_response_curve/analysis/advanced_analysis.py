@@ -446,80 +446,76 @@ def _robustness_result(
     candidate: AnalysisCandidate,
     rows: Sequence[Mapping[str, Any]],
 ) -> AdvancedAnalysisResult:
-    grouped: dict[str, list[float]] = {}
+    grouped: dict[str, dict[str, list[float]]] = {}
     for row in rows:
         value = finite_number(row.get(candidate.curve_outcome))
         source = str(row.get("source_name") or "")
-        if value is not None and source:
-            grouped.setdefault(source, []).append(value)
+        study_uid = str(row.get("study_uid") or "")
+        if value is not None and source and study_uid:
+            grouped.setdefault(source, {}).setdefault(study_uid, []).append(value)
     if len(grouped) < 2 or any(
-        len(values) < 2 for values in grouped.values()
+        len(studies) < 2 for studies in grouped.values()
     ):
         return _skipped("INSUFFICIENT_SOURCE_ROBUSTNESS_SUPPORT")
-    pooled = [
+    study_means = {
+        source: {
+            study_uid: statistics.fmean(values)
+            for study_uid, values in studies.items()
+        }
+        for source, studies in grouped.items()
+    }
+    pooled_study_means = [
         value
-        for values in grouped.values()
-        for value in values
+        for studies in study_means.values()
+        for value in studies.values()
     ]
-    pooled_mean = statistics.fmean(pooled)
+    pooled_mean = statistics.fmean(pooled_study_means)
     source_means = {
-        source: statistics.fmean(values)
-        for source, values in grouped.items()
+        source: statistics.fmean(studies.values())
+        for source, studies in study_means.items()
     }
-
-    def direction(value: float) -> str:
-        if value > 0:
-            return "positive"
-        if value < 0:
-            return "negative"
-        return "null"
-
-    signs = {
-        direction(mean - pooled_mean)
-        for mean in source_means.values()
-    }
-    concordant = len(signs) == 1
     records: list[dict[str, Any]] = []
-    for source, values in sorted(grouped.items()):
+    for source, studies in sorted(study_means.items()):
         mean = source_means[source]
-        leave_one_source_out_values = [
+        leave_one_source_out_study_means = [
             value
-            for other_source, other_values in grouped.items()
+            for other_source, other_studies in study_means.items()
             if other_source != source
-            for value in other_values
+            for value in other_studies.values()
         ]
-        leave_one_source_out_mean = statistics.fmean(leave_one_source_out_values)
-        difference_from_pooled = mean - pooled_mean
-        leave_one_source_out_difference = leave_one_source_out_mean - pooled_mean
+        leave_one_source_out_mean = statistics.fmean(leave_one_source_out_study_means)
+        omission_shift = leave_one_source_out_mean - pooled_mean
         standard_error = (
-            statistics.stdev(values) / math.sqrt(len(values))
-            if len(values) > 1
+            statistics.stdev(studies.values()) / math.sqrt(len(studies))
+            if len(studies) > 1
             else 0.0
         )
         records.append(
             {
-                "record_type": "source_robustness",
+                "record_type": "source_omission_sensitivity",
                 "candidate_id": candidate.candidate_id,
                 "outcome": candidate.curve_outcome,
-                "source_family": source,
-                "row_count": len(values),
+                "omitted_source_family": source,
+                "omitted_source_study_count": len(studies),
+                "total_independent_study_count": len(pooled_study_means),
                 "source_mean": mean,
                 "pooled_mean": pooled_mean,
-                "difference_from_pooled": difference_from_pooled,
                 "leave_one_source_out_mean": leave_one_source_out_mean,
-                "leave_one_source_out_difference": leave_one_source_out_difference,
+                "omission_shift_from_pooled": omission_shift,
+                "absolute_omission_shift": abs(omission_shift),
+                "relative_omission_shift": (
+                    omission_shift / abs(pooled_mean)
+                    if pooled_mean != 0.0
+                    else None
+                ),
                 "interval_low": mean - 1.96 * standard_error,
                 "interval_high": mean + 1.96 * standard_error,
-                "direction": direction(difference_from_pooled),
-                "direction_stable_after_source_omission": (
-                    direction(difference_from_pooled) == direction(leave_one_source_out_difference)
-                ),
-                "conclusion_concordant_across_sources": concordant,
+                "interpretation_status": "DESCRIPTIVE_SOURCE_OMISSION_ONLY",
             }
         )
     return AdvancedAnalysisResult(
         "completed",
-        "source_robustness_concordance",
+        "source_omission_sensitivity",
         (),
         tuple(records),
     )
