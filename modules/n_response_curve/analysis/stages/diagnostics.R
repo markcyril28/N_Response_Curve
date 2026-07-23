@@ -1,5 +1,5 @@
 nrc_package_versions <- function() {
-  packages <- c("arrow", "broom", "digest", "emmeans", "glmmTMB", "jsonlite", "lme4", "nnet", "TMB")
+  packages <- c("arrow", "broom", "broom.mixed", "digest", "emmeans", "glmmTMB", "jsonlite", "lme4", "nnet", "performance", "TMB")
   installed <- utils::installed.packages()[, "Version"]
   versions <- lapply(packages, function(package_name) {
     if (!package_name %in% names(installed)) {
@@ -63,7 +63,14 @@ nrc_contrast_coding <- function(model) {
 }
 
 nrc_model_diagnostics <- function(model, warnings = character(), input_row_count = NA_integer_) {
-  singular <- inherits(model, "merMod") && lme4::isSingular(model, tol = 1e-4)
+  singular <- if (inherits(model, "merMod")) {
+    lme4::isSingular(model, tol = 1e-4)
+  } else if (inherits(model, "glmmTMB") && requireNamespace("performance", quietly = TRUE)) {
+    checked <- tryCatch(performance::check_singularity(model), error = function(error) FALSE)
+    isTRUE(as.logical(checked)[[1L]])
+  } else {
+    FALSE
+  }
   fitted_rows <- tryCatch(stats::nobs(model), error = function(error) NA_integer_)
   dropped_rows <- if (is.na(input_row_count) || is.na(fitted_rows)) {
     NA_integer_
@@ -88,14 +95,57 @@ nrc_model_diagnostics <- function(model, warnings = character(), input_row_count
 }
 
 nrc_tidy_model <- function(model) {
-  if (!requireNamespace("broom", quietly = TRUE)) {
+  mixed <- inherits(model, "merMod") || inherits(model, "glmmTMB")
+  if (mixed && !requireNamespace("broom.mixed", quietly = TRUE)) {
     return(list())
   }
-  tidy <- tryCatch(
-    broom::tidy(model, conf.int = TRUE),
-    error = function(error) broom::tidy(model)
-  )
+  if (!mixed && !requireNamespace("broom", quietly = TRUE)) {
+    return(list())
+  }
+  tidy <- tryCatch({
+    if (mixed) {
+      broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE)
+    } else {
+      broom::tidy(model, conf.int = TRUE)
+    }
+  }, error = function(error) NULL)
+  if (is.null(tidy) || !nrow(tidy)) {
+    return(list())
+  }
   nrc_frame_to_rows(as.data.frame(tidy))
+}
+
+nrc_fixed_effect_design_reason <- function(model_formula, data, minimum_residual_df = 3L) {
+  fixed_formula <- tryCatch(
+    if (requireNamespace("lme4", quietly = TRUE)) lme4::nobars(model_formula) else model_formula,
+    error = function(error) model_formula
+  )
+  model_frame <- tryCatch(
+    stats::model.frame(fixed_formula, data = data, na.action = stats::na.fail),
+    error = function(error) error
+  )
+  if (inherits(model_frame, "error")) {
+    return("FIXED_EFFECT_MODEL_FRAME_FAILED")
+  }
+  design <- tryCatch(stats::model.matrix(fixed_formula, data = model_frame), error = function(error) error)
+  if (inherits(design, "error") || !is.matrix(design) || !ncol(design)) {
+    return("FIXED_EFFECT_DESIGN_MATRIX_FAILED")
+  }
+  if (qr(design)$rank < ncol(design)) {
+    return("ALIASED_DESIGN_MATRIX")
+  }
+  if (nrow(design) - ncol(design) < as.integer(minimum_residual_df)) {
+    return("INSUFFICIENT_RESIDUAL_INFORMATION")
+  }
+  scaled <- design[, colnames(design) != "(Intercept)", drop = FALSE]
+  if (ncol(scaled) > 1L) {
+    scaled <- scale(scaled)
+    condition_number <- tryCatch(kappa(scaled, exact = TRUE), error = function(error) Inf)
+    if (!is.finite(condition_number) || condition_number > 1e8) {
+      return("COLLINEAR_DESIGN_MATRIX")
+    }
+  }
+  NULL
 }
 
 nrc_apply_multiplicity <- function(rows, specification) {
@@ -117,13 +167,13 @@ nrc_apply_multiplicity <- function(rows, specification) {
     return(rows)
   }
   raw_values <- vapply(indexes, function(index) as.numeric(rows[[index]]$p.value), numeric(1))
-  adjusted_values <- stats::p.adjust(raw_values, method = method)
   for (position in seq_along(indexes)) {
     index <- indexes[[position]]
     rows[[index]]$p.value_raw <- raw_values[[position]]
-    rows[[index]]$p.value_adjusted <- adjusted_values[[position]]
+    rows[[index]]$p.value_adjusted <- NULL
     rows[[index]]$multiplicity_method <- method
     rows[[index]]$multiplicity_family_id <- family_id
+    rows[[index]]$multiplicity_status <- "pending_central_reconciliation"
   }
   rows
 }
