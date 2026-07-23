@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping, Sequence
 
+from .values import finite_number
+
 
 KNOWN_DATASET_VERSIONS = (
     "D00_inventory_all",
@@ -49,6 +51,9 @@ def _membership_hash(version_id: str, status: str, record_uids: Sequence[str], r
 def _version(version_id: str, record_uids: Iterable[str], *, status: str = "available", reason_codes: Iterable[str] = ()) -> DatasetVersion:
     sorted_uids = tuple(sorted(set(record_uids)))
     sorted_reasons = tuple(sorted(set(reason_codes)))
+    if status == "available" and not sorted_uids:
+        status = "unavailable"
+        sorted_reasons = ("NO_RECORDS_MATCH_DATASET_VERSION",)
     return DatasetVersion(
         version_id=version_id,
         status=status,
@@ -66,11 +71,52 @@ def _record_uid(record: Mapping[str, Any]) -> str:
 
 
 def _eligible(record: Mapping[str, Any]) -> bool:
-    return record.get("series_status") == "resolved" and record.get("eligibility_tier") in {"A", "B"}
+    tier = record.get("series_eligibility_tier") or record.get("eligibility_tier")
+    return record.get("series_status") == "resolved" and tier in {"A", "B"}
 
 
 def _strict_primary(record: Mapping[str, Any]) -> bool:
-    return record.get("series_status") == "resolved" and record.get("eligibility_tier") == "A"
+    tier = record.get("series_eligibility_tier") or record.get("eligibility_tier")
+    return record.get("series_status") == "resolved" and tier == "A"
+
+
+def _series_groups(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    allowed_tiers: frozenset[str],
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in records:
+        series_uid = record.get("response_series_uid")
+        if isinstance(series_uid, str) and series_uid:
+            grouped.setdefault(series_uid, []).append(record)
+    eligible: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    for series_uid, rows in grouped.items():
+        statuses = {str(row.get("series_status") or "") for row in rows}
+        tiers = {
+            str(row.get("series_eligibility_tier") or row.get("eligibility_tier") or "")
+            for row in rows
+        }
+        if statuses == {"resolved"} and len(tiers) == 1 and next(iter(tiers)) in allowed_tiers:
+            eligible[series_uid] = tuple(rows)
+    return eligible
+
+
+def _complete_n_levels(rows: Sequence[Mapping[str, Any]]) -> set[float]:
+    return {
+        n_rate
+        for row in rows
+        if (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
+        and finite_number(row.get("yield_t_ha")) is not None
+    }
+
+
+def _uids(groups: Iterable[Sequence[Mapping[str, Any]]]) -> tuple[str, ...]:
+    return tuple(
+        _record_uid(row)
+        for rows in groups
+        for row in rows
+    )
 
 
 def _reason_codes(record: Mapping[str, Any]) -> set[str]:
@@ -81,7 +127,7 @@ def _reason_codes(record: Mapping[str, Any]) -> set[str]:
 
 
 def _series_complete_recommendation_set(records: Sequence[Mapping[str, Any]]) -> set[str]:
-    required = {"zero_n", "RCM", "FP", "NOPT_NPK"}
+    required = {"zero_n_with_pk", "RCM", "FP", "NOPT_NPK"}
     observed_by_series: dict[str, set[str]] = {}
     for record in records:
         if not _eligible(record):
@@ -89,68 +135,81 @@ def _series_complete_recommendation_set(records: Sequence[Mapping[str, Any]]) ->
         series_uid = record.get("response_series_uid")
         if not isinstance(series_uid, str) or not series_uid:
             continue
-        observed_by_series.setdefault(series_uid, set()).add(str(record.get("treatment_text_class", "")))
+        observed = observed_by_series.setdefault(series_uid, set())
+        treatment_class = str(record.get("treatment_text_class", ""))
+        if treatment_class in {"RCM", "FP", "NOPT_NPK"}:
+            observed.add(treatment_class)
+        if (
+            record.get("nutrient_control_class") == "zero_n_with_pk"
+            or record.get("is_zero_n_with_pk") is True
+        ):
+            observed.add("zero_n_with_pk")
     return {series_uid for series_uid, observed in observed_by_series.items() if required.issubset(observed)}
 
 
 def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]]) -> DatasetVersion:
     all_uids = [_record_uid(record) for record in records]
-    primary = [record for record in records if _strict_primary(record)]
-    eligible = [record for record in records if _eligible(record)]
+    primary = _series_groups(records, allowed_tiers=frozenset({"A"}))
+    eligible = _series_groups(records, allowed_tiers=frozenset({"A", "B"}))
     if version_id == "D00_inventory_all":
         return _version(version_id, all_uids)
     if version_id == "D01_strict_primary_zero_n":
         return _version(
             version_id,
-            (_record_uid(record) for record in primary if bool(record.get("series_has_zero_n"))),
+            _uids(
+                rows
+                for rows in primary.values()
+                if any(abs(level) <= 1.0e-8 for level in _complete_n_levels(rows))
+            ),
         )
     if version_id == "D02_strict_primary_zero_optional":
-        return _version(version_id, (_record_uid(record) for record in primary))
+        return _version(version_id, _uids(primary.values()))
     if version_id == "D03_primary_4plus_n_levels":
         return _version(
             version_id,
-            (
-                _record_uid(record)
-                for record in primary
-                if int(record.get("series_distinct_n_level_count", 0) or 0) >= 4
-            ),
+            _uids(rows for rows in primary.values() if len(_complete_n_levels(rows)) >= 4),
         )
     if version_id == "D04_primary_5plus_n_levels":
         return _version(
             version_id,
-            (
-                _record_uid(record)
-                for record in primary
-                if int(record.get("series_distinct_n_level_count", 0) or 0) >= 5
-            ),
+            _uids(rows for rows in primary.values() if len(_complete_n_levels(rows)) >= 5),
         )
     if version_id == "D05_pk_varying_sensitivity":
         return _version(
             version_id,
-            (
-                _record_uid(record)
-                for record in eligible
-                if record.get("eligibility_tier") == "A" or "P_K_VARY_WITH_N" in _reason_codes(record)
+            _uids(
+                rows
+                for rows in eligible.values()
+                if any(_strict_primary(row) for row in rows)
+                or any("P_K_VARY_WITH_N" in _reason_codes(row) for row in rows)
             ),
         )
     if version_id == "D06_organic_bio_sensitivity":
         return _version(
             version_id,
-            (
-                _record_uid(record)
-                for record in eligible
-                if record.get("eligibility_tier") == "A"
-                or bool(record.get("organic_fertilizer_present"))
-                or bool(record.get("biofertilizer_present"))
-                or "ORGANIC_OR_BIOFERTILIZER" in _reason_codes(record)
+            _uids(
+                rows
+                for rows in eligible.values()
+                if any(_strict_primary(row) for row in rows)
+                or any(
+                    bool(row.get("organic_fertilizer_present"))
+                    or bool(row.get("biofertilizer_present"))
+                    or "ORGANIC_OR_BIOFERTILIZER" in _reason_codes(row)
+                    for row in rows
+                )
             ),
         )
     if version_id == "D07_high_n_full_range":
-        return _version(version_id, (_record_uid(record) for record in eligible))
+        return _version(version_id, _uids(eligible.values()))
     if version_id == "D08_high_n_trimmed_sensitivity":
+        trimmed_groups = []
+        for rows in eligible.values():
+            trimmed = tuple(row for row in rows if not bool(row.get("is_high_n")))
+            if len(_complete_n_levels(trimmed)) >= 2:
+                trimmed_groups.append(trimmed)
         return _version(
             version_id,
-            (_record_uid(record) for record in eligible if not bool(record.get("is_high_n"))),
+            _uids(trimmed_groups),
         )
     if version_id == "D09_complete_recommendation_set":
         complete_series = _series_complete_recommendation_set(records)
@@ -158,8 +217,9 @@ def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]])
             version_id,
             (
                 _record_uid(record)
-                for record in eligible
-                if record.get("response_series_uid") in complete_series
+                for rows in eligible.values()
+                if str(rows[0].get("response_series_uid") or "") in complete_series
+                for record in rows
             ),
         )
     if version_id == "D10_factor_specific_complete_case":
