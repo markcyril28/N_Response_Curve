@@ -61,7 +61,28 @@ class ModelAttempt:
     agronomic_optimum_n_kg_ha: float | None
     plateau_onset_n_kg_ha: float | None
     predicted_max_yield_t_ha: float | None
+    predicted_observed_domain_peak_yield_t_ha: float | None
+    finite_maximum_yield_t_ha: float | None
+    fitted_asymptote_yield_t_ha: float | None
+    supported_max_yield_t_ha: float | None
+    maximum_reference_basis: str
+    maximum_proximity_status: str
     predictions: tuple[Mapping[str, float], ...]
+
+
+@dataclass(frozen=True)
+class _OptimumSummary:
+    optimum_status: str
+    agronomic_optimum_n_kg_ha: float | None
+    plateau_onset_n_kg_ha: float | None
+    observed_domain_peak_yield_t_ha: float
+    finite_maximum_yield_t_ha: float | None
+    fitted_asymptote_yield_t_ha: float | None
+    supported_max_yield_t_ha: float | None
+    maximum_reference_basis: str
+    maximum_proximity_status: str
+    curve_shape_class: str
+    reason_codes: tuple[str, ...]
 
 
 def _frozen_mapping(values: Mapping[str, float] | None = None) -> Mapping[str, float]:
@@ -90,6 +111,12 @@ def _attempt(
     agronomic_optimum_n_kg_ha: float | None = None,
     plateau_onset_n_kg_ha: float | None = None,
     predicted_max_yield_t_ha: float | None = None,
+    predicted_observed_domain_peak_yield_t_ha: float | None = None,
+    finite_maximum_yield_t_ha: float | None = None,
+    fitted_asymptote_yield_t_ha: float | None = None,
+    supported_max_yield_t_ha: float | None = None,
+    maximum_reference_basis: str = "none",
+    maximum_proximity_status: str = "NO_SUPPORTED_MAXIMUM_REFERENCE",
     predictions: Iterable[Mapping[str, float]] = (),
 ) -> ModelAttempt:
     input_snapshot_sha256 = stable_json_sha256(identity_payload["observations"])
@@ -125,6 +152,12 @@ def _attempt(
         agronomic_optimum_n_kg_ha=agronomic_optimum_n_kg_ha,
         plateau_onset_n_kg_ha=plateau_onset_n_kg_ha,
         predicted_max_yield_t_ha=predicted_max_yield_t_ha,
+        predicted_observed_domain_peak_yield_t_ha=predicted_observed_domain_peak_yield_t_ha,
+        finite_maximum_yield_t_ha=finite_maximum_yield_t_ha,
+        fitted_asymptote_yield_t_ha=fitted_asymptote_yield_t_ha,
+        supported_max_yield_t_ha=supported_max_yield_t_ha,
+        maximum_reference_basis=maximum_reference_basis,
+        maximum_proximity_status=maximum_proximity_status,
         predictions=tuple(MappingProxyType(dict(row)) for row in predictions),
     )
 
@@ -317,6 +350,27 @@ def _parameter_mapping(model_name: str, values: np.ndarray) -> dict[str, float]:
     return {name: float(value) for name, value in zip(names, values, strict=True)}
 
 
+def _parameter_rank_is_full(
+    model_name: str,
+    x: np.ndarray,
+    parameters: np.ndarray,
+) -> bool:
+    evaluator = _EVALUATORS[model_name]
+    steps = np.maximum(np.abs(parameters), 1.0) * math.sqrt(np.finfo(float).eps)
+    columns: list[np.ndarray] = []
+    for index, step in enumerate(steps):
+        upper = parameters.copy()
+        lower = parameters.copy()
+        upper[index] += step
+        lower[index] -= step
+        columns.append((evaluator(x, upper) - evaluator(x, lower)) / (2.0 * step))
+    jacobian = np.column_stack(columns)
+    return bool(
+        np.isfinite(jacobian).all()
+        and np.linalg.matrix_rank(jacobian) == len(parameters)
+    )
+
+
 def _grouped_prediction_summary(
     model_name: str,
     x: np.ndarray,
@@ -397,52 +451,185 @@ def _optimum_summary(
     parameters: Mapping[str, float],
     predictions: Sequence[Mapping[str, float]],
     *,
+    observed_n_rates: np.ndarray,
     observed_min: float,
     observed_max: float,
     tolerance: float,
-) -> tuple[str, float | None, float | None, float | None, str | None, tuple[str, ...]]:
-    predicted_max = max(float(row["predicted_yield_t_ha"]) for row in predictions)
+    parameter_rank_full: bool,
+) -> _OptimumSummary:
+    predicted_values = [float(row["predicted_yield_t_ha"]) for row in predictions]
+    observed_domain_peak = max(predicted_values)
     boundary_tolerance = max((observed_max - observed_min) * 1e-6, tolerance)
+    response_scale = max(max(abs(value) for value in predicted_values), 1.0)
+    response_tolerance = max(math.sqrt(tolerance) * response_scale, 1.0e-8)
+    span = observed_max - observed_min
+
+    def summary(
+        optimum_status: str,
+        optimum: float | None,
+        plateau_onset: float | None,
+        finite_maximum: float | None,
+        asymptote: float | None,
+        basis: str,
+        proximity_status: str,
+        shape: str,
+        reasons: tuple[str, ...] = (),
+    ) -> _OptimumSummary:
+        supported_maximum = finite_maximum if finite_maximum is not None else asymptote
+        return _OptimumSummary(
+            optimum_status,
+            optimum,
+            plateau_onset,
+            observed_domain_peak,
+            finite_maximum,
+            asymptote,
+            supported_maximum,
+            basis,
+            proximity_status,
+            shape,
+            reasons,
+        )
+
     if model_name == "linear":
         slope = parameters["slope"]
         shape = "increasing_linear" if slope > tolerance else "decreasing_linear" if slope < -tolerance else "flat_linear"
-        return "NO_FINITE_OPTIMUM_LINEAR", None, None, predicted_max, shape, ()
+        return summary(
+            "NO_FINITE_OPTIMUM_LINEAR",
+            None,
+            None,
+            None,
+            None,
+            "none",
+            "NO_SUPPORTED_MAXIMUM_REFERENCE",
+            shape,
+        )
     if model_name == "quadratic":
         curvature = parameters["curvature"]
-        if curvature < -tolerance:
+        curvature_effect = abs(curvature) * span**2
+        slope_low = parameters["slope"] + 2.0 * curvature * observed_min
+        slope_high = parameters["slope"] + 2.0 * curvature * observed_max
+        if curvature_effect <= response_tolerance:
+            return summary(
+                "NO_IDENTIFIABLE_INTERIOR_MAXIMUM",
+                None,
+                None,
+                None,
+                None,
+                "none",
+                "NO_SUPPORTED_MAXIMUM_REFERENCE",
+                "weak_quadratic_curvature",
+                ("WEAK_QUADRATIC_CURVATURE",),
+            )
+        if curvature < 0.0:
             vertex = -parameters["slope"] / (2.0 * curvature)
             if observed_min + boundary_tolerance < vertex < observed_max - boundary_tolerance:
-                return (
+                maximum = float(evaluate_model(model_name, [vertex], parameters)[0])
+                return summary(
                     "IDENTIFIABLE_INTERIOR_MAXIMUM",
                     float(vertex),
                     None,
-                    predicted_max,
+                    maximum,
+                    None,
+                    "finite_interior_maximum",
+                    "SUPPORTED_FINITE_MAXIMUM",
                     "concave_quadratic",
-                    (),
                 )
-        reason = "OPTIMUM_AT_OR_OUTSIDE_OBSERVED_DOMAIN" if abs(curvature) > tolerance else "WEAK_QUADRATIC_CURVATURE"
-        return "NO_IDENTIFIABLE_INTERIOR_MAXIMUM", None, None, predicted_max, "quadratic_without_supported_maximum", (reason,)
+            shape = (
+                "diminishing_returns"
+                if slope_low > 0.0 and slope_high > 0.0
+                else "declining_concave"
+                if slope_low < 0.0 and slope_high < 0.0
+                else "concave_boundary_peak"
+            )
+        else:
+            shape = (
+                "accelerating_returns"
+                if slope_low >= 0.0 and slope_high > 0.0
+                else "convex_decline"
+                if slope_low < 0.0 and slope_high <= 0.0
+                else "convex_boundary_minimum"
+            )
+        return summary(
+            "NO_IDENTIFIABLE_INTERIOR_MAXIMUM",
+            None,
+            None,
+            None,
+            None,
+            "none",
+            "NO_SUPPORTED_MAXIMUM_REFERENCE",
+            shape,
+            ("OPTIMUM_AT_OR_OUTSIDE_OBSERVED_DOMAIN",),
+        )
     if model_name in {"linear_plateau", "quadratic_plateau"}:
         onset = parameters["plateau_onset"]
-        if observed_min + boundary_tolerance < onset < observed_max - boundary_tolerance:
-            return (
+        distinct_rates = sorted(set(float(value) for value in observed_n_rates))
+        left_support = sum(value < onset for value in distinct_rates)
+        right_support = sum(value >= onset for value in distinct_rates)
+        response_gain = (
+            parameters["slope"] * max(onset - observed_min, 0.0)
+            if model_name == "linear_plateau"
+            else parameters["gain"]
+        )
+        identifiable = (
+            parameter_rank_full
+            and response_gain > response_tolerance
+            and left_support >= 2
+            and right_support >= 1
+            and observed_min + boundary_tolerance < onset < observed_max - boundary_tolerance
+        )
+        if identifiable:
+            maximum = float(evaluate_model(model_name, [onset], parameters)[0])
+            return summary(
                 "IDENTIFIABLE_PLATEAU_ONSET",
                 float(onset),
                 float(onset),
-                predicted_max,
+                maximum,
+                None,
+                "plateau_maximum",
+                "SUPPORTED_FINITE_MAXIMUM",
                 "plateau",
-                (),
             )
-        return (
+        return summary(
             "UNSUPPORTED_OR_BOUNDARY_PLATEAU",
             None,
             None,
-            predicted_max,
+            None,
+            None,
+            "none",
+            "NO_SUPPORTED_MAXIMUM_REFERENCE",
             "plateau_without_supported_onset",
-            ("BREAKPOINT_AT_OR_OUTSIDE_OBSERVED_DOMAIN",),
+            ("UNIDENTIFIABLE_SHAPE_PARAMETERS",),
         )
     if model_name == "mitscherlich":
-        return "NO_FINITE_OPTIMUM_ASYMPTOTIC", None, None, predicted_max, "asymptotic", ()
+        response_gain = max(predicted_values) - min(predicted_values)
+        identifiable = (
+            parameter_rank_full
+            and parameters["amplitude"] > response_tolerance
+            and response_gain > response_tolerance
+            and parameters["rate"] * span > math.sqrt(np.finfo(float).eps)
+        )
+        if identifiable:
+            return summary(
+                "NO_FINITE_OPTIMUM_ASYMPTOTIC",
+                None,
+                None,
+                None,
+                float(parameters["asymptote"]),
+                "identifiable_asymptote",
+                "SUPPORTED_ASYMPTOTIC_MAXIMUM_REFERENCE",
+                "asymptotic_diminishing_returns",
+            )
+        return summary(
+            "UNIDENTIFIABLE_ASYMPTOTE",
+            None,
+            None,
+            None,
+            None,
+            "none",
+            "NO_SUPPORTED_MAXIMUM_REFERENCE",
+            "asymptotic_without_supported_asymptote",
+            ("UNIDENTIFIABLE_SHAPE_PARAMETERS",),
+        )
     raise ValueError(f"Unknown response model: {model_name}")
 
 
@@ -617,15 +804,17 @@ def fit_candidate_model(
             parameters=parameter_map,
         )
     rss = float(np.sum((predicted_observed - y) ** 2))
-    optimum_status, optimum, plateau_onset, predicted_max, curve_shape, summary_reasons = _optimum_summary(
+    optimum_summary = _optimum_summary(
         model_name,
         parameter_map,
         predictions,
+        observed_n_rates=x,
         observed_min=observed_min,
         observed_max=observed_max,
         tolerance=tolerance,
+        parameter_rank_full=_parameter_rank_is_full(model_name, x, parameters),
     )
-    reasons = list(summary_reasons)
+    reasons = list(optimum_summary.reason_codes)
     aicc = _aicc(rss, n_observations, parameter_count)
     if aicc is None:
         reasons.append("AICC_UNAVAILABLE")
@@ -658,11 +847,17 @@ def fit_candidate_model(
         grouped_prediction_rmse=grouped_prediction_rmse,
         grouped_prediction_fold_count=grouped_prediction_fold_count,
         parameters=parameter_map,
-        curve_shape_class=curve_shape,
-        optimum_status=optimum_status,
-        agronomic_optimum_n_kg_ha=optimum,
-        plateau_onset_n_kg_ha=plateau_onset,
-        predicted_max_yield_t_ha=predicted_max,
+        curve_shape_class=optimum_summary.curve_shape_class,
+        optimum_status=optimum_summary.optimum_status,
+        agronomic_optimum_n_kg_ha=optimum_summary.agronomic_optimum_n_kg_ha,
+        plateau_onset_n_kg_ha=optimum_summary.plateau_onset_n_kg_ha,
+        predicted_max_yield_t_ha=optimum_summary.finite_maximum_yield_t_ha,
+        predicted_observed_domain_peak_yield_t_ha=optimum_summary.observed_domain_peak_yield_t_ha,
+        finite_maximum_yield_t_ha=optimum_summary.finite_maximum_yield_t_ha,
+        fitted_asymptote_yield_t_ha=optimum_summary.fitted_asymptote_yield_t_ha,
+        supported_max_yield_t_ha=optimum_summary.supported_max_yield_t_ha,
+        maximum_reference_basis=optimum_summary.maximum_reference_basis,
+        maximum_proximity_status=optimum_summary.maximum_proximity_status,
         predictions=predictions,
     )
 
@@ -708,7 +903,12 @@ def fit_response_models(
 def select_reportable_model(attempts: Iterable[ModelAttempt]) -> ModelAttempt | None:
     """Select the best fitted candidate without hiding unsupported or failed attempts."""
 
-    fitted = [attempt for attempt in attempts if attempt.status == "fitted"]
+    fitted = [
+        attempt
+        for attempt in attempts
+        if attempt.status == "fitted"
+        and "UNIDENTIFIABLE_SHAPE_PARAMETERS" not in attempt.reason_codes
+    ]
     if not fitted:
         return None
     return min(
@@ -749,6 +949,12 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "agronomic_optimum_n_kg_ha": attempt.agronomic_optimum_n_kg_ha,
         "plateau_onset_n_kg_ha": attempt.plateau_onset_n_kg_ha,
         "predicted_max_yield_t_ha": attempt.predicted_max_yield_t_ha,
+        "predicted_observed_domain_peak_yield_t_ha": attempt.predicted_observed_domain_peak_yield_t_ha,
+        "finite_maximum_yield_t_ha": attempt.finite_maximum_yield_t_ha,
+        "fitted_asymptote_yield_t_ha": attempt.fitted_asymptote_yield_t_ha,
+        "supported_max_yield_t_ha": attempt.supported_max_yield_t_ha,
+        "maximum_reference_basis": attempt.maximum_reference_basis,
+        "maximum_proximity_status": attempt.maximum_proximity_status,
         "predictions": [dict(row) for row in attempt.predictions],
     }
 
