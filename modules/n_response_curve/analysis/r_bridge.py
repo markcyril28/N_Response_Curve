@@ -24,6 +24,7 @@ class RStageContract:
     input_path: Path
     output_path: Path
     contract_sha256: str
+    contract_file_sha256: str
     input_sha256: str
     row_count: int
     stable_key: str
@@ -108,13 +109,15 @@ def write_r_stage_contract(
         raise RBridgeError("R stage cannot be invoked with zero normalized rows")
     if any(stable_key not in row or row[stable_key] in {None, ""} for row in normalized_rows):
         raise RBridgeError(f"Each normalized R-stage row must contain nonempty stable key {stable_key!r}")
+    stable_values = {str(row[stable_key]) for row in normalized_rows}
+    if len(stable_values) != len(normalized_rows):
+        raise RBridgeError(f"Normalized R-stage stable key {stable_key!r} must be unique")
     try:
         frame = pd.DataFrame(normalized_rows)
         frame.to_parquet(input_path, index=False)
     except (ImportError, OSError, TypeError, ValueError) as exc:
         raise RBridgeError("Unable to write normalized R-stage Parquet input") from exc
     input_sha256 = sha256_file(input_path)
-    stable_values = {str(row[stable_key]) for row in normalized_rows}
     normalized_specification = json.loads(_canonical_json_bytes(specification).decode("utf-8"))
     payload: dict[str, Any] = {
         "contract_version": 1,
@@ -132,12 +135,14 @@ def write_r_stage_contract(
     contract_sha256 = _contract_digest(payload)
     payload["contract_sha256"] = contract_sha256
     contract_path.write_bytes(_canonical_json_bytes(payload))
+    contract_file_sha256 = sha256_file(contract_path)
     return RStageContract(
         stage_root=root,
         contract_path=contract_path,
         input_path=input_path,
         output_path=output_path,
         contract_sha256=contract_sha256,
+        contract_file_sha256=contract_file_sha256,
         input_sha256=input_sha256,
         row_count=len(normalized_rows),
         stable_key=stable_key,
@@ -145,14 +150,41 @@ def write_r_stage_contract(
     )
 
 
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError(f"Nonstandard JSON constant: {value}")
+
+
+def _validated_contract_payload(contract: RStageContract) -> Mapping[str, Any]:
+    if not contract.contract_path.is_file():
+        raise RBridgeError("R stage contract file is missing")
+    if sha256_file(contract.contract_path) != contract.contract_file_sha256:
+        raise RBridgeError("R stage contract file hash changed after preparation")
+    if not contract.input_path.is_file() or sha256_file(contract.input_path) != contract.input_sha256:
+        raise RBridgeError("R stage input hash changed after preparation")
+    try:
+        payload = json.loads(
+            contract.contract_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise RBridgeError("R stage contract is not strict valid JSON") from exc
+    if not isinstance(payload, Mapping) or _contract_digest(payload) != contract.contract_sha256:
+        raise RBridgeError("R stage contract semantic hash does not match its specification")
+    return payload
+
+
 def validate_r_stage_result(contract: RStageContract) -> RStageResult:
     """Reject partial, stale, schema-invalid, or mismatched R-stage output."""
 
+    contract_payload = _validated_contract_payload(contract)
     if not contract.output_path.is_file():
         raise RBridgeError("R stage did not produce its required result.json output")
     try:
-        payload = json.loads(contract.output_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = json.loads(
+            contract.output_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise RBridgeError("R stage result is not valid JSON") from exc
     if not isinstance(payload, Mapping):
         raise RBridgeError("R stage result must be a JSON object")
@@ -173,6 +205,17 @@ def validate_r_stage_result(contract: RStageContract) -> RStageResult:
         raise RBridgeError("R stage result must contain a list of result objects")
     if not isinstance(metadata, Mapping):
         raise RBridgeError("R stage result must contain a metadata object")
+    if metadata.get("engine") != "r":
+        raise RBridgeError("R stage result metadata has an invalid engine binding")
+    if status == "completed" and not raw_results:
+        raise RBridgeError("Completed R stage result must contain at least one result row")
+    if status in {"skipped", "failed"} and not raw_results:
+        raise RBridgeError("Non-completed R stage result must contain a structured reason row")
+    specification = contract_payload.get("specification", {})
+    for key in ("candidate_id", "specification_hash"):
+        expected = specification.get(key) if isinstance(specification, Mapping) else None
+        if expected is not None and metadata.get(key) != expected:
+            raise RBridgeError(f"R stage result metadata does not bind {key}")
     return RStageResult(
         status=str(status),
         return_code=0,
@@ -208,7 +251,15 @@ def invoke_r_stage(
         raise RBridgeError("R stage timeout_seconds must be a positive integer")
     entrypoint = Path(r_entrypoint).resolve()
     if not entrypoint.is_file():
-        raise RBridgeError(f"R stage entrypoint does not exist: {entrypoint}")
+        return RStageResult(
+            status="failed",
+            return_code=-1,
+            command=(*_normalize_command(rscript_command), "--vanilla", str(entrypoint)),
+            stdout="",
+            stderr=f"R stage entrypoint does not exist: {entrypoint}",
+            results=(),
+            metadata={"dispatch_error": "R_ENTRYPOINT_MISSING"},
+        )
     command = (
         *_normalize_command(rscript_command),
         "--vanilla",
@@ -216,9 +267,23 @@ def invoke_r_stage(
         "--contract",
         str(contract.contract_path),
     )
+    try:
+        _validated_contract_payload(contract)
+    except RBridgeError as exc:
+        return RStageResult(
+            status="failed",
+            return_code=-1,
+            command=command,
+            stdout="",
+            stderr=str(exc),
+            results=(),
+            metadata={"dispatch_error": "R_CONTRACT_VALIDATION_FAILED"},
+        )
     environment = os.environ.copy()
     if extra_environment:
         environment.update({str(key): str(value) for key, value in extra_environment.items()})
+    environment["NRC_CONTRACT_FILE_SHA256"] = contract.contract_file_sha256
+    environment["NRC_CONTRACT_SHA256"] = contract.contract_sha256
     try:
         completed = subprocess.run(
             command,
@@ -249,7 +314,18 @@ def invoke_r_stage(
             results=(),
             metadata={"dispatch_error": "R_PROCESS_FAILED"},
         )
-    validated = validate_r_stage_result(contract)
+    try:
+        validated = validate_r_stage_result(contract)
+    except RBridgeError as exc:
+        return RStageResult(
+            status="failed",
+            return_code=completed.returncode,
+            command=command,
+            stdout=completed.stdout,
+            stderr=str(exc),
+            results=(),
+            metadata={"dispatch_error": "R_RESULT_VALIDATION_FAILED"},
+        )
     return RStageResult(
         status=validated.status,
         return_code=completed.returncode,
