@@ -5,7 +5,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from ..data.provenance import stable_identifier, stable_json_sha256
 from .analysis_matrix import SourceCombination
-from .curve_evidence import CurveEvidenceResult, build_curve_evidence
+from .curve_evidence import CurveEvidenceResult, build_curve_evidence, curve_fit_record_uids
 from .dataset_versions import DatasetVersion, select_dataset_version_records
 
 
@@ -89,6 +89,7 @@ def build_derived_curve_views(
                 view_records,
                 model_names=model_names,
                 policy=policy,
+                fit_record_uids=curve_fit_record_uids(view_records, primary_only=False),
             )
             common_fields = {
                 "accepted_model_view_id": view_id,
