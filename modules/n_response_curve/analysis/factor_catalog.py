@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from .values import finite_number, is_missing_text
@@ -33,6 +35,7 @@ _FACTOR_METADATA: Mapping[str, Mapping[str, Any]] = {
     "variety": {"fields": ("rice_variety",), "type": "categorical", "role": "candidate_explanatory", "unit": None},
     "planting_year": {"fields": ("planting_year",), "type": "numeric", "role": "candidate_explanatory", "unit": "year"},
     "recommendation_class": {"fields": ("treatment_text_class",), "type": "categorical", "role": "candidate_explanatory", "unit": None},
+    "recommendation_scope": {"fields": ("recommendation_scope",), "type": "categorical", "role": "candidate_explanatory", "unit": None},
     "n_level_count": {"fields": ("series_distinct_n_level_count",), "type": "numeric", "role": "design_or_selection", "unit": "count", "leakage": True},
     "observed_n_range": {"fields": ("series_observed_n_min_kg_ha", "series_observed_n_max_kg_ha"), "type": "numeric", "role": "design_or_selection", "unit": "kg N/ha", "leakage": True},
     "has_zero_n": {"fields": ("series_has_zero_n",), "type": "boolean", "role": "design_or_selection", "unit": None, "leakage": True},
@@ -97,6 +100,12 @@ def factor_value(record: Mapping[str, Any], factor_name: str) -> object:
     if factor_name == "k_varies_with_n":
         constant = record.get("series_k_constant")
         return None if constant is None else not bool(constant)
+    if factor_name == "recommendation_scope":
+        raw_scope = record.get("recommendation_scope")
+        if raw_scope is None:
+            return None
+        normalized_scope = re.sub(r"[^a-z0-9]+", "_", str(raw_scope).strip().casefold()).strip("_")
+        return normalized_scope or None
     for field in metadata["fields"]:
         if field in record and record[field] is not None:
             return record[field]
