@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import itertools
 import json
@@ -39,6 +39,21 @@ class SourceCombination:
 
 
 @dataclass(frozen=True)
+class PrespecifiedHypothesis:
+    """One bounded, reviewable hypothesis allowed to become executable."""
+
+    hypothesis_id: str
+    dataset_version_id: str
+    source_combination_id: str
+    curve_outcome: str
+    factor_names: tuple[str, ...]
+    contrast_specification: Mapping[str, Any]
+    analysis_family: str
+    engine: str
+    multiplicity_family_id: str
+
+
+@dataclass(frozen=True)
 class AnalysisCandidate:
     """An engine-neutral analysis specification with a terminal pre-execution status."""
 
@@ -56,6 +71,10 @@ class AnalysisCandidate:
     eligible_curve_rows: int
     independent_study_count: int
     factor_cell_counts: Mapping[str, int]
+    factor_cell_study_counts: Mapping[str, int] = field(default_factory=dict)
+    hypothesis_id: str | None = None
+    prespecified_contrast: Mapping[str, Any] = field(default_factory=dict)
+    multiplicity_family_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +86,16 @@ class PrunedFamily:
 
 
 @dataclass(frozen=True)
+class MultiplicityFamily:
+    """Immutable prespecified membership for one cross-candidate adjustment family."""
+
+    family_id: str
+    method: str
+    candidate_ids: tuple[str, ...]
+    hypothesis_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AnalysisRegistry:
     """Complete concrete analysis space plus a compressed pruning ledger."""
 
@@ -75,6 +104,7 @@ class AnalysisRegistry:
     theoretical_candidate_count: int
     accounted_candidate_count: int
     reconciles: bool
+    multiplicity_families: tuple[MultiplicityFamily, ...] = ()
 
 
 def build_source_combinations(
@@ -188,7 +218,7 @@ def _support_policy_values(policy: Mapping[str, Any] | None) -> dict[str, int] |
 def _support_summary(
     rows: Sequence[Mapping[str, Any]],
     factor_names: Sequence[str],
-) -> tuple[int, dict[str, int], int, int]:
+) -> tuple[int, dict[str, int], dict[str, int], int, int]:
     complete_rows: list[Mapping[str, Any]] = []
     for row in rows:
         if all(factor_value(row, name) is not None for name in factor_names):
@@ -197,13 +227,19 @@ def _support_summary(
     studies.discard("")
     missing_group_count = sum(not str(row.get("study_uid") or "") for row in complete_rows)
     cell_counts: dict[str, int] = {}
+    cell_studies: dict[str, set[str]] = {}
     if factor_names:
         for row in complete_rows:
             cell = "|".join(str(factor_value(row, name)) for name in factor_names)
             cell_counts[cell] = cell_counts.get(cell, 0) + 1
+            cell_studies.setdefault(cell, set())
+            study_uid = str(row.get("study_uid") or "")
+            if study_uid:
+                cell_studies[cell].add(study_uid)
     return (
         len(studies),
         {key: cell_counts[key] for key in sorted(cell_counts)},
+        {key: len(cell_studies.get(key, set())) for key in sorted(cell_counts)},
         len(complete_rows),
         missing_group_count,
     )
@@ -216,31 +252,37 @@ def _reasons_for_candidate(
     factor_entries: Sequence[FactorCatalogEntry],
     analysis_family: str,
     support_policy: Mapping[str, int] | None,
-) -> tuple[str, tuple[str, ...], int, Mapping[str, int]]:
+) -> tuple[str, tuple[str, ...], int, Mapping[str, int], Mapping[str, int]]:
     if version.status != "available":
-        return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}
+        return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}, {}
     if version.version_id == "D00_inventory_all" and analysis_family != "coverage_and_missingness":
-        return "skipped", ("DATASET_VERSION_NOT_PERMITTED_FOR_ANALYSIS_FAMILY",), 0, {}
+        return "skipped", ("DATASET_VERSION_NOT_PERMITTED_FOR_ANALYSIS_FAMILY",), 0, {}, {}
     if not rows:
-        return "pruned", ("NO_OUTCOME_SUPPORT",), 0, {}
+        return "pruned", ("NO_OUTCOME_SUPPORT",), 0, {}, {}
     if analysis_family in {
         "coverage_and_missingness",
         "curve_feature_clustering",
         "dataset_and_source_robustness",
     }:
-        return "run", (), len(rows), {}
+        studies = {str(row.get("study_uid") or "") for row in rows}
+        studies.discard("")
+        return "run", (), len(studies), {}, {}
     if not factor_entries:
-        return "pruned", ("NO_CONFIGURED_FACTORS",), 0, {}
+        return "pruned", ("NO_CONFIGURED_FACTORS",), 0, {}, {}
     if any(entry.leakage_restricted for entry in factor_entries):
-        return "pruned", ("LEAKAGE_RESTRICTED_FACTOR",), 0, {}
-    independent_studies, cell_counts, complete_rows, missing_group_count = _support_summary(
+        return "pruned", ("LEAKAGE_RESTRICTED_FACTOR",), 0, {}, {}
+    independent_studies, cell_counts, cell_study_counts, complete_rows, missing_group_count = _support_summary(
         rows,
         [entry.factor_name for entry in factor_entries],
     )
     if analysis_family == "one_factor_descriptive":
-        return ("run", (), independent_studies, cell_counts) if complete_rows else ("pruned", ("NO_FACTOR_COMPLETE_CASES",), independent_studies, cell_counts)
+        return (
+            ("run", (), independent_studies, cell_counts, cell_study_counts)
+            if complete_rows
+            else ("pruned", ("NO_FACTOR_COMPLETE_CASES",), independent_studies, cell_counts, cell_study_counts)
+        )
     if support_policy is None:
-        return "pruned", ("SUPPORT_POLICY_REQUIRED",), independent_studies, cell_counts
+        return "pruned", ("SUPPORT_POLICY_REQUIRED",), independent_studies, cell_counts, cell_study_counts
     reasons: list[str] = []
     if missing_group_count:
         reasons.append("MISSING_GROUP_IDENTITY")
@@ -248,14 +290,14 @@ def _reasons_for_candidate(
         reasons.append("INSUFFICIENT_INDEPENDENT_STUDY_SUPPORT")
     if len(cell_counts) > support_policy["maximum_factor_cardinality"]:
         reasons.append("FACTOR_CARDINALITY_EXCEEDS_SUPPORT_POLICY")
-    if cell_counts and min(cell_counts.values()) < support_policy["minimum_factor_cell_count"]:
+    if cell_study_counts and min(cell_study_counts.values()) < support_policy["minimum_factor_cell_count"]:
         reasons.append("INSUFFICIENT_FACTOR_CELL_SUPPORT")
     residual_information = complete_rows - len(factor_entries) - 1
     if residual_information < support_policy["minimum_residual_information"]:
         reasons.append("INSUFFICIENT_RESIDUAL_INFORMATION")
     if reasons:
-        return "pruned", tuple(sorted(reasons)), independent_studies, cell_counts
-    return "run", (), independent_studies, cell_counts
+        return "pruned", tuple(sorted(reasons)), independent_studies, cell_counts, cell_study_counts
+    return "run", (), independent_studies, cell_counts, cell_study_counts
 
 
 def _candidate(
@@ -268,9 +310,10 @@ def _candidate(
     engine: str,
     rows: Sequence[Mapping[str, Any]],
     support_policy: Mapping[str, int] | None,
+    hypothesis: PrespecifiedHypothesis | None = None,
 ) -> AnalysisCandidate:
     factor_names = tuple(entry.factor_name for entry in factor_entries)
-    status, reasons, independent_studies, cell_counts = _reasons_for_candidate(
+    status, reasons, independent_studies, cell_counts, cell_study_counts = _reasons_for_candidate(
         version=version,
         rows=rows,
         factor_entries=factor_entries,
@@ -283,7 +326,11 @@ def _candidate(
         "dataset_version_id": version.version_id,
         "engine": engine,
         "factor_names": factor_names,
+        "hypothesis_id": hypothesis.hypothesis_id if hypothesis is not None else None,
+        "contrast_specification": dict(hypothesis.contrast_specification) if hypothesis is not None else {},
+        "multiplicity_family_id": hypothesis.multiplicity_family_id if hypothesis is not None else None,
         "source_families": combination.source_families,
+        "support_policy": dict(support_policy or {}),
         "version_membership_sha256": version.membership_sha256,
     }
     raw_hash = hashlib.sha256(
@@ -306,7 +353,112 @@ def _candidate(
         eligible_curve_rows=len(rows),
         independent_study_count=independent_studies,
         factor_cell_counts=cell_counts,
+        factor_cell_study_counts=cell_study_counts,
+        hypothesis_id=hypothesis.hypothesis_id if hypothesis is not None else None,
+        prespecified_contrast=dict(hypothesis.contrast_specification) if hypothesis is not None else {},
+        multiplicity_family_id=hypothesis.multiplicity_family_id if hypothesis is not None else None,
     )
+
+
+def _normalize_hypotheses(
+    specifications: Sequence[PrespecifiedHypothesis | Mapping[str, Any]],
+) -> tuple[PrespecifiedHypothesis, ...]:
+    normalized: list[PrespecifiedHypothesis] = []
+    for raw in specifications:
+        if isinstance(raw, PrespecifiedHypothesis):
+            hypothesis = raw
+        elif isinstance(raw, Mapping):
+            required = (
+                "hypothesis_id",
+                "dataset_version_id",
+                "source_combination_id",
+                "curve_outcome",
+                "factor_names",
+                "analysis_family",
+                "engine",
+                "multiplicity_family_id",
+            )
+            missing = [
+                name
+                for name in required
+                if name not in raw or (name != "factor_names" and not raw.get(name))
+            ]
+            if missing:
+                raise ValueError(
+                    "Prespecified hypothesis is missing required field(s): "
+                    + ", ".join(missing)
+                )
+            factor_names = tuple(str(name) for name in raw["factor_names"])
+            contrast = raw.get("contrast_specification", {})
+            if not isinstance(contrast, Mapping):
+                raise ValueError("Prespecified hypothesis contrast_specification must be a mapping")
+            hypothesis = PrespecifiedHypothesis(
+                hypothesis_id=str(raw["hypothesis_id"]),
+                dataset_version_id=str(raw["dataset_version_id"]),
+                source_combination_id=str(raw["source_combination_id"]),
+                curve_outcome=str(raw["curve_outcome"]),
+                factor_names=factor_names,
+                contrast_specification=dict(contrast),
+                analysis_family=str(raw["analysis_family"]),
+                engine=str(raw["engine"]),
+                multiplicity_family_id=str(raw["multiplicity_family_id"]),
+            )
+        else:
+            raise ValueError("Prespecified hypotheses must be mappings or PrespecifiedHypothesis values")
+        text_fields = (
+            hypothesis.hypothesis_id,
+            hypothesis.dataset_version_id,
+            hypothesis.source_combination_id,
+            hypothesis.curve_outcome,
+            hypothesis.analysis_family,
+            hypothesis.engine,
+            hypothesis.multiplicity_family_id,
+        )
+        if any(not value for value in text_fields):
+            raise ValueError("Prespecified hypothesis identifiers and ownership fields must be nonempty")
+        if len(hypothesis.factor_names) != len(set(hypothesis.factor_names)):
+            raise ValueError("Prespecified hypothesis factor_names must be unique")
+        try:
+            json.dumps(dict(hypothesis.contrast_specification), allow_nan=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Prespecified hypothesis contrast must be finite JSON data") from exc
+        normalized.append(hypothesis)
+    identifiers = [item.hypothesis_id for item in normalized]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("Prespecified hypothesis IDs must be unique")
+    return tuple(normalized)
+
+
+def _multiplicity_family_registry(
+    candidates: Sequence[AnalysisCandidate],
+) -> tuple[MultiplicityFamily, ...]:
+    grouped: dict[str, list[AnalysisCandidate]] = {}
+    for candidate in candidates:
+        family_id = candidate.multiplicity_family_id
+        if family_id is None:
+            continue
+        if candidate.hypothesis_id is None:
+            raise ValueError(
+                "Multiplicity-family membership requires a prespecified hypothesis identifier"
+            )
+        grouped.setdefault(family_id, []).append(candidate)
+    families: list[MultiplicityFamily] = []
+    for family_id, members in sorted(grouped.items()):
+        candidate_ids = tuple(sorted(member.candidate_id for member in members))
+        hypothesis_ids = tuple(sorted(str(member.hypothesis_id) for member in members))
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError(f"Multiplicity family {family_id!r} contains duplicate candidates")
+        if len(hypothesis_ids) != len(set(hypothesis_ids)):
+            raise ValueError(f"Multiplicity family {family_id!r} contains duplicate hypotheses")
+        families.append(
+            MultiplicityFamily(
+                family_id=family_id,
+                method="BH",
+                candidate_ids=candidate_ids,
+                hypothesis_ids=hypothesis_ids,
+            )
+        )
+    return tuple(families)
 
 
 def build_analysis_registry(
@@ -321,6 +473,7 @@ def build_analysis_registry(
     interaction_orders: Sequence[int],
     support_policy: Mapping[str, Any] | None,
     source_families: Sequence[str] | None = None,
+    hypothesis_specifications: Sequence[PrespecifiedHypothesis | Mapping[str, Any]] | None = None,
 ) -> AnalysisRegistry:
     """Enumerate a complete, engine-owned analysis space before dispatching any model."""
 
@@ -359,6 +512,26 @@ def build_analysis_registry(
     ):
         raise ValueError("Configured source families must be unique nonempty names")
     combinations = build_source_combinations(configured_source_families, modes=source_combination_modes)
+    bounded_hypotheses = (
+        None
+        if hypothesis_specifications is None
+        else _normalize_hypotheses(hypothesis_specifications)
+    )
+    if bounded_hypotheses is not None:
+        known_version_ids = {version.version_id for version in versions}
+        known_combination_ids = {combination.combination_id for combination in combinations}
+        for hypothesis in bounded_hypotheses:
+            if hypothesis.dataset_version_id not in known_version_ids:
+                raise ValueError(f"Prespecified hypothesis refers to unknown dataset version: {hypothesis.hypothesis_id}")
+            if hypothesis.source_combination_id not in known_combination_ids:
+                raise ValueError(f"Prespecified hypothesis refers to unknown source view: {hypothesis.hypothesis_id}")
+            if hypothesis.analysis_family not in family_names:
+                raise ValueError(f"Prespecified hypothesis refers to unconfigured analysis family: {hypothesis.hypothesis_id}")
+            if hypothesis.engine != engine_assignments[hypothesis.analysis_family]:
+                raise ValueError(f"Prespecified hypothesis engine conflicts with primary ownership: {hypothesis.hypothesis_id}")
+            unknown_hypothesis_factors = set(hypothesis.factor_names) - set(known_factors)
+            if unknown_hypothesis_factors:
+                raise ValueError(f"Prespecified hypothesis refers to unknown factor(s): {hypothesis.hypothesis_id}")
 
     candidates: list[AnalysisCandidate] = []
     theoretical_count = 0
@@ -369,6 +542,7 @@ def build_analysis_registry(
         "observation_level_curve_modification",
         "penalized_predictive_models",
     }
+    materialized_hypothesis_ids: set[str] = set()
     for version in versions:
         for combination in combinations:
             for family in family_names:
@@ -380,6 +554,34 @@ def build_analysis_registry(
                     family_outcomes = tuple((outcome, outcome) for outcome in outcomes)
                 for outcome, support_outcome in family_outcomes:
                     applicable_rows = _selected_rows(rows, version, combination, support_outcome)
+                    if bounded_hypotheses is not None:
+                        scoped_hypotheses = tuple(
+                            hypothesis
+                            for hypothesis in bounded_hypotheses
+                            if hypothesis.dataset_version_id == version.version_id
+                            and hypothesis.source_combination_id == combination.combination_id
+                            and hypothesis.curve_outcome == outcome
+                            and hypothesis.analysis_family == family
+                            and hypothesis.engine == engine_assignments[family]
+                        )
+                        theoretical_count += len(scoped_hypotheses)
+                        for hypothesis in scoped_hypotheses:
+                            entries = tuple(known_factors[name] for name in hypothesis.factor_names)
+                            candidates.append(
+                                _candidate(
+                                    version=version,
+                                    combination=combination,
+                                    outcome=outcome,
+                                    analysis_family=family,
+                                    factor_entries=entries,
+                                    engine=engine_assignments[family],
+                                    rows=applicable_rows,
+                                    support_policy=policy,
+                                    hypothesis=hypothesis,
+                                )
+                            )
+                            materialized_hypothesis_ids.add(hypothesis.hypothesis_id)
+                        continue
                     factor_sets = _factor_combinations(family, tuple(known_factors.values()), orders)
                     theoretical_count += len(factor_sets)
                     if family not in expansion_families or not any(len(names) > 1 for names in factor_sets):
@@ -424,6 +626,17 @@ def build_analysis_registry(
                                 support_policy=policy,
                             )
                         )
+    if bounded_hypotheses is not None:
+        missing_hypotheses = {
+            hypothesis.hypothesis_id for hypothesis in bounded_hypotheses
+        } - materialized_hypothesis_ids
+        if missing_hypotheses:
+            raise ValueError(
+                "Prespecified hypotheses could not be represented by the configured registry: "
+                + ", ".join(sorted(missing_hypotheses))
+            )
+        if any(candidate.status == "run" and candidate.hypothesis_id is None for candidate in candidates):
+            raise ValueError("Bounded hypothesis registry produced an undeclared executable candidate")
     candidates.sort(
         key=lambda candidate: (
             candidate.dataset_version_id,
@@ -431,6 +644,7 @@ def build_analysis_registry(
             candidate.curve_outcome,
             candidate.analysis_family,
             candidate.factor_names,
+            candidate.hypothesis_id or "",
         )
     )
     prune_counts: dict[str, int] = {}
@@ -455,12 +669,15 @@ def build_analysis_registry(
         theoretical_candidate_count=theoretical_count,
         accounted_candidate_count=accounted_count,
         reconciles=theoretical_count == accounted_count,
+        multiplicity_families=_multiplicity_family_registry(candidates),
     )
 
 
 __all__ = [
     "AnalysisCandidate",
     "AnalysisRegistry",
+    "MultiplicityFamily",
+    "PrespecifiedHypothesis",
     "PrunedFamily",
     "SourceCombination",
     "build_analysis_registry",
