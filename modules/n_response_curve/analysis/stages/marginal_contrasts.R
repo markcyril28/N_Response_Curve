@@ -39,6 +39,17 @@ nrc_run_marginal_contrasts <- function(stage) {
       list(warnings = as.list(unique(warning_messages)))
     ))
   }
+  diagnostics <- nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
+  if (!isTRUE(diagnostics$converged)) {
+    return(nrc_failed_result(
+      "R_MODEL_NONCONVERGENCE",
+      "R contrast model did not satisfy its convergence criteria",
+      list(diagnostics = diagnostics)
+    ))
+  }
+  if (isTRUE(diagnostics$singular) || isTRUE(diagnostics$boundary_fit)) {
+    return(nrc_skip_result("R_MODEL_SINGULAR_OR_BOUNDARY", list(diagnostics = diagnostics)))
+  }
 
   contrasted <- tryCatch(
     {
@@ -48,9 +59,7 @@ nrc_run_marginal_contrasts <- function(stage) {
           specs = stats::as.formula(paste("~", factor_name))
         )
         raw <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = "none"))
-        adjusted <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = adjustment))
         raw$p.value_raw <- raw$p.value
-        raw$p.value_adjusted <- adjusted$p.value
         raw
       } else {
         if (!identical(outcome_kind, "continuous") || !identical(model_kind, "lm")) {
@@ -90,13 +99,6 @@ nrc_run_marginal_contrasts <- function(stage) {
           },
           numeric(1)
         )
-        adjusted_p <- tryCatch(
-          stats::p.adjust(raw_p, method = adjustment),
-          error = function(error) error
-        )
-        if (inherits(adjusted_p, "error")) {
-          nrc_abort(conditionMessage(adjusted_p))
-        }
         data.frame(
           contrast = vapply(
             comparisons,
@@ -105,7 +107,6 @@ nrc_run_marginal_contrasts <- function(stage) {
           ),
           p.value = raw_p,
           p.value_raw = raw_p,
-          p.value_adjusted = adjusted_p,
           stringsAsFactors = FALSE
         )
       }
@@ -136,18 +137,10 @@ nrc_run_marginal_contrasts <- function(stage) {
     if (is.null(row$p.value_raw)) {
       row$p.value_raw <- row$p.value
     }
-    if (is.null(row$p.value_adjusted)) {
-      row$p.value_adjusted <- stats::p.adjust(
-        unlist(row$p.value),
-        method = adjustment,
-        n = nrow(contrasted)
-      )
-    }
-    if (is.null(row$multiple_testing_adjustment)) {
-      row$multiple_testing_adjustment <- adjustment
-    }
+    row$multiple_testing_adjustment <- "pending_central_reconciliation"
     row
   })
+  results <- nrc_apply_multiplicity(results, specification)
 
   list(
     status = "completed",
@@ -155,10 +148,11 @@ nrc_run_marginal_contrasts <- function(stage) {
     metadata = list(
       engine = "r",
       factor_name = factor_name,
-      multiple_testing_adjustment = adjustment,
+      multiplicity_method = adjustment,
+      multiple_testing_adjustment = "pending_central_reconciliation",
       model_kind = model_kind,
       outcome_kind = outcome_kind,
-      diagnostics = nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
+      diagnostics = diagnostics
     )
   )
 }
