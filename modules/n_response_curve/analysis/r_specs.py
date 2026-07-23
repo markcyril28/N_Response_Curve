@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import itertools
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -33,7 +34,7 @@ def _present(value: object) -> bool:
 def _has_supported_random_intercept(rows: Sequence[Mapping[str, Any]]) -> bool:
     counts = Counter(str(row.get("study_uid") or "") for row in rows)
     counts.pop("", None)
-    return len(counts) >= 2 and any(count >= 2 for count in counts.values())
+    return len(counts) >= 3 and sum(count >= 2 for count in counts.values()) >= 2
 
 
 def _normalized_rows(
@@ -100,7 +101,7 @@ def _observation_formula(
             )
         )
     if include_random_intercept:
-        terms.append("(1 | study_uid)")
+        terms.append("(1 | study_uid/response_series_uid)")
     return "yield_t_ha ~ " + " + ".join(terms)
 
 
@@ -111,29 +112,64 @@ def _design_gate_reason(
     outcome_name: str,
     outcome_kind: str,
     observation_level: bool,
+    all_factor_interactions: bool,
 ) -> str | None:
     frame = pd.DataFrame([{name: row[name] for name in factor_names} for row in rows])
-    categorical: list[str] = []
+    factor_blocks: dict[str, np.ndarray] = {}
     for factor_name in factor_names:
         values = tuple(frame[factor_name])
         if len({str(value) for value in values}) < 2:
             return "UNIDENTIFIED_FACTOR_VARIATION"
         if all(not isinstance(value, bool) and finite_number(value) is not None for value in values):
-            frame[factor_name] = [float(value) for value in values]
+            factor_blocks[factor_name] = np.asarray(
+                [float(value) for value in values],
+                dtype=float,
+            ).reshape(-1, 1)
         else:
-            categorical.append(factor_name)
-    design = pd.get_dummies(frame, columns=categorical, drop_first=True, dtype=float)
+            encoded = pd.get_dummies(
+                pd.Series([str(value) for value in values], name=factor_name),
+                drop_first=True,
+                dtype=float,
+            )
+            factor_blocks[factor_name] = encoded.to_numpy(dtype=float)
+    columns: list[np.ndarray] = [factor_blocks[name] for name in factor_names]
+    if all_factor_interactions and len(factor_names) > 1:
+        for order in range(2, len(factor_names) + 1):
+            for names in itertools.combinations(factor_names, order):
+                products = factor_blocks[names[0]]
+                for name in names[1:]:
+                    products = np.column_stack(
+                        [
+                            products[:, left] * factor_blocks[name][:, right]
+                            for left in range(products.shape[1])
+                            for right in range(factor_blocks[name].shape[1])
+                        ]
+                    )
+                columns.append(products)
     if observation_level:
         n_rate = np.asarray([float(row["n_rate_kg_ha"]) for row in rows], dtype=float)
-        design["n_rate_kg_ha"] = n_rate
-        design["n_rate_squared"] = n_rate**2
-    matrix = np.column_stack((np.ones(len(design), dtype=float), design.to_numpy(dtype=float)))
+        n_columns = np.column_stack((n_rate, n_rate**2))
+        columns.append(n_columns)
+        for name in factor_names:
+            block = factor_blocks[name]
+            columns.append(
+                np.column_stack(
+                    [
+                        n_columns[:, n_index] * block[:, factor_index]
+                        for n_index in range(n_columns.shape[1])
+                        for factor_index in range(block.shape[1])
+                    ]
+                )
+            )
+    predictors = np.column_stack(columns)
+    matrix = np.column_stack((np.ones(len(rows), dtype=float), predictors))
     rank = int(np.linalg.matrix_rank(matrix))
     if rank < matrix.shape[1]:
         return "ALIASED_DESIGN_MATRIX"
-    predictors = design.to_numpy(dtype=float)
     if predictors.shape[1] > 1:
         scales = predictors.std(axis=0)
+        if np.any(scales <= np.finfo(float).eps):
+            return "ALIASED_DESIGN_MATRIX"
         standardized = (predictors - predictors.mean(axis=0)) / scales
         condition_number = np.linalg.cond(standardized)
         if not np.isfinite(condition_number) or condition_number > 1.0e8:
@@ -177,6 +213,31 @@ def prepare_r_analysis(
         stable_key=stable_key,
         observation_level=observation_level,
     )
+    if observation_level:
+        levels_by_series: dict[str, set[float]] = {}
+        for row in normalized:
+            series_uid = str(row.get("response_series_uid") or "")
+            n_rate = finite_number(row.get("n_rate_kg_ha"))
+            if series_uid and n_rate is not None:
+                levels_by_series.setdefault(series_uid, set()).add(n_rate)
+        supported_series = {
+            series_uid
+            for series_uid, levels in levels_by_series.items()
+            if len(levels) >= 3
+        }
+        normalized = tuple(
+            row
+            for row in normalized
+            if str(row.get("response_series_uid") or "") in supported_series
+        )
+        if len(supported_series) < 3:
+            return RAnalysisPreparation(
+                "skipped",
+                ("INSUFFICIENT_WITHIN_SERIES_N_SUPPORT",),
+                {},
+                normalized,
+                stable_key,
+            )
     minimum_rows = 8 if observation_level else max(4, len(candidate.factor_names) + 3)
     if len(normalized) < minimum_rows:
         return RAnalysisPreparation(
@@ -187,7 +248,8 @@ def prepare_r_analysis(
             stable_key,
         )
     studies = {str(row["study_uid"]) for row in normalized}
-    if len(studies) < 2:
+    minimum_studies = 3 if observation_level else 2
+    if len(studies) < minimum_studies:
         return RAnalysisPreparation(
             "skipped",
             ("INSUFFICIENT_R_STUDY_GROUPS",),
@@ -218,10 +280,19 @@ def prepare_r_analysis(
             outcome_name=outcome_name,
             outcome_kind=outcome_kind,
             observation_level=True,
+            all_factor_interactions=False,
         )
         if gate_reason is not None:
             return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
-        model_kind = "lmer" if random_intercept else "lm"
+        if not random_intercept:
+            return RAnalysisPreparation(
+                "skipped",
+                ("INSUFFICIENT_NESTED_RANDOM_EFFECT_SUPPORT",),
+                {},
+                normalized,
+                stable_key,
+            )
+        model_kind = "lmer"
         formula = _observation_formula(
             candidate.factor_names,
             include_random_intercept=random_intercept,
@@ -258,6 +329,7 @@ def prepare_r_analysis(
             outcome_name=outcome_name,
             outcome_kind=outcome_kind,
             observation_level=False,
+            all_factor_interactions=candidate.analysis_family == "all_supported_interactions",
         )
         if gate_reason is not None:
             return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
@@ -273,6 +345,7 @@ def prepare_r_analysis(
         "source_combination_id": candidate.source_combination_id,
         "curve_outcome": candidate.curve_outcome,
         "analysis_family": candidate.analysis_family,
+        "hypothesis_id": candidate.hypothesis_id,
         "factor_names": list(candidate.factor_names),
         "engine": "r",
         "support_gates_passed": True,
@@ -281,14 +354,10 @@ def prepare_r_analysis(
         "outcome_kind": outcome_kind,
         "multiplicity": {
             "method": "BH",
-            "family_id": "|".join(
-                (
-                    candidate.dataset_version_id,
-                    candidate.source_combination_id,
-                    candidate.curve_outcome,
-                    candidate.analysis_family,
-                )
-            ),
+            "family_id": candidate.multiplicity_family_id,
+            "hypothesis_id": candidate.hypothesis_id,
+            "registry_authority": "prespecified_analysis_registry",
+            "adjustment_status": "pending_central_reconciliation",
         },
         "grouping_column": "study_uid",
         "missing_data_policy": "factor-specific complete cases; no imputation",
@@ -302,7 +371,7 @@ def prepare_r_analysis(
             }
         )
     elif candidate.analysis_family == "marginal_contrasts":
-        specification["contrast_specification"] = {
+        specification["contrast_specification"] = dict(candidate.prespecified_contrast) or {
             "factor_name": candidate.factor_names[0],
             "adjustment": "BH",
         }
