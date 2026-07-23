@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -14,6 +16,7 @@ from ..contracts import (
     SUPPORTED_FIGURE_FORMATS as _SUPPORTED_FIGURE_FORMATS,
     SUPPORTED_TABLE_FORMATS as _SUPPORTED_TABLE_FORMATS,
 )
+from .schema import canonical_unit
 
 
 class ConfigError(ValueError):
@@ -26,11 +29,18 @@ KNOWN_SOURCE_TYPES = {"literature", "ltcce", "rcm_validation", "nopt", "future"}
 KNOWN_SOURCE_AVAILABILITY = {"available", "expected_unavailable"}
 KNOWN_SOURCE_CONFIRMATION_STATUSES = {"verified", "pending"}
 KNOWN_COMPARISON_DIMENSIONS = {"water_regime", "season", "region", "province", "variety", "recommendation_class"}
+KNOWN_SERIES_IDENTITY_DIMENSIONS = {
+    "water_regime", "season", "region", "province", "variety", "planting_year",
+    "experiment_type", "experimental_design",
+}
 KNOWN_OUTPUT_FORMATS = set(_SUPPORTED_TABLE_FORMATS)
 KNOWN_FIGURE_FORMATS = set(_SUPPORTED_FIGURE_FORMATS)
 KNOWN_TREATMENT_CLASSES = {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK", "other", "unresolved"}
 KNOWN_FILL_DOWN_FIELDS = {"Study_ID", "Trial ID", "Source", "Author(s)", "Year of Publication"}
-KNOWN_CRITICAL_ERROR_CODES = {"YIELD_UNIT_CONFLICT"}
+KNOWN_CRITICAL_ERROR_CODES = {
+    "YIELD_UNIT_CONFLICT", "N_RATE_UNIT_CONFLICT", "N_RATE_OUT_OF_RANGE",
+    "YIELD_OUT_OF_RANGE",
+}
 KNOWN_DATASET_VERSIONS = {f"D{i:02d}_{name}" for i, name in enumerate(
     (
         "inventory_all",
@@ -56,16 +66,28 @@ KNOWN_SOURCE_COMBINATION_MODES = {
 }
 KNOWN_CURVE_OUTCOMES = {
     "curve_shape_class",
+    "evidence_status",
+    "evidence_strength",
     "optimum_status",
     "agronomic_optimum_n_kg_ha",
     "economic_optimum_n_kg_ha",
     "plateau_onset_n_kg_ha",
     "predicted_max_yield_t_ha",
+    "predicted_observed_domain_peak_yield_t_ha",
+    "finite_maximum_yield_t_ha",
+    "fitted_asymptote_yield_t_ha",
+    "supported_max_yield_t_ha",
+    "maximum_reference_basis",
+    "maximum_proximity_status",
     "observed_max_yield_t_ha",
+    "observed_max_gap_to_finite_maximum_t_ha",
+    "observed_max_gap_to_supported_maximum_t_ha",
+    "observed_max_attainment_fraction",
     "yield_at_zero_n_t_ha",
     "yield_response_above_zero_n_t_ha",
     "recommendation_yield_gap_t_ha",
     "target_yield_gap_t_ha",
+    "target_yield_status",
 }
 KNOWN_FACTORS = {
     "source_family",
@@ -78,6 +100,7 @@ KNOWN_FACTORS = {
     "variety",
     "planting_year",
     "recommendation_class",
+    "recommendation_scope",
     "n_level_count",
     "observed_n_range",
     "has_zero_n",
@@ -171,6 +194,7 @@ TOP_LEVEL_SECTIONS = {
     "outputs",
     "logging",
     "engines",
+    "analysis_hypotheses",
     "analysis_matrix",
 }
 
@@ -187,6 +211,8 @@ class ValidatedConfig:
     enabled_sources: tuple[str, ...]
     enabled_models: tuple[str, ...]
     comparison_dimensions: tuple[str, ...]
+    scope_countries: tuple[str, ...]
+    series_identity_dimensions: tuple[str, ...]
     output_formats: tuple[str, ...]
     figure_formats: tuple[str, ...]
     fill_down_fields: tuple[str, ...]
@@ -198,6 +224,8 @@ class ValidatedConfig:
     analysis_families: tuple[str, ...]
     interaction_orders: tuple[int, ...]
     engine_assignments: Mapping[str, str]
+    decision_snapshot: Mapping[str, Mapping[str, str | bool]]
+    decision_snapshot_hash: str | None
     run_mode: str
 
     @property
@@ -265,6 +293,39 @@ def validate_config(
         if not isinstance(data.get(section), Mapping):
             raise ConfigError(f"Missing or invalid [{section}] table")
 
+    # Freeze effective defaults without mutating a caller-owned mapping.
+    data = dict(data)
+    data["selection"] = dict(data["selection"])
+    data["eligibility"] = dict(data["eligibility"])
+    data["sources"] = {
+        name: dict(source) if isinstance(source, Mapping) else source
+        for name, source in data["sources"].items()
+    }
+    hypotheses = data.get("analysis_hypotheses", {"specifications": []})
+    if not isinstance(hypotheses, Mapping):
+        raise ConfigError("[analysis_hypotheses] must be a table")
+    hypotheses = dict(hypotheses)
+    _check_unknown_keys(hypotheses, {"specifications"}, where="[analysis_hypotheses]")
+    specifications = hypotheses.get("specifications", [])
+    if not isinstance(specifications, list) or any(not isinstance(item, Mapping) for item in specifications):
+        raise ConfigError("[analysis_hypotheses].specifications must be a list of tables")
+    hypotheses["specifications"] = [dict(item) for item in specifications]
+    data["analysis_hypotheses"] = hypotheses
+    selection_defaults = data["selection"]
+    selection_defaults.setdefault("scope_countries", ["PH"])
+    selection_defaults.setdefault("series_identity_dimensions", ["water_regime", "season"])
+    eligibility_defaults = data["eligibility"]
+    eligibility_defaults.setdefault(
+        "n_level_tolerance_kg_ha",
+        eligibility_defaults.get("constant_nutrient_tolerance", 1e-8),
+    )
+    modeling_defaults = data["modeling"]
+    bounds_defaults = modeling_defaults.get("parameter_bounds", {})
+    eligibility_defaults.setdefault("n_rate_min_kg_ha", bounds_defaults.get("n_rate_min_kg_ha"))
+    eligibility_defaults.setdefault("n_rate_max_kg_ha", bounds_defaults.get("n_rate_max_kg_ha"))
+    eligibility_defaults.setdefault("yield_min_t_ha", modeling_defaults.get("plausible_yield_min_t_ha"))
+    eligibility_defaults.setdefault("yield_max_t_ha", modeling_defaults.get("plausible_yield_max_t_ha"))
+
     run = data["run"]
     _check_unknown_keys(
         run,
@@ -272,6 +333,7 @@ def validate_config(
             "mode", "overwrite", "random_seed", "test_group_limit", "fail_fast",
             "r_threads_per_job", "max_parallel_r_jobs", "r_stage_timeout_seconds",
             "r_termination_grace_seconds", "cpu_detection", "decisions_approved",
+            "required_full_decisions", "required_full_sources",
         },
         where="[run]",
     )
@@ -292,8 +354,24 @@ def validate_config(
         raise ConfigError("[run].cpu_detection must be 'affinity'")
     approved_decisions = _string_list(run.get("decisions_approved", []), where="[run].decisions_approved")
     _check_unique(approved_decisions, where="[run].decisions_approved")
+    required_full_decisions = _string_list(
+        run.get("required_full_decisions", []),
+        where="[run].required_full_decisions",
+    )
+    _check_unique(required_full_decisions, where="[run].required_full_decisions")
+    required_full_sources = _string_list(
+        run.get("required_full_sources", []),
+        where="[run].required_full_sources",
+    )
+    _check_unique(required_full_sources, where="[run].required_full_sources")
+    decision_snapshot: dict[str, dict[str, str | bool]] = {}
+    decision_snapshot_hash: str | None = None
     if mode == "full":
-        _require_full_mode_decision_approvals(tuple(approved_decisions))
+        decision_snapshot, decision_snapshot_hash = _require_full_mode_decision_approvals(
+            tuple(approved_decisions),
+            tuple(required_full_decisions),
+            project_root=root,
+        )
 
     paths = _resolve_paths(data["paths"], root)
     _check_path_overlaps(paths)
@@ -303,7 +381,8 @@ def validate_config(
         selection,
         {
             "enabled_sources", "enabled_models", "comparison_dimensions", "output_formats",
-            "figure_formats", "fill_down_fields", "treatment_classes",
+            "figure_formats", "fill_down_fields", "treatment_classes", "scope_countries",
+            "series_identity_dimensions",
         },
         where="[selection]",
     )
@@ -322,6 +401,17 @@ def validate_config(
         KNOWN_COMPARISON_DIMENSIONS,
         where="[selection]",
         allow_empty=True,
+    )
+    scope_countries = _string_list(selection.get("scope_countries"), where="[selection].scope_countries")
+    _check_unique(scope_countries, where="[selection].scope_countries")
+    if not scope_countries or any(re.fullmatch(r"[A-Z]{2}", country) is None for country in scope_countries):
+        raise ConfigError("[selection].scope_countries must contain unique uppercase ISO alpha-2 codes")
+    series_identity_dimensions = _toggle_list(
+        selection,
+        "series_identity_dimensions",
+        KNOWN_SERIES_IDENTITY_DIMENSIONS,
+        where="[selection]",
+        allow_empty=False,
     )
     output_formats = _toggle_list(
         selection, "output_formats", KNOWN_OUTPUT_FORMATS, where="[selection]", allow_empty=False
@@ -349,7 +439,8 @@ def validate_config(
             {
                 "source_type", "data_path", "schema_map", "provider", "provenance_notes",
                 "workbook", "sheet", "checksum", "manifest_reference",
-                "availability", "confirmation_status", "shape_adapter_version",
+                "availability", "confirmation_status", "shape_adapter_version", "country_code",
+                "source_family",
             },
             where=f"[sources.{source_name}]",
         )
@@ -380,6 +471,12 @@ def validate_config(
                 f"{sorted(KNOWN_SOURCE_CONFIRMATION_STATUSES)}"
             )
         _require_string(source, "shape_adapter_version", where=f"[sources.{source_name}]")
+        source.setdefault("country_code", "PH" if source_name == "core_trial_data" else "UNRESOLVED")
+        source.setdefault("source_family", source["source_type"])
+        _require_string(source, "country_code", where=f"[sources.{source_name}]")
+        if source["country_code"] != "UNRESOLVED" and re.fullmatch(r"[A-Z]{2}", source["country_code"]) is None:
+            raise ConfigError(f"[sources.{source_name}].country_code must be an uppercase ISO alpha-2 code or 'UNRESOLVED'")
+        _require_string(source, "source_family", where=f"[sources.{source_name}]")
         source_paths[source_name] = _resolve_relative_path(source["data_path"], root, f"[sources.{source_name}].data_path")
         _resolve_relative_path(source["schema_map"], root, f"[sources.{source_name}].schema_map")
         for key in ("provider", "provenance_notes"):
@@ -404,6 +501,39 @@ def validate_config(
         if check_files:
             _require_file(source_paths[source_name], f"enabled source {source_name}")
             _require_file(_resolve_relative_path(source["schema_map"], root, f"[sources.{source_name}].schema_map"), f"schema map for {source_name}")
+    unknown_required_sources = tuple(
+        source_name for source_name in required_full_sources if source_name not in sources
+    )
+    if unknown_required_sources:
+        raise ConfigError(
+            "[run].required_full_sources references unknown source(s): "
+            + ", ".join(unknown_required_sources)
+        )
+    if mode == "full":
+        if not required_full_sources:
+            raise ConfigError(
+                "full mode requires a nonempty [run].required_full_sources authority gate"
+            )
+        disabled_required_sources = tuple(
+            source_name for source_name in required_full_sources if source_name not in enabled_sources
+        )
+        if disabled_required_sources:
+            raise ConfigError(
+                "full mode [run].required_full_sources must all be enabled: "
+                + ", ".join(disabled_required_sources)
+            )
+        unverified_required_sources = tuple(
+            source_name
+            for source_name in required_full_sources
+            if sources[source_name]["availability"] != "available"
+            or sources[source_name]["confirmation_status"] != "verified"
+            or sources[source_name]["shape_adapter_version"] == "unassigned"
+        )
+        if unverified_required_sources:
+            raise ConfigError(
+                "full mode [run].required_full_sources must be source-verified with an assigned adapter: "
+                + ", ".join(unverified_required_sources)
+            )
     if check_files:
         for key in INPUT_PATHS:
             _require_file(paths[key], f"[paths].{key}")
@@ -447,9 +577,34 @@ def validate_config(
         for canonical, raw_values in mapping.items():
             values = _string_list(raw_values, where=f"[schema.normalization.{group}].{canonical}")
             _check_unique(values, where=f"[schema.normalization.{group}].{canonical}")
+        if group == "treatment_class":
+            unknown_classes = set(mapping) - KNOWN_TREATMENT_CLASSES
+            if unknown_classes:
+                raise ConfigError(
+                    "[schema.normalization.treatment_class] contains unknown class(es): "
+                    + ", ".join(sorted(unknown_classes))
+                )
+            missing_control_classes = {"zero_n", "absolute_control"} - set(mapping)
+            if missing_control_classes:
+                raise ConfigError(
+                    "[schema.normalization.treatment_class] must distinguish zero_n and absolute_control"
+                )
+            alias_owners: dict[str, str] = {}
+            for canonical, raw_values in mapping.items():
+                for raw_value in raw_values:
+                    alias = " ".join(raw_value.casefold().split())
+                    owner = alias_owners.setdefault(alias, canonical)
+                    if owner != canonical:
+                        raise ConfigError(
+                            f"treatment-class alias {raw_value!r} belongs to more than one class: "
+                            f"{owner}, {canonical}"
+                        )
     units = schema.get("units")
     if not isinstance(units, Mapping) or not units or any(not isinstance(value, str) or not value.strip() for value in units.values()):
         raise ConfigError("[schema.units] must define nonempty unit strings")
+    for unit_key, quantity in (("n_rate", "n_rate"), ("yield_curve", "yield")):
+        if unit_key not in units or canonical_unit(units[unit_key], quantity) is None:
+            raise ConfigError(f"[schema.units].{unit_key} must declare a supported canonical unit")
 
     missing_values = data["missing_values"]
     _check_unknown_keys(
@@ -471,12 +626,13 @@ def validate_config(
             "minimum_distinct_n_levels", "minimum_complete_n_yield", "minimum_model_residual_df",
             "require_zero_n_for_primary", "primary_inorganic_only", "organic_policy", "p_k_policy",
             "zero_n_policy", "constant_nutrient_tolerance", "high_n_review_threshold_kg_ha",
-            "critical_error_codes",
+            "critical_error_codes", "n_level_tolerance_kg_ha", "n_rate_min_kg_ha",
+            "n_rate_max_kg_ha", "yield_min_t_ha", "yield_max_t_ha",
         },
         where="[eligibility]",
     )
-    _require_int_at_least(eligibility, "minimum_distinct_n_levels", 2, where="[eligibility]")
-    _require_int_at_least(eligibility, "minimum_complete_n_yield", 2, where="[eligibility]")
+    _require_int_at_least(eligibility, "minimum_distinct_n_levels", 3, where="[eligibility]")
+    _require_int_at_least(eligibility, "minimum_complete_n_yield", 3, where="[eligibility]")
     _require_int_at_least(eligibility, "minimum_model_residual_df", 1, where="[eligibility]")
     _require_bool(eligibility, "require_zero_n_for_primary", where="[eligibility]")
     _require_bool(eligibility, "primary_inorganic_only", where="[eligibility]")
@@ -494,6 +650,15 @@ def validate_config(
         0,
         where="[eligibility]",
     )
+    _require_positive_number(eligibility, "n_level_tolerance_kg_ha", where="[eligibility]")
+    _require_number_at_least(eligibility, "n_rate_min_kg_ha", 0, where="[eligibility]")
+    _require_positive_number(eligibility, "n_rate_max_kg_ha", where="[eligibility]")
+    if eligibility["n_rate_max_kg_ha"] <= eligibility["n_rate_min_kg_ha"]:
+        raise ConfigError("[eligibility] N-rate maximum must exceed its minimum")
+    _require_number_at_least(eligibility, "yield_min_t_ha", 0, where="[eligibility]")
+    _require_positive_number(eligibility, "yield_max_t_ha", where="[eligibility]")
+    if eligibility["yield_max_t_ha"] <= eligibility["yield_min_t_ha"]:
+        raise ConfigError("[eligibility] yield maximum must exceed its minimum")
     _require_number_at_least(
         eligibility,
         "high_n_review_threshold_kg_ha",
@@ -743,6 +908,8 @@ def validate_config(
         enabled_sources=tuple(enabled_sources),
         enabled_models=tuple(enabled_models),
         comparison_dimensions=tuple(comparison_dimensions),
+        scope_countries=tuple(scope_countries),
+        series_identity_dimensions=tuple(series_identity_dimensions),
         output_formats=tuple(output_formats),
         figure_formats=tuple(figure_formats),
         fill_down_fields=tuple(fill_down_fields),
@@ -754,6 +921,8 @@ def validate_config(
         analysis_families=tuple(analysis_families),
         interaction_orders=interaction_orders,
         engine_assignments=MappingProxyType(dict(assignments)),
+        decision_snapshot=_freeze_config_value(decision_snapshot),
+        decision_snapshot_hash=decision_snapshot_hash,
         run_mode=mode,
     )
 
@@ -903,21 +1072,128 @@ def _preflight_r_contract(engines: Mapping[str, Any], r_entrypoint: Path, root: 
         raise ConfigError("R contract requires a vanilla R session")
 
 
-def _require_full_mode_decision_approvals(approved_decisions: tuple[str, ...]) -> None:
-    if not approved_decisions:
-        raise ConfigError(
-            "full mode requires at least one domain-prefixed decision ID in [run].decisions_approved"
-        )
+def _require_full_mode_decision_approvals(
+    approved_decisions: tuple[str, ...],
+    required_decisions: tuple[str, ...],
+    *,
+    project_root: Path,
+) -> tuple[dict[str, dict[str, str | bool]], str]:
     invalid = tuple(
         decision
-        for decision in approved_decisions
+        for decision in (*approved_decisions, *required_decisions)
         if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", decision) is None
     )
     if invalid:
         raise ConfigError(
-            "full mode [run].decisions_approved entries must use domain-prefixed IDs: "
+            "full mode decision entries must use domain-prefixed IDs: "
             + ", ".join(invalid)
         )
+    if not required_decisions:
+        raise ConfigError(
+            "full mode requires a nonempty [run].required_full_decisions authority gate"
+        )
+    if not approved_decisions:
+        raise ConfigError(
+            "full mode requires explicit approvals in [run].decisions_approved"
+        )
+    missing = tuple(
+        decision for decision in required_decisions if decision not in approved_decisions
+    )
+    if missing:
+        raise ConfigError(
+            "full mode [run].decisions_approved is missing required approvals: "
+            + ", ".join(missing)
+        )
+
+    ledger_path = project_root / "Docs" / "Plans_Phases" / "03_Decisions_Needed.md"
+    try:
+        ledger_text = ledger_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"full mode requires the authoritative decision ledger: {ledger_path}"
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(
+            f"full mode could not read the authoritative decision ledger {ledger_path}: {exc}"
+        ) from exc
+
+    heading_pattern = re.compile(
+        r"^###\s+([A-Z][A-Z0-9]*-\d+)(?=\s|:|$).*$",
+        flags=re.MULTILINE,
+    )
+    heading_matches = tuple(heading_pattern.finditer(ledger_text))
+    blocks: dict[str, list[str]] = {}
+    for index, heading in enumerate(heading_matches):
+        decision_id = heading.group(1)
+        end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(ledger_text)
+        blocks.setdefault(decision_id, []).append(ledger_text[heading.end():end])
+
+    snapshot: dict[str, dict[str, str | bool]] = {}
+    for decision_id in sorted(required_decisions):
+        decision_blocks = blocks.get(decision_id, [])
+        if len(decision_blocks) != 1:
+            raise ConfigError(
+                f"full mode requires exactly one authoritative ledger entry for {decision_id}; "
+                f"found {len(decision_blocks)}"
+            )
+        block = decision_blocks[0]
+        statuses = re.findall(
+            r"^\*\*Status:\*\*[ \t]*(.*?)[ \t]*$",
+            block,
+            flags=re.MULTILINE,
+        )
+        if len(statuses) != 1:
+            raise ConfigError(
+                f"full mode decision {decision_id} must have exactly one ledger Status; "
+                f"found {len(statuses)}"
+            )
+        status = statuses[0].strip()
+        if status != "DECIDED":
+            raise ConfigError(
+                f"full mode decision {decision_id} ledger Status must be exactly DECIDED, "
+                f"got {status!r}"
+            )
+
+        selected_options = re.findall(
+            r"^\*\*(?:Choosed|Chosen) Option:\*\*[ \t]*(.*?)[ \t]*$",
+            block,
+            flags=re.MULTILINE,
+        )
+        if len(selected_options) != 1:
+            raise ConfigError(
+                f"full mode decision {decision_id} must have exactly one ledger Choosed Option; "
+                f"found {len(selected_options)}"
+            )
+        selected_option = re.sub(r"[ \t]+", " ", selected_options[0].strip())
+        if (
+            len(selected_option) >= 2
+            and selected_option[0] == selected_option[-1]
+            and selected_option[0] in {'"', "'", "`"}
+        ):
+            selected_option = selected_option[1:-1].strip()
+        if not selected_option:
+            raise ConfigError(
+                f"full mode decision {decision_id} requires a nonblank ledger Choosed Option"
+            )
+        snapshot[decision_id] = {
+            "status": status,
+            "selected_option": selected_option,
+            "approved": decision_id in approved_decisions,
+        }
+
+    snapshot_payload = [
+        {"decision_id": decision_id, **snapshot[decision_id]}
+        for decision_id in sorted(snapshot)
+    ]
+    snapshot_hash = hashlib.sha256(
+        json.dumps(
+            snapshot_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return snapshot, snapshot_hash
 
 
 __all__ = ["ConfigError", "ValidatedConfig", "load_config", "validate_config"]
