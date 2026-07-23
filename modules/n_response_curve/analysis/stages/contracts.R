@@ -63,6 +63,11 @@ nrc_frame_to_rows <- function(frame) {
 
 nrc_read_contract <- function(contract_path) {
   normalized_contract_path <- normalizePath(contract_path, winslash = "/", mustWork = TRUE)
+  expected_file_sha256 <- Sys.getenv("NRC_CONTRACT_FILE_SHA256")
+  if (!nzchar(expected_file_sha256) ||
+        !identical(nrc_sha256_file(normalized_contract_path), expected_file_sha256)) {
+    nrc_abort("R stage contract file SHA-256 is missing or does not match the dispatch binding")
+  }
   stage_root <- dirname(normalized_contract_path)
   contract <- jsonlite::read_json(normalized_contract_path, simplifyVector = FALSE)
   required_names <- c("contract_version", "contract_sha256", "specification", "input", "output")
@@ -71,6 +76,11 @@ nrc_read_contract <- function(contract_path) {
   }
   if (!identical(as.integer(contract$contract_version), 1L)) {
     nrc_abort("R stage contract has an unsupported version")
+  }
+  expected_contract_sha256 <- Sys.getenv("NRC_CONTRACT_SHA256")
+  if (!nzchar(expected_contract_sha256) ||
+        !identical(as.character(contract$contract_sha256), expected_contract_sha256)) {
+    nrc_abort("R stage semantic contract SHA-256 does not match the dispatch binding")
   }
   if (nrc_has_forbidden_contract_reference(contract$specification)) {
     nrc_abort("R stage contract contains a forbidden raw-source or operator-config reference")
@@ -104,6 +114,9 @@ nrc_read_contract <- function(contract_path) {
   if (!identical(length(unique(as.character(data[[stable_key]]))), as.integer(input$stable_key_count))) {
     nrc_abort("R stage stable-key count does not match the contract")
   }
+  if (!identical(as.integer(input$stable_key_count), nrow(data))) {
+    nrc_abort("R stage stable keys must be unique for every normalized input row")
+  }
   list(
     contract = contract,
     data = data,
@@ -121,6 +134,20 @@ nrc_write_stage_result <- function(stage, result) {
   }
   if (!result$status %in% c("completed", "skipped", "failed")) {
     nrc_abort("R analysis dispatcher returned an invalid terminal status")
+  }
+  if (!is.list(result$results) ||
+        (identical(result$status, "completed") && length(result$results) == 0L)) {
+    nrc_abort("R analysis dispatcher returned an empty or invalid completed result")
+  }
+  if (!is.list(result$metadata)) {
+    nrc_abort("R analysis dispatcher returned invalid metadata")
+  }
+  specification <- stage$contract$specification
+  if (!is.null(specification$candidate_id)) {
+    result$metadata$candidate_id <- specification$candidate_id
+  }
+  if (!is.null(specification$specification_hash)) {
+    result$metadata$specification_hash <- specification$specification_hash
   }
   output_path <- stage$output_path
   temporary_path <- tempfile(pattern = ".result-", tmpdir = dirname(output_path), fileext = ".json")
