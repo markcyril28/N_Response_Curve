@@ -17,6 +17,7 @@ class CurveEvidenceResult:
     model_attempts: tuple[ModelAttempt, ...]
     selected_attempts: tuple[ModelAttempt, ...]
     model_attempt_records: tuple[dict[str, Any], ...]
+    series_evidence_rows: tuple[dict[str, Any], ...]
     curve_rows: tuple[dict[str, Any], ...]
     prediction_rows: tuple[dict[str, Any], ...]
 
@@ -72,6 +73,28 @@ def _curve_row(rows: Sequence[Mapping[str, Any]], selected: ModelAttempt, *, zer
     if source_name is None:
         return None
     selected_record = model_attempt_record(selected)
+    observed_max = float(max(yields))
+    supported_max = selected.supported_max_yield_t_ha
+    attainment = (
+        observed_max / supported_max
+        if supported_max is not None and supported_max > 0.0
+        else None
+    )
+    finite_gap = (
+        selected.finite_maximum_yield_t_ha - observed_max
+        if selected.finite_maximum_yield_t_ha is not None
+        else None
+    )
+    supported_gap = (
+        supported_max - observed_max
+        if supported_max is not None
+        else None
+    )
+    evidence_strength = (
+        "three_level_linear_only"
+        if len(set(n_rates)) == 3 and selected.model_name == "linear"
+        else "four_plus_level_curve"
+    )
     return {
         "response_series_uid": series_uid,
         "selected_model_attempt_uid": selected.model_attempt_uid,
@@ -107,13 +130,121 @@ def _curve_row(rows: Sequence[Mapping[str, Any]], selected: ModelAttempt, *, zer
         "agronomic_optimum_n_kg_ha": selected.agronomic_optimum_n_kg_ha,
         "plateau_onset_n_kg_ha": selected.plateau_onset_n_kg_ha,
         "predicted_max_yield_t_ha": selected.predicted_max_yield_t_ha,
-        "observed_max_yield_t_ha": float(max(yields)),
+        "predicted_observed_domain_peak_yield_t_ha": selected.predicted_observed_domain_peak_yield_t_ha,
+        "finite_maximum_yield_t_ha": selected.finite_maximum_yield_t_ha,
+        "fitted_asymptote_yield_t_ha": selected.fitted_asymptote_yield_t_ha,
+        "supported_max_yield_t_ha": selected.supported_max_yield_t_ha,
+        "maximum_reference_basis": selected.maximum_reference_basis,
+        "maximum_proximity_status": selected.maximum_proximity_status,
+        "observed_max_yield_t_ha": observed_max,
+        "observed_max_gap_to_finite_maximum_t_ha": finite_gap,
+        "observed_max_gap_to_supported_maximum_t_ha": supported_gap,
+        "observed_max_attainment_fraction": attainment,
+        "evidence_strength": evidence_strength,
         "yield_at_zero_n_t_ha": float(statistics.fmean(zero_yields)) if zero_yields else None,
         "yield_response_above_zero_n_t_ha": float(max(yields) - statistics.fmean(zero_yields)) if zero_yields else None,
         "recommendation_yield_gap_t_ha": None,
         "target_yield_gap_t_ha": None,
+        "target_yield_status": "not_configured",
         "model_attempt_record": selected_record,
     }
+
+
+def _series_evidence_row(
+    rows: Sequence[Mapping[str, Any]],
+    attempts: Sequence[ModelAttempt],
+    selected: ModelAttempt | None,
+    *,
+    zero_tolerance: float,
+) -> dict[str, Any] | None:
+    supported_tiers = {
+        str(row.get("series_eligibility_tier") or row.get("eligibility_tier") or "")
+        for row in rows
+    }
+    if not supported_tiers.intersection({"A", "B", "C"}):
+        return None
+    complete = [
+        (n_rate, yield_value)
+        for row in rows
+        if (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
+        and (yield_value := finite_number(row.get("yield_t_ha"))) is not None
+    ]
+    levels = sorted({n_rate for n_rate, _ in complete})
+    low_yields = [value for n_rate, value in complete if levels and abs(n_rate - levels[0]) <= zero_tolerance]
+    high_yields = [value for n_rate, value in complete if levels and abs(n_rate - levels[-1]) <= zero_tolerance]
+    n_change = levels[-1] - levels[0] if len(levels) >= 2 else None
+    yield_change = (
+        statistics.fmean(high_yields) - statistics.fmean(low_yields)
+        if low_yields and high_yields and len(levels) >= 2
+        else None
+    )
+    if len(levels) == 2:
+        evidence_strength = "two_level_contrast_only"
+        evidence_status = "contrast_only"
+    elif len(levels) == 3 and selected is not None and selected.model_name == "linear":
+        evidence_strength = "three_level_linear_only"
+        evidence_status = "curve_model_selected"
+    elif selected is not None:
+        evidence_strength = "four_plus_level_curve"
+        evidence_status = "curve_model_selected"
+    elif len(levels) < 2:
+        evidence_strength = "insufficient_n_level_support"
+        evidence_status = "unsupported"
+    else:
+        evidence_strength = "no_reportable_curve_model"
+        evidence_status = "unsupported"
+    source_name = _one_value(rows, "source_name")
+    return {
+        "response_series_uid": str(rows[0].get("response_series_uid") or ""),
+        "source_name": source_name,
+        "study_uid": _study_uid(rows, source_name) if source_name is not None else None,
+        "record_uids": tuple(str(row["record_uid"]) for row in rows),
+        "distinct_n_level_count": len(levels),
+        "observed_n_min_kg_ha": levels[0] if levels else None,
+        "observed_n_max_kg_ha": levels[-1] if levels else None,
+        "observed_max_yield_t_ha": max((value for _, value in complete), default=None),
+        "observed_low_to_high_yield_change_t_ha": yield_change,
+        "observed_low_to_high_n_change_kg_ha": n_change,
+        "observed_two_level_slope_t_ha_per_kg_n_ha": (
+            yield_change / n_change
+            if yield_change is not None and n_change not in {None, 0.0}
+            else None
+        ),
+        "evidence_status": evidence_status,
+        "evidence_strength": evidence_strength,
+        "curve_shape_class": selected.curve_shape_class if selected is not None else "unavailable",
+        "optimum_status": selected.optimum_status if selected is not None else "unavailable",
+        "maximum_reference_basis": selected.maximum_reference_basis if selected is not None else "none",
+        "maximum_proximity_status": (
+            selected.maximum_proximity_status if selected is not None else "unavailable"
+        ),
+        "target_yield_status": "not_configured",
+        "selected_model_attempt_uid": selected.model_attempt_uid if selected is not None else None,
+        "selected_model_name": selected.model_name if selected is not None else None,
+        "model_attempt_uids": tuple(attempt.model_attempt_uid for attempt in attempts),
+        "model_reason_codes": tuple(sorted({reason for attempt in attempts for reason in attempt.reason_codes})),
+    }
+
+
+def curve_fit_record_uids(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    primary_only: bool,
+) -> tuple[str, ...]:
+    """Return rows permitted in a curve fit without discarding evidence rows."""
+
+    return tuple(
+        str(record["record_uid"])
+        for record in records
+        if record.get("treatment_fit_role", "curve_candidate") != "comparison_only"
+        and (
+            not primary_only
+            or (
+                record.get("series_status") == "resolved"
+                and (record.get("series_eligibility_tier") or record.get("eligibility_tier")) == "A"
+            )
+        )
+    )
 
 
 def build_curve_evidence(
@@ -121,11 +252,26 @@ def build_curve_evidence(
     *,
     model_names: Sequence[str],
     policy: Mapping[str, Any],
+    fit_record_uids: Iterable[str] | None = None,
 ) -> CurveEvidenceResult:
-    """Fit configured candidates, retain all attempts, and expose only supported curve-level outcomes."""
+    """Fit an explicit membership while retaining observational evidence for all rows."""
 
     copied_records = tuple(dict(record) for record in records)
-    attempts = fit_response_models(copied_records, model_names=model_names, policy=policy)
+    if fit_record_uids is None:
+        fit_records = copied_records
+    else:
+        requested_uids = tuple(str(record_uid) for record_uid in fit_record_uids)
+        if len(requested_uids) != len(set(requested_uids)):
+            raise ValueError("fit_record_uids must be unique")
+        available_uids = {str(record.get("record_uid", "")) for record in copied_records}
+        unknown_uids = sorted(set(requested_uids) - available_uids)
+        if unknown_uids:
+            raise ValueError("fit_record_uids contains unknown records: " + ", ".join(unknown_uids))
+        requested = set(requested_uids)
+        fit_records = tuple(
+            record for record in copied_records if str(record.get("record_uid", "")) in requested
+        )
+    attempts = fit_response_models(fit_records, model_names=model_names, policy=policy)
     by_series: dict[str, list[ModelAttempt]] = {}
     for attempt in attempts:
         by_series.setdefault(attempt.response_series_uid, []).append(attempt)
@@ -135,13 +281,32 @@ def build_curve_evidence(
         if (selected := select_reportable_model(by_series[series_uid])) is not None
     )
     grouped_rows = _series_rows(copied_records)
+    grouped_fit_rows = _series_rows(fit_records)
     zero_tolerance = float(policy.get("convergence_tolerance", 1e-8))
+    selected_by_series = {attempt.response_series_uid: attempt for attempt in selected_attempts}
+    series_evidence_rows = tuple(
+        evidence_row
+        for series_uid in sorted(grouped_rows)
+        if (
+            evidence_row := _series_evidence_row(
+                grouped_rows[series_uid],
+                by_series.get(series_uid, ()),
+                selected_by_series.get(series_uid),
+                zero_tolerance=zero_tolerance,
+            )
+        ) is not None
+    )
     curve_rows = tuple(
         curve
         for selected in selected_attempts
-        if (curve := _curve_row(grouped_rows.get(selected.response_series_uid, ()), selected, zero_tolerance=zero_tolerance)) is not None
+        if (
+            curve := _curve_row(
+                grouped_fit_rows.get(selected.response_series_uid, ()),
+                selected,
+                zero_tolerance=zero_tolerance,
+            )
+        ) is not None
     )
-    selected_by_series = {attempt.response_series_uid: attempt for attempt in selected_attempts}
     rows_with_predictions = [
         row
         for row in curve_rows
@@ -156,9 +321,10 @@ def build_curve_evidence(
         model_attempts=tuple(attempts),
         selected_attempts=selected_attempts,
         model_attempt_records=tuple(model_attempt_record(attempt) for attempt in attempts),
+        series_evidence_rows=series_evidence_rows,
         curve_rows=curve_rows,
         prediction_rows=predictions,
     )
 
 
-__all__ = ["CurveEvidenceResult", "build_curve_evidence"]
+__all__ = ["CurveEvidenceResult", "build_curve_evidence", "curve_fit_record_uids"]
