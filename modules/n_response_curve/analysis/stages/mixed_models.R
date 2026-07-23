@@ -97,8 +97,16 @@ nrc_run_mixed_models <- function(stage) {
   if (!isTRUE(specification$support_gates_passed)) {
     return(nrc_skip_result("PRECOMPUTED_SUPPORT_GATE_REQUIRED"))
   }
+  multiplicity <- specification$multiplicity
+  if (!is.null(multiplicity) && !isTRUE(multiplicity$family_scope_complete)) {
+    return(nrc_skip_result("MULTIPLICITY_FAMILY_RECONCILIATION_REQUIRED"))
+  }
   if (!nrc_formula_has_hierarchy(model_formula)) {
     return(nrc_skip_result("INTERACTION_HIERARCHY_VIOLATION"))
+  }
+  design_reason <- nrc_fixed_effect_design_reason(model_formula, stage$data, 3L)
+  if (!is.null(design_reason)) {
+    return(nrc_skip_result(design_reason))
   }
   model_kind <- specification$model_kind
   if (is.null(model_kind)) {
@@ -125,7 +133,27 @@ nrc_run_mixed_models <- function(stage) {
       list(warning_messages = as.list(unique(warning_messages)))
     ))
   }
+  diagnostics <- nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
+  if (!isTRUE(diagnostics$converged)) {
+    return(nrc_failed_result(
+      "R_MODEL_NONCONVERGENCE",
+      "R model did not satisfy its convergence criteria",
+      list(diagnostics = diagnostics)
+    ))
+  }
+  if (isTRUE(diagnostics$singular) || isTRUE(diagnostics$boundary_fit)) {
+    return(nrc_skip_result("R_MODEL_SINGULAR_OR_BOUNDARY", list(diagnostics = diagnostics)))
+  }
   results <- nrc_apply_multiplicity(nrc_tidy_model(fitted), specification)
+  if (!length(results)) {
+    return(nrc_failed_result("R_MODEL_TIDY_RESULT_EMPTY", "R model produced no reportable fixed-effect rows"))
+  }
+  estimates_are_finite <- vapply(results, function(row) {
+    is.null(row$estimate) || is.finite(as.numeric(row$estimate))
+  }, logical(1))
+  if (!all(estimates_are_finite)) {
+    return(nrc_failed_result("R_MODEL_NONFINITE_ESTIMATE", "R model produced a nonfinite fixed-effect estimate"))
+  }
   list(
     status = "completed",
     results = results,
@@ -134,7 +162,7 @@ nrc_run_mixed_models <- function(stage) {
       model_kind = model_kind,
       outcome_kind = outcome_kind,
       multiplicity = specification$multiplicity,
-      diagnostics = nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
+      diagnostics = diagnostics
     )
   )
 }
