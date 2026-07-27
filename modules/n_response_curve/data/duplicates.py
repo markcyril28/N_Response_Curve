@@ -239,7 +239,9 @@ def _initialize_duplicate_statuses(records: list[dict[str, Any]]) -> None:
 def resolve_response_series(
     records: Iterable[Mapping[str, Any]],
     *,
-    context_dimensions: tuple[str, ...] | list[str],
+    context_dimensions: tuple[str, ...] | list[str] | None = None,
+    series_identity_dimensions: tuple[str, ...] | list[str] | None = None,
+    n_level_tolerance_kg_ha: float = 1e-8,
 ) -> SeriesResolution:
     """Split only resolved contexts and route ambiguous/duplicate candidates to review."""
 
@@ -249,9 +251,17 @@ def resolve_response_series(
         raise ValueError("Every canonical record needs a nonempty record_uid")
     if len(record_uids) != len(set(record_uids)):
         raise ValueError("Canonical record identifiers must be unique")
-    dimensions = tuple(context_dimensions)
+    dimensions = tuple(
+        series_identity_dimensions
+        if series_identity_dimensions is not None
+        else (context_dimensions or ())
+    )
+    if not dimensions:
+        raise ValueError("Series identity dimensions must be explicitly nonempty")
     if len(dimensions) != len(set(dimensions)):
-        raise ValueError("Context dimensions must be unique")
+        raise ValueError("Series identity dimensions must be unique")
+    if n_level_tolerance_kg_ha <= 0:
+        raise ValueError("N-level tolerance must be positive")
 
     for record in ledger:
         record["response_series_uid"] = None
@@ -292,18 +302,35 @@ def resolve_response_series(
                 context_values.append(value)
         if missing_context:
             continue
-        key = (str(record.get("source_uid", "")), study_id, trial_id, *context_values)
+        key = (
+            str(record.get("source_uid", "")),
+            study_id,
+            trial_id,
+            str(record.get("scope_country_code") or "unresolved"),
+            *context_values,
+        )
         candidate_groups.setdefault(key, []).append(record)
 
     for key, group in sorted(candidate_groups.items(), key=lambda item: tuple(map(str, item[0]))):
-        n_groups: dict[float, list[dict[str, Any]]] = {}
+        n_groups: list[tuple[float, list[dict[str, Any]]]] = []
+        parsed_n_rows: list[tuple[float, dict[str, Any]]] = []
         for record in group:
             n_rate = record.get("n_rate_kg_ha")
             if record.get("n_rate_parse_status") == "parsed" and isinstance(n_rate, (int, float)):
-                n_groups.setdefault(float(n_rate), []).append(record)
+                parsed_n_rows.append((float(n_rate), record))
+        for n_rate, record in sorted(parsed_n_rows, key=lambda item: (item[0], _record_sort_key(item[1]))):
+            if not n_groups or abs(n_rate - n_groups[-1][0]) > n_level_tolerance_kg_ha:
+                n_groups.append((n_rate, [record]))
+            else:
+                n_groups[-1][1].append(record)
+        same_n_count = {
+            str(record["record_uid"]): len(rows_at_level)
+            for _, rows_at_level in n_groups
+            for record in rows_at_level
+        }
         has_management_conflict = any(
             len({ _management_signature(record) for record in same_n_records }) > 1
-            for same_n_records in n_groups.values()
+            for _, same_n_records in n_groups
             if len(same_n_records) > 1
         )
         if has_management_conflict:
@@ -314,9 +341,8 @@ def resolve_response_series(
 
         series_uid = _stable_identifier("series", key)
         for record in group:
-            n_rate = record.get("n_rate_kg_ha")
-            same_n_records = n_groups.get(float(n_rate), []) if isinstance(n_rate, (int, float)) else []
-            record["same_n_status"] = "repeated_measurement" if len(same_n_records) > 1 else "unique_n_level"
+            count_at_level = same_n_count.get(str(record["record_uid"]), 0)
+            record["same_n_status"] = "repeated_measurement" if count_at_level > 1 else "unique_n_level"
             record["response_series_uid"] = series_uid
             record["series_status"] = "resolved"
             record["series_reason_codes"] = ()
