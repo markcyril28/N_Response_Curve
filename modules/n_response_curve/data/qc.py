@@ -28,12 +28,14 @@ def build_qc_report(
     """Build source-to-tier flows and non-lossy review rows from an eligibility ledger."""
 
     rows = [dict(row) for row in ledger]
+    if inventory_record_uids is None:
+        raise ValueError("inventory_record_uids is required for authoritative QC reconciliation")
     record_uids = [str(row.get("record_uid", "")) for row in rows]
     if not all(record_uids):
         raise ValueError("Every QC ledger row needs a nonempty record_uid")
     if len(record_uids) != len(set(record_uids)):
         raise ValueError("QC ledger contains a duplicate record_uid")
-    inventory_uids = tuple(str(record_uid) for record_uid in inventory_record_uids) if inventory_record_uids is not None else record_uids
+    inventory_uids = tuple(str(record_uid) for record_uid in inventory_record_uids)
     if not all(inventory_uids) or len(inventory_uids) != len(set(inventory_uids)):
         raise ValueError("Canonical inventory record identifiers must be nonempty and unique")
     if set(record_uids) != set(inventory_uids):
@@ -61,7 +63,7 @@ def build_qc_report(
             raise ValueError("Eligibility reason codes must be nonempty strings")
         for reason in reasons:
             reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        if tier != "A":
+        if tier != "A" or set(reasons) != {"PRIMARY_ELIGIBLE"}:
             review_rows.append(row)
         if bool(row.get("has_critical_error")):
             critical_record_uids.append(str(row["record_uid"]))
