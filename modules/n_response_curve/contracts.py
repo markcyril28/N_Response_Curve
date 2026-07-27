@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-SUPPORTED_FIGURE_FORMATS = frozenset({"png", "svg"})
+SUPPORTED_FIGURE_FORMATS = frozenset({"jpeg", "png", "svg"})
 SUPPORTED_TABLE_FORMATS = frozenset({"csv", "parquet", "xlsx"})
 
 
