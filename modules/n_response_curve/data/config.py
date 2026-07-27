@@ -302,6 +302,7 @@ def validate_config(
 
     # Freeze effective defaults without mutating a caller-owned mapping.
     data = dict(data)
+    data["run"] = dict(data["run"])
     data["selection"] = dict(data["selection"])
     data["eligibility"] = dict(data["eligibility"])
     data["sources"] = {
