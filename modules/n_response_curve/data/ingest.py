@@ -9,6 +9,9 @@ from .config import ConfigError, ValidatedConfig
 from .provenance import SourceIntegrityReport, sha256_file, verify_source_integrity
 
 
+SUPPORTED_SHAPE_ADAPTERS = frozenset({"core-trial-csv-v1", "fixture-csv-v1"})
+
+
 @dataclass(frozen=True)
 class RawColumn:
     """One physical input column, identified independently of its header text."""
@@ -42,6 +45,12 @@ class IngestedSource:
     columns: tuple[RawColumn, ...]
     rows: tuple[RawRow, ...]
     blank_rows: tuple[RawRow, ...]
+    source_type: str = "unknown"
+    source_family: str = "unknown"
+    source_country_code: str = "UNRESOLVED"
+    shape_adapter_version: str = "direct-csv-v1"
+    schema_map_path: Path | None = None
+    schema_map_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,12 @@ def ingest_csv(
     expected_physical_columns: int,
     expected_headers: Mapping[int, str] | None = None,
     expected_sha256: str | None = None,
+    source_type: str = "unknown",
+    source_family: str | None = None,
+    source_country_code: str = "UNRESOLVED",
+    shape_adapter_version: str = "direct-csv-v1",
+    schema_map_path: str | Path | None = None,
+    schema_map_sha256: str | None = None,
 ) -> IngestedSource:
     """Read one CSV by physical position and fail before accepting shape drift.
 
@@ -171,6 +186,12 @@ def ingest_csv(
         columns=columns,
         rows=tuple(rows),
         blank_rows=tuple(blank_rows),
+        source_type=source_type,
+        source_family=source_family or source_type,
+        source_country_code=source_country_code,
+        shape_adapter_version=shape_adapter_version,
+        schema_map_path=Path(schema_map_path).resolve() if schema_map_path is not None else None,
+        schema_map_sha256=schema_map_sha256,
     )
 
 
@@ -194,6 +215,13 @@ def _manifest_relative_path(config: ValidatedConfig, source_path: Path) -> str:
 def ingest_configured_sources(config: ValidatedConfig) -> IngestionResult:
     """Verify the intake package and read every enabled source without writing it."""
 
+    for source_name in config.enabled_sources:
+        adapter = str(config.sources[source_name]["shape_adapter_version"])
+        if adapter not in SUPPORTED_SHAPE_ADAPTERS:
+            raise ConfigError(
+                f"Enabled source {source_name!r} declares unsupported shape adapter {adapter!r}"
+            )
+
     integrity_report = verify_source_integrity(
         config.paths["source_manifest"],
         config.paths["source_checksums"],
@@ -210,6 +238,10 @@ def ingest_configured_sources(config: ValidatedConfig) -> IngestionResult:
     sources: list[IngestedSource] = []
     for source_name in config.enabled_sources:
         source_path = _configured_source_path(config, source_name)
+        source_config = config.sources[source_name]
+        schema_map_path = (config.project_root / str(source_config["schema_map"])).resolve()
+        if not schema_map_path.is_file():
+            raise ConfigError(f"Schema map for enabled source does not exist: {schema_map_path}")
         manifest_relative_path = _manifest_relative_path(config, source_path)
         expected_sha256 = integrity_report.artifact_sha256.get(manifest_relative_path)
         if expected_sha256 is None:
@@ -223,6 +255,12 @@ def ingest_configured_sources(config: ValidatedConfig) -> IngestionResult:
                 expected_physical_columns=expected_columns,
                 expected_headers=expected_headers,
                 expected_sha256=expected_sha256,
+                source_type=str(source_config["source_type"]),
+                source_family=str(source_config["source_family"]),
+                source_country_code=str(source_config["country_code"]),
+                shape_adapter_version=str(source_config["shape_adapter_version"]),
+                schema_map_path=schema_map_path,
+                schema_map_sha256=sha256_file(schema_map_path),
             )
         )
     return IngestionResult(sources=tuple(sources), integrity_report=integrity_report)
@@ -233,6 +271,7 @@ __all__ = [
     "IngestionResult",
     "RawColumn",
     "RawRow",
+    "SUPPORTED_SHAPE_ADAPTERS",
     "ingest_configured_sources",
     "ingest_csv",
 ]
