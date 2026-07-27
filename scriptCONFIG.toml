@@ -9,12 +9,13 @@
 #   "test"     runs the complete pipeline on at most test_group_limit resolved
 #              series and writes under paths.test_output_root.
 #   "full"     runs all resolved series and writes under paths.reports_root;
-#              it requires explicit domain-prefixed decision approval IDs.
+#              every enabled source must be verified with an assigned adapter.
 mode = "test"
 overwrite = true
 random_seed = 20260720
 test_group_limit = 12
 fail_fast = true
+qc_gate = "fail_on_any_review" # OPS-03 Option B: validate/full fail after complete warning/unresolved/exclusion review.
 r_threads_per_job = 1
 max_parallel_r_jobs = 1
 r_stage_timeout_seconds = 1800
@@ -27,6 +28,16 @@ decisions_approved = [
 
 [selection]
 # Comment one member to disable it; uncomment it to restore it. The parsed list is authoritative.
+scope_countries = ["PH"]
+series_identity_dimensions = [
+  "water_regime",
+  "season",
+  "region",
+  "province",
+  "variety",
+  "planting_year",
+]
+
 enabled_sources = [
   "core_trial_data",
   # "ltcce",
@@ -60,6 +71,7 @@ output_formats = [
 figure_formats = [
   "png",
   #"svg",
+  "jpeg",
 ]
 
 fill_down_fields = [
@@ -91,6 +103,11 @@ organic_policy = "retain_flagged"
 p_k_policy = "retain_flagged"
 zero_n_policy = "allow_flagged"
 constant_nutrient_tolerance = 1e-8
+n_level_tolerance_kg_ha = 1e-6
+n_rate_min_kg_ha = 0.0
+n_rate_max_kg_ha = 400.0
+yield_min_t_ha = 0.0
+yield_max_t_ha = 30.0
 high_n_review_threshold_kg_ha = 200.0
 
 # Only these row-level QC failures block a decision-approved Phase 2 full gate.
@@ -106,8 +123,8 @@ convergence_tolerance = 1e-8
 plausible_yield_min_t_ha = 0.0
 plausible_yield_max_t_ha = 30.0
 plot_grid_points = 101
-model_selection_metric = "aicc_then_grouped_prediction"
-tie_breaking = "simpler_model_then_stable_domain"
+model_selection_metric = "all_credible_no_selection" # MOD-02 Option D.
+tie_breaking = "not_applicable"
 
 candidate_models = [
   "linear",
@@ -120,13 +137,14 @@ candidate_models = [
 parameter_bounds = { n_rate_min_kg_ha = 0.0, n_rate_max_kg_ha = 400.0 }
 allow_uncertainty = false
 uncertainty_method = "deferred_until_evidence_gate"
+allow_baseline_response_metrics = false # ELG-10 remains open.
 
 # Output and logging controls
 [outputs]
 atomic_writes = true
 allow_source_targets = false
 row_level_qc = true
-collision_policy = "fail"
+collision_policy = "replace_only_with_overwrite"
 
 [logging]
 level = "INFO"
@@ -159,6 +177,10 @@ final_reporting = "python"
 marginal_contrasts = "r"
 
 # Analysis candidate controls
+[analysis_hypotheses]
+# Empty means no bounded confirmatory hypothesis set has been authorized.
+specifications = []
+
 [analysis_matrix]
 dataset_versions = [
   "D00_inventory_all",
@@ -169,10 +191,10 @@ dataset_versions = [
   "D05_pk_varying_sensitivity",
   "D06_organic_bio_sensitivity",
   "D07_high_n_full_range",
-  "D08_high_n_trimmed_sensitivity",
-  "D09_complete_recommendation_set",
+  # "D08_high_n_trimmed_sensitivity", # Deferred until an explicit high-N trimming rule is approved.
+  # "D09_complete_recommendation_set", # Deferred while ELG-11 membership remains open.
   "D10_factor_specific_complete_case",
-  "D11_balanced_interaction_cells",
+  # "D11_balanced_interaction_cells", # Deferred with interaction families under ANA-06 Option C.
   # "D12_climate_enriched_future",
 ]
 
@@ -180,20 +202,33 @@ source_combination_modes = [
   "each_family_alone",
   "all_nonempty_family_subsets",
   "all_families_deduplicated",
-  "leave_one_family_out",
+  # "each_family_alone",
+  # "all_nonempty_family_subsets",
+  # "leave_one_family_out",
 ]
 
 curve_outcomes = [
+  "evidence_status",
+  "evidence_strength",
   "curve_shape_class",
   "optimum_status",
   "agronomic_optimum_n_kg_ha",
   # "economic_optimum_n_kg_ha", # Enable only after price scenarios are approved.
   "plateau_onset_n_kg_ha",
-  "predicted_max_yield_t_ha",
+  "predicted_observed_domain_peak_yield_t_ha",
+  "finite_maximum_yield_t_ha",
+  "fitted_asymptote_yield_t_ha",
+  "supported_max_yield_t_ha",
+  "maximum_reference_basis",
+  "maximum_proximity_status",
   "observed_max_yield_t_ha",
-  "yield_at_zero_n_t_ha",
-  "yield_response_above_zero_n_t_ha",
+  "observed_max_gap_to_finite_maximum_t_ha",
+  "observed_max_gap_to_supported_maximum_t_ha",
+  "observed_max_attainment_fraction",
+  # "yield_at_zero_n_t_ha", # Deferred while ELG-10 baseline membership remains open.
+  # "yield_response_above_zero_n_t_ha", # Deferred with the baseline estimand.
   "recommendation_yield_gap_t_ha",
+  "target_yield_status",
   "target_yield_gap_t_ha",
 ]
 
@@ -203,35 +238,26 @@ explanatory_factors = [
   "experimental_design",
   "water_regime",
   "season",
+  "planting_year",
   "region",
   "province",
   "variety",
-  "planting_year",
-  "recommendation_class",
-  "n_level_count",
-  "observed_n_range",
-  "has_zero_n",
-  "has_high_n",
-  "p_rate",
-  "p_varies_with_n",
-  "k_rate",
-  "k_varies_with_n",
-  "organic_fertilizer_present",
-  "biofertilizer_present",
-  "n_split_pattern",
-  "n_timing_pattern",
-  "elevation_m",
-  "soil_texture",
-  "soil_ph",
-  "soil_organic_matter",
-  "soil_total_n",
-  "soil_available_p",
-  "soil_exchangeable_k",
+  "recommendation_scope", # Field-specific vs uniform recommendation; requires explicit source metadata.
 ]
 
 analysis_families = [
   "coverage_and_missingness",
   "one_factor_descriptive",
+  # "all_supported_interactions",          # ANA-06 Option C: deferred pending an exact bounded list.
+  # "multivariable_mixed_effects",          # Deferred; current inferential profile is main effects only.
+  # "observation_level_curve_modification", # Deferred with interaction/curve-modification terms.
+  # "penalized_predictive_models", # Disabled by ANA-11.
+  # "curve_feature_clustering", # Disabled by ANA-11.
+  "dataset_and_source_robustness",
+  # "marginal_contrasts", # Deferred with inferential families until upstream gates are approved.
+]
+
+deferred_analysis_families = [
   "one_factor_inferential",
   "all_supported_interactions",
   "multivariable_mixed_effects",
@@ -244,6 +270,11 @@ analysis_families = [
 
 interaction_orders = [
   1,
+  # 2, # ANA-06 Option C: disabled.
+  # 3, # ANA-06 Option C: disabled.
+]
+
+deferred_interaction_orders = [
   2,
   3,
 ]
@@ -253,19 +284,16 @@ run_supported_only = true
 group_cross_validation_by = "study_uid"
 multiple_testing_method = "benjamini_hochberg"
 
-# Conservative support gates applied before any inferential, predictive, or
-# higher-order factor candidate is allowed to run.
-[analysis_matrix.support_policy]
-minimum_independent_studies = 4
-minimum_factor_cell_count = 3
-maximum_factor_cardinality = 12
-minimum_residual_information = 3
+# No [analysis_matrix.support_policy] is active while ANA-05 remains open.
+# Inferential, predictive, and higher-order families therefore remain disabled.
 
 # Registered source and schema contract. Change this block only when a source
 # is added or its source evidence changes; source-specific path bindings stay
 # with their provenance metadata.
 [sources.core_trial_data]
 source_type = "literature"
+country_code = "PH"
+source_family = "core_trial_data"
 data_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Literature_Data_Extraction_Template_Nutrient_Management_Data.csv"
 schema_map = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/Nutrient_Management_Literature_Data_Extraction_Template_Data_Dictionary.csv"
 provider = "provenance_preserving_intake_package"
@@ -276,6 +304,8 @@ shape_adapter_version = "core-trial-csv-v1"
 
 [sources.ltcce]
 source_type = "ltcce"
+country_code = "PH"
+source_family = "ltcce"
 data_path = "WF/01_Curated_Dataset/future_sources/ltcce.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/ltcce_schema.csv"
 provider = "pending_team_source"
@@ -286,6 +316,8 @@ shape_adapter_version = "unassigned"
 
 [sources.rcm_validation]
 source_type = "rcm_validation"
+country_code = "PH"
+source_family = "rcm_validation"
 data_path = "WF/01_Curated_Dataset/future_sources/rcm_validation.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/rcm_validation_schema.csv"
 provider = "pending_team_source"
@@ -296,6 +328,8 @@ shape_adapter_version = "unassigned"
 
 [sources.nopt]
 source_type = "nopt"
+country_code = "PH"
+source_family = "nopt"
 data_path = "WF/01_Curated_Dataset/future_sources/nopt.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/nopt_schema.csv"
 provider = "pending_team_source"
@@ -366,7 +400,8 @@ wet = [
 ]
 
 [schema.normalization.treatment_class]
-zero_n = ["zero N", "0 N", "control", "absolute control"]
+absolute_control = ["absolute control"]
+zero_n = ["zero N", "0 N", "control"]
 RCM = ["RCM", "recommended crop management"]
 FP = ["FP", "farmer practice"]
 NOPT_NPK = ["NOPT", "NOPT NPK"]
