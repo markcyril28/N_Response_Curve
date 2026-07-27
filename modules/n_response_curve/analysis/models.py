@@ -900,8 +900,8 @@ def fit_response_models(
     return tuple(attempts)
 
 
-def select_reportable_model(attempts: Iterable[ModelAttempt]) -> ModelAttempt | None:
-    """Select the best fitted candidate without hiding unsupported or failed attempts."""
+def credible_model_attempts(attempts: Iterable[ModelAttempt]) -> tuple[ModelAttempt, ...]:
+    """Return every fitted, identifiable candidate in deterministic roster order."""
 
     fitted = [
         attempt
@@ -909,6 +909,21 @@ def select_reportable_model(attempts: Iterable[ModelAttempt]) -> ModelAttempt | 
         if attempt.status == "fitted"
         and "UNIDENTIFIABLE_SHAPE_PARAMETERS" not in attempt.reason_codes
     ]
+    return tuple(
+        sorted(
+            fitted,
+            key=lambda attempt: (
+                MODEL_ORDER.index(attempt.model_name),
+                attempt.model_attempt_uid,
+            ),
+        )
+    )
+
+
+def select_reportable_model(attempts: Iterable[ModelAttempt]) -> ModelAttempt | None:
+    """Select one fitted candidate for the legacy ranked-selection policy."""
+
+    fitted = credible_model_attempts(attempts)
     if not fitted:
         return None
     return min(
@@ -962,6 +977,7 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
 __all__ = [
     "MODEL_ORDER",
     "ModelAttempt",
+    "credible_model_attempts",
     "evaluate_model",
     "fit_candidate_model",
     "fit_response_models",
