@@ -133,6 +133,7 @@ def _write_table(stage_root: Path, name: str, artifact: TableArtifact, formats: 
     metadata = {
         "row_count": len(rows),
         "stable_key": artifact.stable_key,
+        "column_names": [str(column) for column in frame.columns],
         "artifact_paths": sorted(artifacts),
         "readback_row_counts": dict(sorted(readback_row_counts.items())),
     }
@@ -142,6 +143,7 @@ def _write_table(stage_root: Path, name: str, artifact: TableArtifact, formats: 
 def _render_report(report_sections: Mapping[str, Iterable[str]]) -> str:
     headings = (
         ("primary", "Primary findings"),
+        ("descriptive", "Descriptive findings"),
         ("sensitivity", "Sensitivity findings"),
         ("exploratory", "Exploratory findings"),
         ("predictive", "Predictive findings"),
