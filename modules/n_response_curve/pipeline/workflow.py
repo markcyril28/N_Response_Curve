@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 import hashlib
 import importlib.metadata
 import json
+import math
 from pathlib import Path
 import platform
 import shutil
+from statistics import median
 import subprocess
 import sys
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from n_response_curve.analysis.analysis_matrix import AnalysisRegistry, build_analysis_registry, build_source_combinations
+from n_response_curve.analysis.comparisons import ManagementSystemProximity, build_management_system_proximity
 from n_response_curve.data.config import ConfigError, ValidatedConfig
 from n_response_curve.data.provenance import sha256_file, stable_json_sha256
-from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_curve_evidence
+from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_curve_evidence, curve_fit_record_uids
 from n_response_curve.analysis.curve_views import DerivedCurveView, build_derived_curve_views
 from n_response_curve.analysis.dataset_versions import DatasetVersion, build_dataset_versions
 from n_response_curve.analysis.explanatory import PythonAnalysisResult, execute_python_candidates, select_candidate_curve_rows
@@ -47,12 +51,24 @@ class PhaseFourResult:
     registry: AnalysisRegistry
     python_results: tuple[PythonAnalysisResult, ...]
     r_preparations: tuple[tuple[str, RAnalysisPreparation], ...]
+    management_system_proximity: tuple[ManagementSystemProximity, ...]
 
 
 @dataclass(frozen=True)
 class PhaseFiveResult:
     package: ReleasePackage
     reused_existing_package: bool
+
+
+_INFERENTIAL_ANALYSIS_FAMILIES = frozenset(
+    {
+        "all_supported_interactions",
+        "marginal_contrasts",
+        "multivariable_mixed_effects",
+        "observation_level_curve_modification",
+        "one_factor_inferential",
+    }
+)
 
 
 def _code_fingerprint() -> str:
@@ -97,7 +113,20 @@ def _runtime_inventory(rscript_command: str) -> dict[str, Any]:
     r_executable = shutil.which(str(rscript_command))
     if r_executable is None:
         raise ConfigError(f"Unable to inventory unavailable Rscript command: {rscript_command}")
-    r_packages = ("arrow", "broom", "emmeans", "glmmTMB", "jsonlite", "lme4", "lmerTest", "nnet", "TMB", "testthat")
+    r_packages = (
+        "arrow",
+        "broom",
+        "emmeans",
+        "glmmTMB",
+        "jsonlite",
+        "lme4",
+        "lmerTest",
+        "nnet",
+        "performance",
+        "reformulas",
+        "TMB",
+        "testthat",
+    )
     package_vector = ",".join(json.dumps(package) for package in r_packages)
     r_expression = (
         f"packages <- c({package_vector}); "
@@ -188,6 +217,7 @@ def run_phase_three(config: ValidatedConfig, phase_two: Any) -> PhaseThreeResult
         input_records,
         model_names=config.enabled_models,
         policy=config.raw["modeling"],
+        fit_record_uids=curve_fit_record_uids(input_records, primary_only=True),
     )
     return PhaseThreeResult(evidence=evidence, input_records=input_records)
 
