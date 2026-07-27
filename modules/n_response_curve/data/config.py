@@ -493,6 +493,16 @@ def validate_config(
         for key in ("workbook", "sheet", "checksum", "manifest_reference"):
             if key in source and (not isinstance(source[key], str) or not source[key].strip()):
                 raise ConfigError(f"[sources.{source_name}].{key} must be a nonempty string")
+        for key in ("workbook", "manifest_reference"):
+            if key not in source:
+                continue
+            source_evidence_path = _resolve_relative_path(
+                source[key],
+                root,
+                f"[sources.{source_name}].{key}",
+            )
+            if check_files and source["availability"] == "available":
+                _require_file(source_evidence_path, f"{key} for available source {source_name}")
     if "core_trial_data" not in sources:
         raise ConfigError("[sources] must define core_trial_data")
     if source_paths["core_trial_data"] != paths["core_source_csv"]:
