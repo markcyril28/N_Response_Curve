@@ -273,6 +273,38 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
     )
     if not registry.reconciles:
         raise ConfigError("Phase 4 analysis registry does not reconcile its configured candidate space")
+    primary_dataset_version = next(
+        (
+            version
+            for version in versions
+            if version.version_id == "D02_strict_primary_zero_optional"
+        ),
+        None,
+    )
+    management_system_proximity = build_management_system_proximity(
+        phase_three.input_records,
+        curve_rows=phase_three.evidence.curve_rows,
+        dataset_version_id=(
+            primary_dataset_version.version_id
+            if primary_dataset_version is not None
+            else None
+        ),
+        dataset_version_status=(
+            primary_dataset_version.status
+            if primary_dataset_version is not None
+            else "not_configured"
+        ),
+        dataset_membership_sha256=(
+            primary_dataset_version.membership_sha256
+            if primary_dataset_version is not None
+            else None
+        ),
+        dataset_record_uids=(
+            primary_dataset_version.record_uids
+            if primary_dataset_version is not None
+            else ()
+        ),
+    )
     return PhaseFourResult(
         dataset_versions=versions,
         derived_curve_views=derived_curve_views,
@@ -281,6 +313,7 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
         registry=registry,
         python_results=python_results,
         r_preparations=r_preparations,
+        management_system_proximity=management_system_proximity,
     )
 
 
@@ -357,6 +390,7 @@ def _r_stage_writer(
     phase_three: PhaseThreeResult,
     phase_four: PhaseFourResult,
     statuses: list[dict[str, Any]],
+    result_rows: dict[str, tuple[dict[str, Any], ...]],
 ):
     preparations = dict(phase_four.r_preparations)
     if len(preparations) != len(phase_four.r_preparations):
@@ -416,12 +450,25 @@ def _r_stage_writer(
                 if fail_fast:
                     raise ConfigError(f"R stage contract failed for {candidate.candidate_id}: {exc}") from exc
             else:
+                result_rows[candidate.candidate_id] = tuple(dict(row) for row in result.results)
+                structured_reasons = sorted(
+                    {
+                        str(reason)
+                        for row in result.results
+                        for reason in (
+                            (row.get("reason_codes"),)
+                            if isinstance(row.get("reason_codes"), str)
+                            else row.get("reason_codes", ())
+                        )
+                        if str(reason)
+                    }
+                )
                 statuses.append(
                     {
                         "candidate_id": candidate.candidate_id,
                         "status": result.status,
                         "return_code": result.return_code,
-                        "reason_codes": [],
+                        "reason_codes": structured_reasons,
                         "result_count": len(result.results),
                         "metadata": dict(result.metadata),
                         "contract_version": 1,
@@ -454,6 +501,273 @@ def _nested_warning_messages(value: Any) -> tuple[str, ...]:
         for nested in value:
             messages.extend(_nested_warning_messages(nested))
     return tuple(messages)
+
+
+def _raw_probability(row: Mapping[str, Any]) -> tuple[float | None, str | None]:
+    values: list[float] = []
+    for key in ("p.value_raw", "raw_p_value", "p_value_raw", "p.value", "p_value"):
+        if key not in row or row[key] is None or isinstance(row[key], bool):
+            continue
+        try:
+            value = float(row[key])
+        except (TypeError, ValueError):
+            return None, "RAW_P_VALUE_NONFINITE"
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            return None, "RAW_P_VALUE_NONFINITE"
+        values.append(value)
+    if not values:
+        return None, "RAW_P_VALUE_MISSING"
+    if any(not math.isclose(value, values[0], rel_tol=1.0e-12, abs_tol=1.0e-15) for value in values[1:]):
+        return None, "RAW_P_VALUE_CONFLICT"
+    return values[0], None
+
+
+def _multiplicity_result_id(candidate_id: str, row: Mapping[str, Any]) -> str:
+    declared = row.get("result_id")
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    identity = {
+        str(key): value
+        for key, value in row.items()
+        if str(key) not in {"p.value_adjusted", "adjusted_p_value", "p_adjusted", "result_id"}
+    }
+    encoded = json.dumps(
+        {"candidate_id": candidate_id, "result": identity},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "result_" + hashlib.sha256(encoded).hexdigest()
+
+
+def _multiplicity_reconciliation_id(
+    family_id: str,
+    candidate_id: str,
+    result_id: str,
+    occurrence: int,
+) -> str:
+    encoded = json.dumps(
+        [family_id, candidate_id, result_id, occurrence],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "multiplicity_" + hashlib.sha256(encoded).hexdigest()
+
+
+def _benjamini_hochberg(
+    rows: Sequence[tuple[str, str, str, float]],
+) -> dict[str, float]:
+    ordered = sorted(rows, key=lambda item: (item[3], item[2], item[1], item[0]))
+    family_size = len(ordered)
+    adjusted: dict[str, float] = {}
+    running_minimum = 1.0
+    for reverse_index in range(family_size - 1, -1, -1):
+        reconciliation_id, _, _, raw_p_value = ordered[reverse_index]
+        rank = reverse_index + 1
+        running_minimum = min(running_minimum, raw_p_value * family_size / rank)
+        adjusted[reconciliation_id] = min(1.0, max(0.0, running_minimum))
+    return adjusted
+
+
+def _reconcile_multiplicity_families(
+    registry: AnalysisRegistry,
+    r_statuses: Sequence[Mapping[str, Any]],
+    r_result_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Reconcile and adjust complete prespecified families without mutating engine outputs."""
+
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in registry.candidates}
+    statuses_by_candidate: dict[str, list[Mapping[str, Any]]] = {}
+    for status in r_statuses:
+        statuses_by_candidate.setdefault(str(status.get("candidate_id") or ""), []).append(status)
+    result_rows_by_key: dict[str, dict[str, Any]] = {}
+    candidate_statuses: dict[str, dict[str, Any]] = {}
+    families: list[dict[str, Any]] = []
+    for family in registry.multiplicity_families:
+        family_reasons: set[str] = set()
+        collected: list[dict[str, Any]] = []
+        seen_result_ids: set[str] = set()
+        expected_candidate_ids = tuple(family.candidate_ids)
+        for candidate_id in expected_candidate_ids:
+            candidate = candidates_by_id.get(candidate_id)
+            if candidate is None or candidate.multiplicity_family_id != family.family_id:
+                family_reasons.add("MULTIPLICITY_REGISTRY_MEMBERSHIP_MISMATCH")
+                continue
+            if candidate.engine != "r":
+                family_reasons.add("MULTIPLICITY_ENGINE_NOT_RECONCILABLE")
+                continue
+            if candidate.status != "run":
+                family_reasons.add("MULTIPLICITY_REGISTRY_MEMBER_NOT_EXECUTABLE")
+                continue
+            candidate_status_rows = statuses_by_candidate.get(candidate_id, [])
+            if not candidate_status_rows:
+                family_reasons.add("MULTIPLICITY_CANDIDATE_RESULT_MISSING")
+                continue
+            if len(candidate_status_rows) != 1:
+                family_reasons.add("MULTIPLICITY_CANDIDATE_RESULT_DUPLICATE")
+                continue
+            if candidate_status_rows[0].get("status") != "completed":
+                family_reasons.add("MULTIPLICITY_CANDIDATE_NOT_COMPLETED")
+                continue
+            candidate_results = r_result_rows.get(candidate_id)
+            if not candidate_results:
+                family_reasons.add("MULTIPLICITY_RESULT_ROWS_MISSING")
+                continue
+            for occurrence, raw_row in enumerate(candidate_results):
+                row_reasons: set[str] = set()
+                if not isinstance(raw_row, Mapping):
+                    result_id = f"invalid_result_{occurrence:06d}"
+                    raw_p_value = None
+                    row_reasons.add("MULTIPLICITY_RESULT_ROW_INVALID")
+                else:
+                    try:
+                        result_id = _multiplicity_result_id(candidate_id, raw_row)
+                    except (TypeError, ValueError):
+                        result_id = f"invalid_result_{occurrence:06d}"
+                        row_reasons.add("MULTIPLICITY_RESULT_ID_INVALID")
+                    raw_p_value, raw_reason = _raw_probability(raw_row)
+                    if raw_reason is not None:
+                        row_reasons.add(raw_reason)
+                if result_id in seen_result_ids:
+                    row_reasons.add("MULTIPLICITY_RESULT_ID_DUPLICATE")
+                seen_result_ids.add(result_id)
+                reconciliation_id = _multiplicity_reconciliation_id(
+                    family.family_id,
+                    candidate_id,
+                    result_id,
+                    occurrence,
+                )
+                collected.append(
+                    {
+                        "reconciliation_id": reconciliation_id,
+                        "family_id": family.family_id,
+                        "candidate_id": candidate_id,
+                        "hypothesis_id": candidate.hypothesis_id,
+                        "result_id": result_id,
+                        "raw_p_value": raw_p_value,
+                        "adjusted_p_value": None,
+                        "method": family.method,
+                        "family_size": None,
+                        "family_complete": False,
+                        "status": "not_interpretable",
+                        "reason_codes": sorted(row_reasons),
+                    }
+                )
+                family_reasons.update(row_reasons)
+        if not collected:
+            family_reasons.add("MULTIPLICITY_FAMILY_HAS_NO_RAW_RESULTS")
+        family_complete = not family_reasons
+        family_size = len(collected) if family_complete else None
+        if family_complete:
+            adjustments = _benjamini_hochberg(
+                tuple(
+                    (
+                        str(row["reconciliation_id"]),
+                        str(row["candidate_id"]),
+                        str(row["result_id"]),
+                        float(row["raw_p_value"]),
+                    )
+                    for row in collected
+                )
+            )
+            for row in collected:
+                row["adjusted_p_value"] = adjustments[str(row["reconciliation_id"])]
+                row["family_size"] = family_size
+                row["family_complete"] = True
+                row["status"] = "reconciled"
+        else:
+            for row in collected:
+                row["reason_codes"] = sorted(set(row["reason_codes"]) | family_reasons)
+        for row in collected:
+            result_rows_by_key[str(row["reconciliation_id"])] = row
+        family_status = "reconciled" if family_complete else "incomplete"
+        for candidate_id in expected_candidate_ids:
+            candidate_statuses[candidate_id] = {
+                "family_id": family.family_id,
+                "status": family_status,
+                "reason_codes": [] if family_complete else sorted(family_reasons),
+            }
+        family_key = hashlib.sha256(
+            json.dumps(
+                [family.family_id, family.method, list(expected_candidate_ids)],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        families.append(
+            {
+                "family_key": "family_" + family_key,
+                "family_id": family.family_id,
+                "method": family.method,
+                "status": family_status,
+                "complete": family_complete,
+                "reason_codes": [] if family_complete else sorted(family_reasons),
+                "expected_candidate_ids": list(expected_candidate_ids),
+                "expected_hypothesis_ids": list(family.hypothesis_ids),
+                "expected_candidate_count": len(expected_candidate_ids),
+                "observed_result_count": len(collected),
+                "family_size": family_size,
+            }
+        )
+    status_counts = Counter(str(family["status"]) for family in families)
+    overall_status = (
+        "not_applicable"
+        if not families
+        else "reconciled"
+        if status_counts.get("incomplete", 0) == 0
+        else "incomplete"
+    )
+    return {
+        "schema_version": 1,
+        "method": "BH",
+        "status": overall_status,
+        "family_count": len(families),
+        "family_status_counts": dict(sorted(status_counts.items())),
+        "families": families,
+        "candidate_statuses": dict(sorted(candidate_statuses.items())),
+        "results_by_reconciliation_id": dict(sorted(result_rows_by_key.items())),
+    }
+
+
+def _multiplicity_reconciliation_stage_writer(
+    phase_four: PhaseFourResult,
+    r_statuses: list[dict[str, Any]],
+    r_result_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    reconciliation_state: dict[str, Any],
+    manifest: dict[str, Any],
+    report_sections: dict[str, list[str]],
+):
+    def write_multiplicity_reconciliation(stage_root: Path) -> tuple[Path, ...]:
+        payload = _reconcile_multiplicity_families(
+            phase_four.registry,
+            r_statuses,
+            r_result_rows,
+        )
+        reconciliation_state.clear()
+        reconciliation_state.update(payload)
+        manifest["multiplicity_reconciliation"] = {
+            "artifact_path": "multiplicity_reconciliation.json",
+            "method": payload["method"],
+            "status": payload["status"],
+            "family_count": payload["family_count"],
+            "family_status_counts": payload["family_status_counts"],
+            "result_count": len(payload["results_by_reconciliation_id"]),
+        }
+        report_sections["unsupported"].append(
+            "Prespecified multiplicity reconciliation status="
+            f"{payload['status']} across {payload['family_count']} BH families "
+            f"({_format_counts(payload['family_status_counts']) or 'no declared families'}). "
+            "Incomplete families remain explicit non-findings; these statuses do not establish causal effects."
+        )
+        path = stage_root / "multiplicity_reconciliation.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return (path,)
+
+    return write_multiplicity_reconciliation
 
 
 def _terminal_status_stage_writer(
