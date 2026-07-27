@@ -35,9 +35,10 @@ series_identity_dimensions = [
 
 enabled_sources = [
   "core_trial_data",
+  # "ph_combined_nopt_rcm", # Received and registered; disabled until its adapter, mapping, precision, and restricted-data gates pass.
   # "ltcce",
-  # "rcm_validation",
-  # "nopt",
+  # "rcm_validation", # Reserved for a separately supplied standalone source; do not alias the combined file.
+  # "nopt", # Reserved for a separately supplied standalone source; do not alias the combined file.
 ]
 
 enabled_models = [
@@ -285,9 +286,28 @@ data_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Litera
 schema_map = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/Nutrient_Management_Literature_Data_Extraction_Template_Data_Dictionary.csv"
 provider = "provenance_preserving_intake_package"
 provenance_notes = "Exact source copy; 1490 nonblank data rows, 302 physical columns, duplicate and blank headers retained."
+encoding = "utf-8-sig"
+data_classification = "internal"
 availability = "available"
 confirmation_status = "verified"
 shape_adapter_version = "core-trial-csv-v1"
+
+[sources.ph_combined_nopt_rcm]
+source_type = "combined_nopt_rcm"
+country_code = "PH"
+source_family = "ph_combined_nopt_rcm"
+data_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/PH Combined NOPT and RCM_sheet_1.csv"
+schema_map = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/PH Combined NOPT and RCM_sheet_2_notes.csv"
+workbook = "WF/01_Curated_Dataset/00_Source_Workbook/PH Combined NOPT and RCM.xlsx"
+sheet = "Sheet 1"
+manifest_reference = "WF/01_Curated_Dataset/MANIFEST.csv"
+provider = "philippine_ssnm_fertilizer_trials_raw_folder"
+provenance_notes = "Exact source copies received 2026-07-27; 718 linked rows and 228 unique columns. Each row crosswalks FP, RCM, NOPT full-fertilizer, and NOPT zero-N evidence. Workbook/CSV numeric precedence, source identity, and wide-to-long semantics remain pending."
+encoding = "cp1252"
+data_classification = "restricted"
+availability = "available"
+confirmation_status = "pending"
+shape_adapter_version = "unassigned"
 
 [sources.ltcce]
 source_type = "ltcce"
@@ -308,7 +328,7 @@ source_family = "rcm_validation"
 data_path = "WF/01_Curated_Dataset/future_sources/rcm_validation.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/rcm_validation_schema.csv"
 provider = "pending_team_source"
-provenance_notes = "Inactive until the RCM validation source is registered."
+provenance_notes = "Reserved for a separately supplied standalone RCM-validation source. The received combined FP/RCM/NOPT artifact is registered once as ph_combined_nopt_rcm and must not be duplicated here."
 availability = "expected_unavailable"
 confirmation_status = "pending"
 shape_adapter_version = "unassigned"
@@ -320,7 +340,7 @@ source_family = "nopt"
 data_path = "WF/01_Curated_Dataset/future_sources/nopt.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/nopt_schema.csv"
 provider = "pending_team_source"
-provenance_notes = "Inactive until the NOPT source is registered."
+provenance_notes = "Reserved for a separately supplied standalone NOPT source. The received combined FP/RCM/NOPT artifact is registered once as ph_combined_nopt_rcm and must not be duplicated here."
 availability = "expected_unavailable"
 confirmation_status = "pending"
 shape_adapter_version = "unassigned"
