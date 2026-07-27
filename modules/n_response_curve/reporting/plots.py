@@ -83,9 +83,74 @@ def _finalize_axes(axes: Any, title: str) -> None:
     axes.legend(loc="best", fontsize=8)
 
 
+def _display_number(value: Any) -> str | None:
+    number = finite_number(value)
+    return None if number is None else f"{number:.3g}"
+
+
+def _evidence_annotation(
+    evidence_row: Mapping[str, Any] | None,
+    *,
+    attempt: ModelAttempt | None = None,
+) -> tuple[str, ...]:
+    if evidence_row is None:
+        if attempt is None or attempt.status != "fitted":
+            return ()
+        optimum = f"optimum={attempt.optimum_status}"
+        if attempt.agronomic_optimum_n_kg_ha is not None:
+            optimum += f" ({attempt.agronomic_optimum_n_kg_ha:.2f} kg N/ha)"
+        return (optimum,)
+    status = str(evidence_row.get("evidence_status") or "unreported")
+    strength = str(evidence_row.get("evidence_strength") or "unreported")
+    lines = [f"evidence={status}; strength={strength}"]
+    shape = str(evidence_row.get("curve_shape_class") or "unavailable")
+    optimum_status = str(evidence_row.get("optimum_status") or "unavailable")
+    optimum_value = _display_number(evidence_row.get("agronomic_optimum_n_kg_ha"))
+    optimum = f"shape={shape}; optimum={optimum_status}"
+    if optimum_value is not None:
+        optimum += f" ({optimum_value} kg N/ha)"
+    lines.append(optimum)
+    for field, label in (
+        ("predicted_observed_domain_peak_yield_t_ha", "observed-domain fitted peak"),
+        ("finite_maximum_yield_t_ha", "finite maximum"),
+        ("fitted_asymptote_yield_t_ha", "fitted asymptote"),
+    ):
+        value = _display_number(evidence_row.get(field))
+        if value is not None:
+            lines.append(f"{label}={value} t/ha")
+    supported = _display_number(evidence_row.get("supported_max_yield_t_ha"))
+    basis = str(evidence_row.get("maximum_reference_basis") or "none")
+    if supported is not None:
+        lines.append(f"supported maximum={supported} t/ha; basis={basis}")
+    proximity = str(evidence_row.get("maximum_proximity_status") or "unavailable")
+    proximity_parts = [f"maximum proximity={proximity}"]
+    for field, label in (
+        ("observed_max_gap_to_finite_maximum_t_ha", "gap to finite maximum"),
+        ("observed_max_gap_to_supported_maximum_t_ha", "gap to supported maximum"),
+        ("observed_max_attainment_fraction", "attainment fraction"),
+    ):
+        value = _display_number(evidence_row.get(field))
+        if value is not None:
+            proximity_parts.append(f"{label}={value}")
+    lines.append("; ".join(proximity_parts))
+    lines.append(f"target yield={evidence_row.get('target_yield_status') or 'not_configured'}")
+    raw_reasons = evidence_row.get("reason_codes", ())
+    if isinstance(raw_reasons, str):
+        reasons = raw_reasons.strip()
+    elif isinstance(raw_reasons, (list, tuple, set, frozenset)):
+        reasons = ",".join(str(reason) for reason in raw_reasons if str(reason).strip())
+    else:
+        reasons = ""
+    if reasons:
+        lines.append(f"reasons={reasons}")
+    return tuple(lines)
+
+
 def create_observed_series_figure(
     records: Iterable[Mapping[str, Any]],
     response_series_uid: str,
+    *,
+    evidence_row: Mapping[str, Any] | None = None,
 ):
     """Build an observed-only figure even when no model is supportable."""
 
@@ -119,12 +184,25 @@ def create_observed_series_figure(
             )
         ),
     )
+    annotation = _evidence_annotation(evidence_row)
+    if annotation:
+        axes.text(
+            0.01,
+            0.01,
+            "\n".join(annotation),
+            transform=axes.transAxes,
+            va="bottom",
+            ha="left",
+            fontsize=8,
+        )
     return figure, axes
 
 
 def create_response_curve_figure(
     records: Iterable[Mapping[str, Any]],
     attempt: ModelAttempt,
+    *,
+    evidence_row: Mapping[str, Any] | None = None,
 ):
     """Build a structural, observed-domain curve figure without writing it to disk."""
 
@@ -161,11 +239,17 @@ def create_response_curve_figure(
             )
         ),
     )
-    if attempt.status == "fitted":
-        annotation = f"optimum={attempt.optimum_status}"
-        if attempt.agronomic_optimum_n_kg_ha is not None:
-            annotation += f" ({attempt.agronomic_optimum_n_kg_ha:.2f} kg N/ha)"
-        axes.text(0.01, 0.01, annotation, transform=axes.transAxes, va="bottom", ha="left", fontsize=8)
+    annotation = _evidence_annotation(evidence_row, attempt=attempt)
+    if annotation:
+        axes.text(
+            0.01,
+            0.01,
+            "\n".join(annotation),
+            transform=axes.transAxes,
+            va="bottom",
+            ha="left",
+            fontsize=8,
+        )
     return figure, axes
 
 
@@ -190,7 +274,8 @@ def prediction_rows(attempt: ModelAttempt) -> tuple[dict[str, Any], ...]:
 def _normalize_figure_formats(formats: Sequence[str], *, figure_type: str) -> tuple[str, ...]:
     normalized = tuple(str(item).lower().lstrip(".") for item in formats)
     if not normalized or any(item not in SUPPORTED_FIGURE_FORMATS for item in normalized):
-        raise ValueError(f"{figure_type} figures support one or more of: png, svg")
+        supported = ", ".join(sorted(SUPPORTED_FIGURE_FORMATS))
+        raise ValueError(f"{figure_type} figures support one or more of: {supported}")
     if len(normalized) != len(set(normalized)):
         raise ValueError(f"{figure_type} figure formats must be unique")
     return normalized
@@ -214,13 +299,14 @@ def write_response_curve_figures(
     *,
     output_root: str | Path,
     formats: Sequence[str],
+    evidence_row: Mapping[str, Any] | None = None,
 ) -> tuple[Path, ...]:
     """Write one deterministic figure per requested format, after domain validation."""
 
     normalized_formats = _normalize_figure_formats(formats, figure_type="Curve")
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
-    figure, _ = create_response_curve_figure(records, attempt)
+    figure, _ = create_response_curve_figure(records, attempt, evidence_row=evidence_row)
     stem = f"{sanitize_series_filename(attempt.response_series_uid)}__{attempt.model_attempt_uid}"
     return _write_figure(figure, root=root, stem=stem, formats=normalized_formats)
 
@@ -231,13 +317,14 @@ def write_observed_series_figures(
     *,
     output_root: str | Path,
     formats: Sequence[str],
+    evidence_row: Mapping[str, Any] | None = None,
 ) -> tuple[Path, ...]:
     """Write deterministic observed-only figures without requiring a fit."""
 
     normalized_formats = _normalize_figure_formats(formats, figure_type="Observed-series")
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
-    figure, _ = create_observed_series_figure(records, response_series_uid)
+    figure, _ = create_observed_series_figure(records, response_series_uid, evidence_row=evidence_row)
     stem = sanitize_series_filename(response_series_uid)
     return _write_figure(figure, root=root, stem=stem, formats=normalized_formats)
 
