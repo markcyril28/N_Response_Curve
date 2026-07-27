@@ -34,7 +34,8 @@ def run_phase_two(config: ValidatedConfig) -> PhaseTwoResult:
     curation = curate_ingestion(ingestion, config)
     resolution = resolve_response_series(
         curation.records,
-        context_dimensions=config.comparison_dimensions,
+        series_identity_dimensions=config.series_identity_dimensions,
+        n_level_tolerance_kg_ha=float(config.raw["eligibility"]["n_level_tolerance_kg_ha"]),
     )
     eligibility = assign_eligibility(
         resolution.records,
@@ -52,6 +53,25 @@ def run_phase_two(config: ValidatedConfig) -> PhaseTwoResult:
         resolution=resolution,
         eligibility=eligibility,
         qc=qc,
+    )
+
+
+def _enforce_phase_two_qc_gate(config: ValidatedConfig, phase_two: PhaseTwoResult) -> None:
+    """Apply the configured operational QC failure policy after complete Phase 2 review."""
+
+    if config.run_mode not in {"validate", "full"}:
+        return
+    policy = str(config.raw["run"]["qc_gate"])
+    review_rows = phase_two.qc.review_rows
+    if policy != "fail_on_any_review" or not review_rows:
+        return
+    affected_uids = sorted(str(row.get("record_uid", "unresolved")) for row in review_rows)
+    preview = ", ".join(affected_uids[:20])
+    if len(affected_uids) > 20:
+        preview += f", ... ({len(affected_uids) - 20} more)"
+    raise ConfigError(
+        "Phase 2 strict QC gate failed because warning, unresolved, or excluded records require review: "
+        + preview
     )
 
 
@@ -80,6 +100,9 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
             source_path = config.project_root / source_path
         print(f"source={source_name} path={_relative(source_path, config.project_root)}")
     print(f"enabled_models={','.join(config.enabled_models) or 'observed_only'}")
+    print(f"scope_countries={','.join(config.scope_countries)}")
+    print(f"series_identity_dimensions={','.join(config.series_identity_dimensions)}")
+    print(f"n_level_tolerance_kg_ha={config.raw['eligibility']['n_level_tolerance_kg_ha']}")
     print(f"comparison_dimensions={','.join(config.comparison_dimensions) or 'none'}")
     print(f"analysis_families={','.join(config.analysis_families)}")
     print(f"source_integrity=pass checked_files={report.checked_files}")
@@ -111,11 +134,13 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     run_log.info("run_started", **run_context)
     with run_log.stage("phase_2"):
         phase_two = run_phase_two(config)
+        _enforce_phase_two_qc_gate(config, phase_two)
     run_log.debug(
         "phase_2_summary",
         canonical_rows=len(phase_two.curation.records),
         eligibility_rows=len(phase_two.eligibility.ledger),
         critical_records=len(phase_two.qc.critical_record_uids),
+        review_records=len(phase_two.qc.review_rows),
     )
     if config.run_mode == "full" and phase_two.qc.critical_record_uids:
         raise ConfigError(
@@ -131,8 +156,11 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     run_log.debug(
         "phase_3_summary",
         model_attempts=len(phase_three.evidence.model_attempts),
+        model_reporting_policy=phase_three.evidence.reporting_policy,
+        credible_models=len(phase_three.evidence.credible_attempts),
         selected_models=len(phase_three.evidence.selected_attempts),
         curve_rows=len(phase_three.evidence.curve_rows),
+        series_evidence_rows=len(phase_three.evidence.series_evidence_rows),
     )
     with run_log.stage("phase_4"):
         phase_four = run_phase_four(config, phase_two, phase_three)
@@ -162,6 +190,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     print(f"eligibility_rows={len(phase_two.eligibility.ledger)}")
     print(f"curve_model_attempts={len(phase_three.evidence.model_attempts)}")
     print(f"curve_feature_rows={len(phase_three.evidence.curve_rows)}")
+    print(f"series_evidence_rows={len(phase_three.evidence.series_evidence_rows)}")
     print(f"analysis_candidates={phase_four.registry.theoretical_candidate_count}")
     return 0
 
