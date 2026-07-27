@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 import hashlib
 import json
 import math
@@ -139,8 +140,14 @@ KNOWN_ENGINE_RESPONSIBILITIES = KNOWN_ANALYSIS_FAMILIES | {
     "final_reporting",
 }
 KNOWN_MULTIPLE_TESTING_METHODS = {"benjamini_hochberg", "none"}
-KNOWN_MODEL_SELECTION_METRICS = {"aicc_then_grouped_prediction"}
-KNOWN_TIE_BREAKING_RULES = {"simpler_model_then_stable_domain"}
+KNOWN_MODEL_SELECTION_METRICS = {
+    "aicc_then_grouped_prediction",
+    "all_credible_no_selection",
+}
+KNOWN_TIE_BREAKING_RULES = {
+    "simpler_model_then_stable_domain",
+    "not_applicable",
+}
 R_OWNED_ANALYSIS_FAMILIES = {
     "one_factor_inferential",
     "all_supported_interactions",
@@ -320,6 +327,7 @@ def validate_config(
         eligibility_defaults.get("constant_nutrient_tolerance", 1e-8),
     )
     modeling_defaults = data["modeling"]
+    modeling_defaults.setdefault("allow_baseline_response_metrics", False)
     bounds_defaults = modeling_defaults.get("parameter_bounds", {})
     eligibility_defaults.setdefault("n_rate_min_kg_ha", bounds_defaults.get("n_rate_min_kg_ha"))
     eligibility_defaults.setdefault("n_rate_max_kg_ha", bounds_defaults.get("n_rate_max_kg_ha"))
@@ -330,7 +338,7 @@ def validate_config(
     _check_unknown_keys(
         run,
         {
-            "mode", "overwrite", "random_seed", "test_group_limit", "fail_fast",
+            "mode", "overwrite", "random_seed", "test_group_limit", "fail_fast", "qc_gate",
             "r_threads_per_job", "max_parallel_r_jobs", "r_stage_timeout_seconds",
             "r_termination_grace_seconds", "cpu_detection", "decisions_approved",
             "required_full_decisions", "required_full_sources",
@@ -344,6 +352,9 @@ def validate_config(
     _require_bool(run, "overwrite", where="[run]")
     _require_int(run, "random_seed", where="[run]")
     _require_bool(run, "fail_fast", where="[run]")
+    _require_string(run, "qc_gate", where="[run]")
+    if run["qc_gate"] not in {"critical_only", "fail_on_any_review"}:
+        raise ConfigError("[run].qc_gate is invalid")
     _require_int_at_least(run, "test_group_limit", 1, where="[run]")
     _require_int_at_least(run, "r_threads_per_job", 1, where="[run]")
     _require_int_at_least(run, "max_parallel_r_jobs", 1, where="[run]")
@@ -522,6 +533,15 @@ def validate_config(
                 "full mode [run].required_full_sources must all be enabled: "
                 + ", ".join(disabled_required_sources)
             )
+        unbound_enabled_sources = tuple(
+            source_name for source_name in enabled_sources if source_name not in required_full_sources
+        )
+        if unbound_enabled_sources:
+            raise ConfigError(
+                "full mode [run].required_full_sources must exactly bind the enabled authoritative "
+                "source snapshot; add or disable: "
+                + ", ".join(unbound_enabled_sources)
+            )
         unverified_required_sources = tuple(
             source_name
             for source_name in required_full_sources
@@ -684,7 +704,7 @@ def validate_config(
             "no_extrapolation", "minimum_residual_df", "convergence_tolerance",
             "plausible_yield_min_t_ha", "plausible_yield_max_t_ha", "plot_grid_points",
             "model_selection_metric", "tie_breaking", "candidate_models", "parameter_bounds",
-            "allow_uncertainty", "uncertainty_method",
+            "allow_uncertainty", "uncertainty_method", "allow_baseline_response_metrics",
         },
         where="[modeling]",
     )
@@ -704,6 +724,15 @@ def validate_config(
     _require_string(modeling, "tie_breaking", where="[modeling]")
     if modeling["tie_breaking"] not in KNOWN_TIE_BREAKING_RULES:
         raise ConfigError("[modeling].tie_breaking is invalid")
+    expected_tie_breaking = {
+        "aicc_then_grouped_prediction": "simpler_model_then_stable_domain",
+        "all_credible_no_selection": "not_applicable",
+    }[modeling["model_selection_metric"]]
+    if modeling["tie_breaking"] != expected_tie_breaking:
+        raise ConfigError(
+            "[modeling].tie_breaking is inconsistent with model_selection_metric; "
+            f"expected {expected_tie_breaking!r}"
+        )
     candidate_models = _toggle_list(
         modeling, "candidate_models", KNOWN_MODELS, where="[modeling]", allow_empty=False
     )
@@ -722,6 +751,11 @@ def validate_config(
     if parameter_bounds["n_rate_max_kg_ha"] <= parameter_bounds["n_rate_min_kg_ha"]:
         raise ConfigError("[modeling.parameter_bounds] maximum must exceed minimum")
     _require_bool(modeling, "allow_uncertainty", where="[modeling]")
+    _require_bool(
+        modeling,
+        "allow_baseline_response_metrics",
+        where="[modeling]",
+    )
     _require_string(modeling, "uncertainty_method", where="[modeling]")
     outputs = data["outputs"]
     _check_unknown_keys(
@@ -739,6 +773,10 @@ def validate_config(
     _require_string(outputs, "collision_policy", where="[outputs]")
     if outputs["collision_policy"] not in {"fail", "replace_only_with_overwrite"}:
         raise ConfigError("[outputs].collision_policy is invalid")
+    if run["overwrite"] and outputs["collision_policy"] != "replace_only_with_overwrite":
+        raise ConfigError(
+            "[outputs].collision_policy must be 'replace_only_with_overwrite' when [run].overwrite is true"
+        )
 
     logging = data["logging"]
     _check_unknown_keys(logging, {"level", "write_logs_in_validate"}, where="[logging]")
@@ -786,6 +824,7 @@ def validate_config(
             "dataset_versions", "source_combination_modes", "curve_outcomes", "explanatory_factors",
             "analysis_families", "interaction_orders", "combination_mode", "run_supported_only",
             "group_cross_validation_by", "multiple_testing_method", "support_policy",
+            "deferred_analysis_families", "deferred_interaction_orders",
         },
         where="[analysis_matrix]",
     )
@@ -824,6 +863,19 @@ def validate_config(
         where="[analysis_matrix]",
         allow_empty=False,
     )
+    deferred_analysis_families = _toggle_list(
+        analysis,
+        "deferred_analysis_families",
+        KNOWN_ANALYSIS_FAMILIES,
+        where="[analysis_matrix]",
+        allow_empty=True,
+    )
+    overlapping_families = sorted(set(analysis_families).intersection(deferred_analysis_families))
+    if overlapping_families:
+        raise ConfigError(
+            "[analysis_matrix] analysis_families and deferred_analysis_families overlap: "
+            + ", ".join(overlapping_families)
+        )
     raw_orders = analysis.get("interaction_orders")
     if not isinstance(raw_orders, list) or any(isinstance(order, bool) or not isinstance(order, int) for order in raw_orders):
         raise ConfigError("[analysis_matrix].interaction_orders must be a list of integers")
@@ -831,6 +883,27 @@ def validate_config(
     _check_unique(interaction_orders, where="[analysis_matrix].interaction_orders")
     if any(order < 1 or order > 3 for order in interaction_orders):
         raise ConfigError("[analysis_matrix].interaction_orders must contain only 1, 2, or 3")
+    raw_deferred_orders = analysis.get("deferred_interaction_orders")
+    if (
+        not isinstance(raw_deferred_orders, list)
+        or any(isinstance(order, bool) or not isinstance(order, int) for order in raw_deferred_orders)
+    ):
+        raise ConfigError("[analysis_matrix].deferred_interaction_orders must be a list of integers")
+    deferred_interaction_orders = tuple(raw_deferred_orders)
+    _check_unique(
+        deferred_interaction_orders,
+        where="[analysis_matrix].deferred_interaction_orders",
+    )
+    if any(order < 1 or order > 3 for order in deferred_interaction_orders):
+        raise ConfigError(
+            "[analysis_matrix].deferred_interaction_orders must contain only 1, 2, or 3"
+        )
+    overlapping_orders = sorted(set(interaction_orders).intersection(deferred_interaction_orders))
+    if overlapping_orders:
+        raise ConfigError(
+            "[analysis_matrix] interaction_orders and deferred_interaction_orders overlap: "
+            + ", ".join(map(str, overlapping_orders))
+        )
     _require_string(analysis, "combination_mode", where="[analysis_matrix]")
     if analysis["combination_mode"] != "all_supported":
         raise ConfigError("[analysis_matrix].combination_mode must be 'all_supported'")
@@ -888,6 +961,72 @@ def validate_config(
         ):
             raise ConfigError(
                 "Enabled support-gated R-assigned analysis requires [analysis_matrix.support_policy]"
+            )
+
+    if required_full_decisions:
+        applicable_decisions: set[str] = set()
+        if "ltcce" in enabled_sources:
+            applicable_decisions.add("SRC-01")
+        if "D12_climate_enriched_future" in dataset_versions:
+            applicable_decisions.add("SRC-05")
+        if "D09_complete_recommendation_set" in dataset_versions:
+            applicable_decisions.add("ELG-11")
+        if modeling["allow_baseline_response_metrics"]:
+            applicable_decisions.add("ELG-10")
+        if modeling["allow_uncertainty"]:
+            applicable_decisions.add("MOD-04")
+        if "economic_optimum_n_kg_ha" in curve_outcomes:
+            applicable_decisions.add("MOD-06")
+        if modeling["model_selection_metric"] == "all_credible_no_selection":
+            applicable_decisions.update(("MOD-02", "MOD-05"))
+        inferential_families = {
+            "one_factor_inferential",
+            "all_supported_interactions",
+            "multivariable_mixed_effects",
+            "observation_level_curve_modification",
+            "marginal_contrasts",
+        }
+        if support_policy is not None or inferential_families.intersection(analysis_families):
+            applicable_decisions.add("ANA-05")
+        if inferential_families.intersection(analysis_families):
+            applicable_decisions.update(("ANA-07", "ANA-08", "ANA-10", "ANA-13", "ANA-14"))
+        if (
+            any(order > 1 for order in interaction_orders)
+            or {
+                "all_supported_interactions",
+                "observation_level_curve_modification",
+            }.intersection(analysis_families)
+        ):
+            applicable_decisions.add("ANA-06")
+        if {"penalized_predictive_models", "curve_feature_clustering"}.intersection(
+            analysis_families
+        ):
+            applicable_decisions.update(("ANA-05", "ANA-11", "ANA-13", "ANA-14"))
+        if "penalized_predictive_models" in analysis_families:
+            applicable_decisions.add("ANA-09")
+        if explanatory_factors and {
+            "one_factor_descriptive",
+            "one_factor_inferential",
+            "all_supported_interactions",
+            "multivariable_mixed_effects",
+            "observation_level_curve_modification",
+            "marginal_contrasts",
+        }.intersection(analysis_families):
+            applicable_decisions.update(("ANA-04", "ANA-08", "ANA-14"))
+        if {
+            "recommendation_yield_gap_t_ha",
+            "target_yield_gap_t_ha",
+            "target_yield_status",
+        }.intersection(curve_outcomes):
+            applicable_decisions.add("ANA-15")
+        missing_applicable_decisions = sorted(
+            applicable_decisions.difference(required_full_decisions)
+        )
+        if missing_applicable_decisions:
+            raise ConfigError(
+                "[run].required_full_decisions omits decision(s) applicable to the "
+                "effective operation profile: "
+                + ", ".join(missing_applicable_decisions)
             )
 
     cpu_budget = run["max_parallel_r_jobs"] * run["r_threads_per_job"]
@@ -1072,6 +1211,72 @@ def _preflight_r_contract(engines: Mapping[str, Any], r_entrypoint: Path, root: 
         raise ConfigError("R contract requires a vanilla R session")
 
 
+def _approval_fields_from_block(
+    block: str,
+    *,
+    decision_id: str,
+) -> dict[str, str]:
+    """Read one structured approval record from explicit fields or Approval Evidence."""
+
+    labels = (
+        ("Approver", "approver"),
+        ("Approval Date", "approval_date"),
+        ("Approval Source", "approval_source"),
+    )
+    combined_matches = re.findall(
+        r"^[ \t]*(?:[-*][ \t]+)?\*\*Approval Evidence:\*\*[ \t]*(.*?)[ \t]*$",
+        block,
+        flags=re.MULTILINE,
+    )
+    if len(combined_matches) > 1:
+        raise ConfigError(
+            f"full mode decision {decision_id} must have at most one ledger Approval Evidence field"
+        )
+    combined_fields: dict[str, str] = {}
+    if combined_matches and combined_matches[0].strip():
+        combined_value = combined_matches[0].strip()
+        combined_pattern = re.compile(
+            r"(?:^|[;|])[ \t]*"
+            r"(Approver|Approval Date|Approval Source)[ \t]*:[ \t]*"
+            r"(.*?)(?=[ \t]*(?:[;|][ \t]*(?:Approver|Approval Date|Approval Source)[ \t]*:|$))",
+            flags=re.IGNORECASE,
+        )
+        parsed = tuple(combined_pattern.finditer(combined_value))
+        if parsed:
+            consumed = "".join(match.group(0) for match in parsed)
+            if re.sub(r"[\s;|]+", "", consumed).casefold() != re.sub(
+                r"[\s;|]+", "", combined_value
+            ).casefold():
+                raise ConfigError(
+                    f"full mode decision {decision_id} has malformed structured Approval Evidence"
+                )
+            canonical_keys = {label.casefold(): key for label, key in labels}
+            for match in parsed:
+                key = canonical_keys[match.group(1).casefold()]
+                if key in combined_fields:
+                    raise ConfigError(
+                        f"full mode decision {decision_id} repeats {match.group(1)} in Approval Evidence"
+                    )
+                combined_fields[key] = re.sub(r"[ \t]+", " ", match.group(2).strip())
+
+    approval_fields: dict[str, str] = {}
+    for label, key in labels:
+        explicit_matches = re.findall(
+            rf"^[ \t]*(?:[-*][ \t]+)?\*\*{re.escape(label)}:\*\*[ \t]*(.*?)[ \t]*$",
+            block,
+            flags=re.MULTILINE,
+        )
+        values = [match.strip() for match in explicit_matches if match.strip()]
+        if key in combined_fields:
+            values.append(combined_fields[key])
+        if len(values) != 1:
+            raise ConfigError(
+                f"full mode decision {decision_id} requires exactly one nonblank ledger {label}"
+            )
+        approval_fields[key] = re.sub(r"[ \t]+", " ", values[0])
+    return approval_fields
+
+
 def _require_full_mode_decision_approvals(
     approved_decisions: tuple[str, ...],
     required_decisions: tuple[str, ...],
@@ -1159,6 +1364,13 @@ def _require_full_mode_decision_approvals(
             block,
             flags=re.MULTILINE,
         )
+        selected_options.extend(
+            re.findall(
+                r"^\*\*(?:Choosed|Chosen) Option:[ \t]*(.*?)[ \t]*\*\*[ \t]*$",
+                block,
+                flags=re.MULTILINE,
+            )
+        )
         if len(selected_options) != 1:
             raise ConfigError(
                 f"full mode decision {decision_id} must have exactly one ledger Choosed Option; "
@@ -1175,10 +1387,37 @@ def _require_full_mode_decision_approvals(
             raise ConfigError(
                 f"full mode decision {decision_id} requires a nonblank ledger Choosed Option"
             )
+        approval_fields = _approval_fields_from_block(block, decision_id=decision_id)
+        invalid_placeholders = {
+            "",
+            "n/a",
+            "na",
+            "none",
+            "not identified",
+            "pending",
+            "tbd",
+            "unknown",
+            "unresolved",
+        }
+        if approval_fields["approver"].casefold() in invalid_placeholders:
+            raise ConfigError(
+                f"full mode decision {decision_id} requires a named approving stakeholder"
+            )
+        if approval_fields["approval_source"].casefold() in invalid_placeholders:
+            raise ConfigError(
+                f"full mode decision {decision_id} requires a concrete approval source"
+            )
+        try:
+            date.fromisoformat(approval_fields["approval_date"])
+        except ValueError as exc:
+            raise ConfigError(
+                f"full mode decision {decision_id} Approval Date must use a valid YYYY-MM-DD date"
+            ) from exc
         snapshot[decision_id] = {
             "status": status,
             "selected_option": selected_option,
             "approved": decision_id in approved_decisions,
+            **approval_fields,
         }
 
     snapshot_payload = [
