@@ -21,11 +21,6 @@ max_parallel_r_jobs = 1
 r_stage_timeout_seconds = 1800
 r_termination_grace_seconds = 15
 cpu_detection = "affinity"
-# Full mode is blocked until the applicable domain-prefixed decision IDs are
-# explicitly listed here.
-decisions_approved = [
-]
-
 [selection]
 # Comment one member to disable it; uncomment it to restore it. The parsed list is authoritative.
 scope_countries = ["PH"]
@@ -199,8 +194,6 @@ dataset_versions = [
 ]
 
 source_combination_modes = [
-  "each_family_alone",
-  "all_nonempty_family_subsets",
   "all_families_deduplicated",
   # "each_family_alone",
   # "all_nonempty_family_subsets",
@@ -233,9 +226,6 @@ curve_outcomes = [
 ]
 
 explanatory_factors = [
-  "source_family",
-  "experiment_type",
-  "experimental_design",
   "water_regime",
   "season",
   "planting_year",
@@ -262,9 +252,6 @@ deferred_analysis_families = [
   "all_supported_interactions",
   "multivariable_mixed_effects",
   "observation_level_curve_modification",
-  "penalized_predictive_models",
-  "curve_feature_clustering",
-  "dataset_and_source_robustness",
   "marginal_contrasts",
 ]
 
