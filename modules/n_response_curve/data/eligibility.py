@@ -31,7 +31,18 @@ def _constant(values: list[float], tolerance: float) -> bool | None:
     return max(values) - min(values) <= tolerance
 
 
-def _series_metrics(records: Iterable[Mapping[str, Any]], tolerance: float) -> dict[str, dict[str, Any]]:
+def _distinct_n_levels(values: list[float], tolerance: float) -> tuple[float, ...]:
+    levels: list[float] = []
+    for value in sorted(values):
+        if not levels or abs(value - levels[-1]) > tolerance:
+            levels.append(value)
+    return tuple(levels)
+
+
+def _series_metrics(records: Iterable[Mapping[str, Any]], policy: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    nutrient_tolerance = float(policy["constant_nutrient_tolerance"])
+    n_level_tolerance = float(policy["n_level_tolerance_kg_ha"])
+    high_n_threshold = float(policy.get("high_n_review_threshold_kg_ha", float("inf")))
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:
         series_uid = record.get("response_series_uid")
@@ -52,6 +63,7 @@ def _series_metrics(records: Iterable[Mapping[str, Any]], tolerance: float) -> d
             for row in complete
             if (value := _parsed_number(row, "n_rate_kg_ha", "n_rate_parse_status")) is not None
         ]
+        n_levels = _distinct_n_levels(n_rates, n_level_tolerance)
         p_complete = [
             value
             for row in complete
@@ -65,13 +77,21 @@ def _series_metrics(records: Iterable[Mapping[str, Any]], tolerance: float) -> d
         metrics[series_uid] = {
             "row_count": len(rows),
             "complete_observation_count": len(complete),
-            "distinct_n_level_count": len(set(n_rates)),
-            "has_zero_n": any(abs(value) <= tolerance for value in n_rates),
-            "p_constant": _constant(p_complete, tolerance) if len(p_complete) == len(complete) else None,
-            "k_constant": _constant(k_complete, tolerance) if len(k_complete) == len(complete) else None,
+            "distinct_n_level_count": len(n_levels),
+            "observed_n_min_kg_ha": min(n_rates) if n_rates else None,
+            "observed_n_max_kg_ha": max(n_rates) if n_rates else None,
+            "has_zero_n": any(abs(value) <= n_level_tolerance for value in n_rates),
+            "has_high_n": any(value > high_n_threshold for value in n_rates),
+            "p_constant": _constant(p_complete, nutrient_tolerance) if len(p_complete) == len(complete) else None,
+            "k_constant": _constant(k_complete, nutrient_tolerance) if len(k_complete) == len(complete) else None,
             "organic_or_biofertilizer_present": any(
                 bool(row.get("organic_fertilizer_present")) or bool(row.get("biofertilizer_present"))
                 for row in rows
+            ),
+            "experiment_priority_status": (
+                "mixed"
+                if len({str(row.get("experiment_priority_status", "unresolved")) for row in rows}) > 1
+                else str(rows[0].get("experiment_priority_status", "unresolved"))
             ),
         }
     return metrics
@@ -119,18 +139,34 @@ def _tier_and_reasons(
         reasons.add(_reason_for_parse_status("YIELD", record.get("yield_parse_status")))
     if record.get("yield_unit_status") == "conflict":
         reasons.add("YIELD_UNIT_CONFLICT")
+    if record.get("n_rate_unit_status", "canonical") != "canonical":
+        reasons.add("N_RATE_UNIT_CONFLICT")
+    if n_rate is not None and not policy["n_rate_min_kg_ha"] <= n_rate <= policy["n_rate_max_kg_ha"]:
+        reasons.add("N_RATE_OUT_OF_RANGE")
+    if yield_value is not None and not policy["yield_min_t_ha"] <= yield_value <= policy["yield_max_t_ha"]:
+        reasons.add("YIELD_OUT_OF_RANGE")
 
     hard_blockers = {
         "UNRESOLVED_RESPONSE_SERIES",
         "EXACT_DUPLICATE_NONCANONICAL",
         "PROBABLE_CROSS_SOURCE_DUPLICATE",
         "YIELD_UNIT_CONFLICT",
+        "N_RATE_UNIT_CONFLICT",
+        "N_RATE_OUT_OF_RANGE",
+        "YIELD_OUT_OF_RANGE",
     }
     if hard_blockers.intersection(reasons) or n_rate is None or yield_value is None:
         return "D", tuple(sorted(reasons))
 
     assert metrics is not None
     insufficient = False
+    scope_status = str(record.get("scope_status", "in_scope"))
+    if scope_status == "out_of_scope":
+        reasons.add("OUT_OF_SCOPE_COUNTRY")
+        insufficient = True
+    elif scope_status != "in_scope":
+        reasons.add("COUNTRY_SCOPE_UNRESOLVED")
+        insufficient = True
     if metrics["complete_observation_count"] < policy["minimum_complete_n_yield"]:
         reasons.add("INSUFFICIENT_COMPLETE_N_YIELD_OBSERVATIONS")
         insufficient = True
@@ -176,10 +212,11 @@ def _tier_and_reasons(
             flagged = True
         elif policy.get("zero_n_policy") == "allow_flagged":
             reasons.add("ZERO_N_ABSENT_FLAGGED")
-            flagged = True
+            # Interpretation flag only: the approved primary fit does not
+            # require a zero-N observation.
     if bool(record.get("is_high_n")):
         reasons.add("HIGH_N_REVIEW")
-        flagged = True
+        # Keep full-range high-N evidence until a trim rule is approved.
     if record.get("same_n_status") == "repeated_measurement":
         reasons.add("REPEATED_MEASUREMENT_AT_N_LEVEL")
         flagged = True
@@ -236,11 +273,25 @@ def assign_eligibility(
         "minimum_complete_n_yield",
         "minimum_model_residual_df",
         "constant_nutrient_tolerance",
+        "n_level_tolerance_kg_ha",
+        "n_rate_min_kg_ha",
+        "n_rate_max_kg_ha",
+        "yield_min_t_ha",
+        "yield_max_t_ha",
     ):
         if key not in policy:
             raise ValueError(f"Eligibility policy is missing {key}")
 
-    metrics = _series_metrics(rows, float(policy["constant_nutrient_tolerance"]))
+    if int(policy["minimum_distinct_n_levels"]) < 3:
+        raise ValueError("Eligibility policy minimum_distinct_n_levels must be >= 3")
+    if float(policy["n_level_tolerance_kg_ha"]) <= 0:
+        raise ValueError("Eligibility policy n_level_tolerance_kg_ha must be positive")
+    if policy["n_rate_max_kg_ha"] <= policy["n_rate_min_kg_ha"]:
+        raise ValueError("Eligibility policy N-rate range is invalid")
+    if policy["yield_max_t_ha"] <= policy["yield_min_t_ha"]:
+        raise ValueError("Eligibility policy yield range is invalid")
+
+    metrics = _series_metrics(rows, policy)
     critical_codes = {str(code) for code in policy.get("critical_error_codes", ())}
     critical_record_uids: list[str] = []
     ledger: list[dict[str, Any]] = []
