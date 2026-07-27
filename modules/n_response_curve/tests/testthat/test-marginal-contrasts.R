@@ -3,11 +3,13 @@ source(testthat::test_path("..", "..", "analysis", "stages", "diagnostics.R"))
 source(testthat::test_path("..", "..", "analysis", "stages", "mixed_models.R"))
 source(testthat::test_path("..", "..", "analysis", "stages", "marginal_contrasts.R"))
 
-test_that("supported factors produce BH-adjusted marginal contrasts", {
+test_that("supported factors emit raw contrasts for central BH reconciliation", {
   stage <- list(
     contract = list(
       specification = list(
         analysis_family = "marginal_contrasts",
+        candidate_id = "candidate-water",
+        hypothesis_id = "H-water",
         engine = "r",
         support_gates_passed = TRUE,
         model_kind = "lm",
@@ -16,7 +18,8 @@ test_that("supported factors produce BH-adjusted marginal contrasts", {
         contrast_specification = list(
           factor_name = "water_regime",
           adjustment = "BH"
-        )
+        ),
+        multiplicity = list(method = "BH", family_id = "MF-primary")
       )
     ),
     data = data.frame(
@@ -28,10 +31,16 @@ test_that("supported factors produce BH-adjusted marginal contrasts", {
 
   expect_identical(result$status, "completed")
   expect_true(length(result$results) >= 1L)
-  expect_identical(result$metadata$multiple_testing_adjustment, "BH")
+  expect_identical(result$metadata$multiplicity_method, "BH")
+  expect_identical(result$metadata$multiple_testing_adjustment, "pending_central_reconciliation")
   expect_true(all(vapply(result$results, function(row) !is.null(row$p.value), logical(1))))
   expect_true(all(vapply(result$results, function(row) !is.null(row$p.value_raw), logical(1))))
-  expect_true(all(vapply(result$results, function(row) !is.null(row$p.value_adjusted), logical(1))))
+  expect_true(all(vapply(result$results, function(row) is.null(row$p.value_adjusted), logical(1))))
+  expect_true(all(vapply(
+    result$results,
+    function(row) identical(row$multiplicity_status, "pending_central_reconciliation"),
+    logical(1)
+  )))
 })
 
 test_that("missing contrast specifications remain explicit skips", {

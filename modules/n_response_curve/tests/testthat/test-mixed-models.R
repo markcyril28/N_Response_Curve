@@ -12,12 +12,16 @@ test_that("supported continuous R formulas produce tidy model output", {
         model_kind = "lm",
         outcome_kind = "continuous",
         model_formula = "outcome ~ water_regime",
-        multiplicity = list(method = "BH", family_id = "primary-yield-one-factor")
+        multiplicity = list(
+          method = "BH",
+          family_id = "primary-yield-one-factor",
+          family_scope_complete = TRUE
+        )
       )
     ),
     data = data.frame(
-      outcome = c(5, 6, 7, 8),
-      water_regime = c("rainfed", "rainfed", "irrigated", "irrigated")
+      outcome = c(5, 6, 7, 8, 9, 10),
+      water_regime = rep(c("rainfed", "irrigated"), each = 3L)
     )
   )
   result <- nrc_run_mixed_models(stage)
@@ -31,7 +35,13 @@ test_that("supported continuous R formulas produce tidy model output", {
   ) %in% names(result$metadata$diagnostics)))
   expect_identical(result$metadata$diagnostics$dropped_row_count, 0L)
   p_rows <- Filter(function(row) !is.null(row$p.value), result$results)
-  expect_true(all(vapply(p_rows, function(row) !is.null(row$p.value_adjusted), logical(1))))
+  expect_true(all(vapply(p_rows, function(row) !is.null(row$p.value_raw), logical(1))))
+  expect_true(all(vapply(p_rows, function(row) is.null(row$p.value_adjusted), logical(1))))
+  expect_true(all(vapply(
+    p_rows,
+    function(row) identical(row$multiplicity_status, "pending_central_reconciliation"),
+    logical(1)
+  )))
   expect_true(all(vapply(
     p_rows,
     function(row) identical(row$multiplicity_family_id, "primary-yield-one-factor"),

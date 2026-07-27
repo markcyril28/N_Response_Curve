@@ -25,6 +25,16 @@ test_that("R contract validates normalized parquet and stable keys", {
   )
   contract_path <- file.path(stage_root, "contract.json")
   jsonlite::write_json(contract, contract_path, auto_unbox = TRUE)
+  old_file_binding <- Sys.getenv("NRC_CONTRACT_FILE_SHA256", unset = NA_character_)
+  old_semantic_binding <- Sys.getenv("NRC_CONTRACT_SHA256", unset = NA_character_)
+  on.exit({
+    if (is.na(old_file_binding)) Sys.unsetenv("NRC_CONTRACT_FILE_SHA256") else Sys.setenv(NRC_CONTRACT_FILE_SHA256 = old_file_binding)
+    if (is.na(old_semantic_binding)) Sys.unsetenv("NRC_CONTRACT_SHA256") else Sys.setenv(NRC_CONTRACT_SHA256 = old_semantic_binding)
+  }, add = TRUE)
+  Sys.setenv(
+    NRC_CONTRACT_FILE_SHA256 = nrc_sha256_file(contract_path),
+    NRC_CONTRACT_SHA256 = contract$contract_sha256
+  )
   stage <- nrc_read_contract(contract_path)
 
   expect_equal(nrow(stage$data), 2L)
