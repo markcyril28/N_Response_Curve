@@ -1,5 +1,8 @@
 nrc_package_versions <- function() {
-  packages <- c("arrow", "broom", "broom.mixed", "digest", "emmeans", "glmmTMB", "jsonlite", "lme4", "nnet", "performance", "TMB")
+  packages <- c(
+    "arrow", "broom", "broom.mixed", "digest", "emmeans", "glmmTMB",
+    "jsonlite", "lme4", "nnet", "performance", "reformulas", "TMB"
+  )
   installed <- utils::installed.packages()[, "Version"]
   versions <- lapply(packages, function(package_name) {
     if (!package_name %in% names(installed)) {
@@ -117,7 +120,13 @@ nrc_tidy_model <- function(model) {
 
 nrc_fixed_effect_design_reason <- function(model_formula, data, minimum_residual_df = 3L) {
   fixed_formula <- tryCatch(
-    if (requireNamespace("lme4", quietly = TRUE)) lme4::nobars(model_formula) else model_formula,
+    if (requireNamespace("reformulas", quietly = TRUE)) {
+      reformulas::nobars(model_formula)
+    } else if (requireNamespace("lme4", quietly = TRUE)) {
+      suppressWarnings(lme4::nobars(model_formula))
+    } else {
+      model_formula
+    },
     error = function(error) model_formula
   )
   model_frame <- tryCatch(
