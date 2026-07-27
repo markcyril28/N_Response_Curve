@@ -5,7 +5,19 @@ import hashlib
 from typing import Any, Mapping
 
 from .ingest import IngestedSource, IngestionResult, RawRow
-from .schema import classify_missing, classify_treatment, normalize_category, normalize_yield, parse_numeric
+from .schema import (
+    CANONICAL_N_RATE_UNIT,
+    CANONICAL_YIELD_UNIT,
+    canonicalize_irri,
+    canonical_unit,
+    classify_experiment_priority,
+    classify_missing,
+    classify_treatment,
+    normalize_category,
+    normalize_country_code,
+    normalize_yield,
+    parse_numeric,
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +101,12 @@ def _curate_source(source: IngestedSource, config: Any) -> list[dict[str, Any]]:
             "source_name": source.source_name,
             "source_path": str(source.source_path),
             "source_sha256": source.source_sha256,
+            "source_type": source.source_type,
+            "source_family": source.source_family,
+            "source_country_code": source.source_country_code,
+            "shape_adapter_version": source.shape_adapter_version,
+            "schema_map_path": str(source.schema_map_path) if source.schema_map_path is not None else None,
+            "schema_map_sha256": source.schema_map_sha256,
             "source_uid": source_uid,
             "record_uid": _stable_uid("record-v1", source_uid, raw_row.source_row_number),
             "source_row_number": raw_row.source_row_number,
@@ -103,7 +121,7 @@ def _curate_source(source: IngestedSource, config: Any) -> list[dict[str, Any]]:
             raw_value = _field_raw_value(raw_row, position)
             effective_value = effective_by_position[position]
             record[f"{canonical_name}_raw"] = raw_value
-            record[canonical_name] = effective_value
+            record[canonical_name] = canonicalize_irri(effective_value)
             record[f"{canonical_name}_missing_state"] = classify_missing(raw_value, missing_values)
             record[f"{canonical_name}_filled_down"] = filled_by_position[position]
             record[f"{canonical_name}_filled_from_source_row_number"] = fill_origin_by_position[position]
@@ -116,10 +134,30 @@ def _curate_source(source: IngestedSource, config: Any) -> list[dict[str, Any]]:
             _optional_field(record, "yield_t_ha"),
             missing_values,
         )
+        configured_units = schema.get("units", {})
+        configured_n_unit = str(configured_units.get("n_rate", CANONICAL_N_RATE_UNIT))
+        configured_yield_unit = str(configured_units.get("yield_curve", CANONICAL_YIELD_UNIT))
+        row_country_raw = _optional_field(record, "country_code") or _optional_field(record, "country")
+        if row_country_raw.strip():
+            scope_country_code = normalize_country_code(row_country_raw)
+            scope_country_evidence = "row"
+        else:
+            scope_country_code = normalize_country_code(source.source_country_code)
+            scope_country_evidence = "source"
+        scope_countries = set(getattr(config, "scope_countries", ("PH",)))
+        if scope_country_code is None:
+            scope_status = "unresolved"
+        elif scope_country_code in scope_countries:
+            scope_status = "in_scope"
+        else:
+            scope_status = "out_of_scope"
         record.update(
             {
                 "n_rate_kg_ha": n_parse.value,
                 "n_rate_parse_status": n_parse.status,
+                "n_rate_configured_unit": configured_n_unit,
+                "n_rate_canonical_unit": CANONICAL_N_RATE_UNIT,
+                "n_rate_unit_status": "canonical" if canonical_unit(configured_n_unit, "n_rate") else "unsupported",
                 "p_rate_kg_p2o5_ha": p_parse.value,
                 "p_rate_parse_status": p_parse.status,
                 "k_rate_kg_k2o_ha": k_parse.value,
@@ -128,6 +166,15 @@ def _curate_source(source: IngestedSource, config: Any) -> list[dict[str, Any]]:
                 "yield_parse_status": yield_normalization.parse_status,
                 "yield_unit_status": yield_normalization.unit_status,
                 "yield_source_unit": yield_normalization.source_unit,
+                "yield_configured_unit": configured_yield_unit,
+                "yield_canonical_unit": CANONICAL_YIELD_UNIT,
+                "scope_country_code": scope_country_code,
+                "scope_country_evidence": scope_country_evidence,
+                "scope_status": scope_status,
+                "experiment_priority_status": classify_experiment_priority(
+                    _optional_field(record, "experiment_type"),
+                    _optional_field(record, "experimental_design"),
+                ),
                 "water_regime_normalized": normalize_category(
                     _optional_field(record, "water_regime"),
                     schema["normalization"]["water_regime"],
