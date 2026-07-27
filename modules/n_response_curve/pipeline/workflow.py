@@ -1281,7 +1281,12 @@ def _source_registry(
             "source_family": source.get("source_family", source_name),
             "data_path": source["data_path"],
             "schema_map": source["schema_map"],
+            "workbook": source.get("workbook"),
+            "sheet": source.get("sheet"),
             "provider": source["provider"],
+            "provenance_notes": source["provenance_notes"],
+            "encoding": source["encoding"],
+            "data_classification": source["data_classification"],
             "availability": source["availability"],
             "confirmation_status": source["confirmation_status"],
             "shape_adapter_version": source["shape_adapter_version"],
@@ -1765,6 +1770,8 @@ def _source_target_paths(config: ValidatedConfig) -> tuple[Path, ...]:
     for source in config.sources.values():
         source_paths.append((config.project_root / str(source["data_path"])).resolve())
         source_paths.append((config.project_root / str(source["schema_map"])).resolve())
+        if source.get("workbook"):
+            source_paths.append((config.project_root / str(source["workbook"])).resolve())
     return tuple(source_paths)
 
 
