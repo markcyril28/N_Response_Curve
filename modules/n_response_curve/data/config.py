@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
-import hashlib
-import json
 import math
 import os
 from pathlib import Path
@@ -231,8 +228,6 @@ class ValidatedConfig:
     analysis_families: tuple[str, ...]
     interaction_orders: tuple[int, ...]
     engine_assignments: Mapping[str, str]
-    decision_snapshot: Mapping[str, Mapping[str, str | bool]]
-    decision_snapshot_hash: str | None
     run_mode: str
 
     @property
@@ -341,8 +336,7 @@ def validate_config(
         {
             "mode", "overwrite", "random_seed", "test_group_limit", "fail_fast", "qc_gate",
             "r_threads_per_job", "max_parallel_r_jobs", "r_stage_timeout_seconds",
-            "r_termination_grace_seconds", "cpu_detection", "decisions_approved",
-            "required_full_decisions", "required_full_sources",
+            "r_termination_grace_seconds", "cpu_detection",
         },
         where="[run]",
     )
@@ -364,26 +358,6 @@ def validate_config(
     _require_string(run, "cpu_detection", where="[run]")
     if run["cpu_detection"] != "affinity":
         raise ConfigError("[run].cpu_detection must be 'affinity'")
-    approved_decisions = _string_list(run.get("decisions_approved", []), where="[run].decisions_approved")
-    _check_unique(approved_decisions, where="[run].decisions_approved")
-    required_full_decisions = _string_list(
-        run.get("required_full_decisions", []),
-        where="[run].required_full_decisions",
-    )
-    _check_unique(required_full_decisions, where="[run].required_full_decisions")
-    required_full_sources = _string_list(
-        run.get("required_full_sources", []),
-        where="[run].required_full_sources",
-    )
-    _check_unique(required_full_sources, where="[run].required_full_sources")
-    decision_snapshot: dict[str, dict[str, str | bool]] = {}
-    decision_snapshot_hash: str | None = None
-    if mode == "full":
-        decision_snapshot, decision_snapshot_hash = _require_full_mode_decision_approvals(
-            tuple(approved_decisions),
-            tuple(required_full_decisions),
-            project_root=root,
-        )
 
     paths = _resolve_paths(data["paths"], root)
     _check_path_overlaps(paths)
@@ -513,47 +487,18 @@ def validate_config(
         if check_files:
             _require_file(source_paths[source_name], f"enabled source {source_name}")
             _require_file(_resolve_relative_path(source["schema_map"], root, f"[sources.{source_name}].schema_map"), f"schema map for {source_name}")
-    unknown_required_sources = tuple(
-        source_name for source_name in required_full_sources if source_name not in sources
-    )
-    if unknown_required_sources:
-        raise ConfigError(
-            "[run].required_full_sources references unknown source(s): "
-            + ", ".join(unknown_required_sources)
-        )
     if mode == "full":
-        if not required_full_sources:
-            raise ConfigError(
-                "full mode requires a nonempty [run].required_full_sources authority gate"
-            )
-        disabled_required_sources = tuple(
-            source_name for source_name in required_full_sources if source_name not in enabled_sources
-        )
-        if disabled_required_sources:
-            raise ConfigError(
-                "full mode [run].required_full_sources must all be enabled: "
-                + ", ".join(disabled_required_sources)
-            )
-        unbound_enabled_sources = tuple(
-            source_name for source_name in enabled_sources if source_name not in required_full_sources
-        )
-        if unbound_enabled_sources:
-            raise ConfigError(
-                "full mode [run].required_full_sources must exactly bind the enabled authoritative "
-                "source snapshot; add or disable: "
-                + ", ".join(unbound_enabled_sources)
-            )
-        unverified_required_sources = tuple(
+        unverified_enabled_sources = tuple(
             source_name
-            for source_name in required_full_sources
+            for source_name in enabled_sources
             if sources[source_name]["availability"] != "available"
             or sources[source_name]["confirmation_status"] != "verified"
             or sources[source_name]["shape_adapter_version"] == "unassigned"
         )
-        if unverified_required_sources:
+        if unverified_enabled_sources:
             raise ConfigError(
-                "full mode [run].required_full_sources must be source-verified with an assigned adapter: "
-                + ", ".join(unverified_required_sources)
+                "full mode requires every enabled source to be verified with an assigned adapter: "
+                + ", ".join(unverified_enabled_sources)
             )
     if check_files:
         for key in INPUT_PATHS:
@@ -964,72 +909,6 @@ def validate_config(
                 "Enabled support-gated R-assigned analysis requires [analysis_matrix.support_policy]"
             )
 
-    if required_full_decisions:
-        applicable_decisions: set[str] = set()
-        if "ltcce" in enabled_sources:
-            applicable_decisions.add("SRC-01")
-        if "D12_climate_enriched_future" in dataset_versions:
-            applicable_decisions.add("SRC-05")
-        if "D09_complete_recommendation_set" in dataset_versions:
-            applicable_decisions.add("ELG-11")
-        if modeling["allow_baseline_response_metrics"]:
-            applicable_decisions.add("ELG-10")
-        if modeling["allow_uncertainty"]:
-            applicable_decisions.add("MOD-04")
-        if "economic_optimum_n_kg_ha" in curve_outcomes:
-            applicable_decisions.add("MOD-06")
-        if modeling["model_selection_metric"] == "all_credible_no_selection":
-            applicable_decisions.update(("MOD-02", "MOD-05"))
-        inferential_families = {
-            "one_factor_inferential",
-            "all_supported_interactions",
-            "multivariable_mixed_effects",
-            "observation_level_curve_modification",
-            "marginal_contrasts",
-        }
-        if support_policy is not None or inferential_families.intersection(analysis_families):
-            applicable_decisions.add("ANA-05")
-        if inferential_families.intersection(analysis_families):
-            applicable_decisions.update(("ANA-07", "ANA-08", "ANA-10", "ANA-13", "ANA-14"))
-        if (
-            any(order > 1 for order in interaction_orders)
-            or {
-                "all_supported_interactions",
-                "observation_level_curve_modification",
-            }.intersection(analysis_families)
-        ):
-            applicable_decisions.add("ANA-06")
-        if {"penalized_predictive_models", "curve_feature_clustering"}.intersection(
-            analysis_families
-        ):
-            applicable_decisions.update(("ANA-05", "ANA-11", "ANA-13", "ANA-14"))
-        if "penalized_predictive_models" in analysis_families:
-            applicable_decisions.add("ANA-09")
-        if explanatory_factors and {
-            "one_factor_descriptive",
-            "one_factor_inferential",
-            "all_supported_interactions",
-            "multivariable_mixed_effects",
-            "observation_level_curve_modification",
-            "marginal_contrasts",
-        }.intersection(analysis_families):
-            applicable_decisions.update(("ANA-04", "ANA-08", "ANA-14"))
-        if {
-            "recommendation_yield_gap_t_ha",
-            "target_yield_gap_t_ha",
-            "target_yield_status",
-        }.intersection(curve_outcomes):
-            applicable_decisions.add("ANA-15")
-        missing_applicable_decisions = sorted(
-            applicable_decisions.difference(required_full_decisions)
-        )
-        if missing_applicable_decisions:
-            raise ConfigError(
-                "[run].required_full_decisions omits decision(s) applicable to the "
-                "effective operation profile: "
-                + ", ".join(missing_applicable_decisions)
-            )
-
     cpu_budget = run["max_parallel_r_jobs"] * run["r_threads_per_job"]
     visible_cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
     if cpu_budget > visible_cpus:
@@ -1061,8 +940,6 @@ def validate_config(
         analysis_families=tuple(analysis_families),
         interaction_orders=interaction_orders,
         engine_assignments=MappingProxyType(dict(assignments)),
-        decision_snapshot=_freeze_config_value(decision_snapshot),
-        decision_snapshot_hash=decision_snapshot_hash,
         run_mode=mode,
     )
 
@@ -1210,230 +1087,6 @@ def _preflight_r_contract(engines: Mapping[str, Any], r_entrypoint: Path, root: 
             ) from exc
     if engines["r_use_vanilla_session"] is not True:
         raise ConfigError("R contract requires a vanilla R session")
-
-
-def _approval_fields_from_block(
-    block: str,
-    *,
-    decision_id: str,
-) -> dict[str, str]:
-    """Read one structured approval record from explicit fields or Approval Evidence."""
-
-    labels = (
-        ("Approver", "approver"),
-        ("Approval Date", "approval_date"),
-        ("Approval Source", "approval_source"),
-    )
-    combined_matches = re.findall(
-        r"^[ \t]*(?:[-*][ \t]+)?\*\*Approval Evidence:\*\*[ \t]*(.*?)[ \t]*$",
-        block,
-        flags=re.MULTILINE,
-    )
-    if len(combined_matches) > 1:
-        raise ConfigError(
-            f"full mode decision {decision_id} must have at most one ledger Approval Evidence field"
-        )
-    combined_fields: dict[str, str] = {}
-    if combined_matches and combined_matches[0].strip():
-        combined_value = combined_matches[0].strip()
-        combined_pattern = re.compile(
-            r"(?:^|[;|])[ \t]*"
-            r"(Approver|Approval Date|Approval Source)[ \t]*:[ \t]*"
-            r"(.*?)(?=[ \t]*(?:[;|][ \t]*(?:Approver|Approval Date|Approval Source)[ \t]*:|$))",
-            flags=re.IGNORECASE,
-        )
-        parsed = tuple(combined_pattern.finditer(combined_value))
-        if parsed:
-            consumed = "".join(match.group(0) for match in parsed)
-            if re.sub(r"[\s;|]+", "", consumed).casefold() != re.sub(
-                r"[\s;|]+", "", combined_value
-            ).casefold():
-                raise ConfigError(
-                    f"full mode decision {decision_id} has malformed structured Approval Evidence"
-                )
-            canonical_keys = {label.casefold(): key for label, key in labels}
-            for match in parsed:
-                key = canonical_keys[match.group(1).casefold()]
-                if key in combined_fields:
-                    raise ConfigError(
-                        f"full mode decision {decision_id} repeats {match.group(1)} in Approval Evidence"
-                    )
-                combined_fields[key] = re.sub(r"[ \t]+", " ", match.group(2).strip())
-
-    approval_fields: dict[str, str] = {}
-    for label, key in labels:
-        explicit_matches = re.findall(
-            rf"^[ \t]*(?:[-*][ \t]+)?\*\*{re.escape(label)}:\*\*[ \t]*(.*?)[ \t]*$",
-            block,
-            flags=re.MULTILINE,
-        )
-        values = [match.strip() for match in explicit_matches if match.strip()]
-        if key in combined_fields:
-            values.append(combined_fields[key])
-        if len(values) != 1:
-            raise ConfigError(
-                f"full mode decision {decision_id} requires exactly one nonblank ledger {label}"
-            )
-        approval_fields[key] = re.sub(r"[ \t]+", " ", values[0])
-    return approval_fields
-
-
-def _require_full_mode_decision_approvals(
-    approved_decisions: tuple[str, ...],
-    required_decisions: tuple[str, ...],
-    *,
-    project_root: Path,
-) -> tuple[dict[str, dict[str, str | bool]], str]:
-    invalid = tuple(
-        decision
-        for decision in (*approved_decisions, *required_decisions)
-        if re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", decision) is None
-    )
-    if invalid:
-        raise ConfigError(
-            "full mode decision entries must use domain-prefixed IDs: "
-            + ", ".join(invalid)
-        )
-    if not required_decisions:
-        raise ConfigError(
-            "full mode requires a nonempty [run].required_full_decisions authority gate"
-        )
-    if not approved_decisions:
-        raise ConfigError(
-            "full mode requires explicit approvals in [run].decisions_approved"
-        )
-    missing = tuple(
-        decision for decision in required_decisions if decision not in approved_decisions
-    )
-    if missing:
-        raise ConfigError(
-            "full mode [run].decisions_approved is missing required approvals: "
-            + ", ".join(missing)
-        )
-
-    ledger_path = project_root / "Docs" / "Plans_Phases" / "03_Decisions_Needed.md"
-    try:
-        ledger_text = ledger_path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ConfigError(
-            f"full mode requires the authoritative decision ledger: {ledger_path}"
-        ) from exc
-    except OSError as exc:
-        raise ConfigError(
-            f"full mode could not read the authoritative decision ledger {ledger_path}: {exc}"
-        ) from exc
-
-    heading_pattern = re.compile(
-        r"^###\s+([A-Z][A-Z0-9]*-\d+)(?=\s|:|$).*$",
-        flags=re.MULTILINE,
-    )
-    heading_matches = tuple(heading_pattern.finditer(ledger_text))
-    blocks: dict[str, list[str]] = {}
-    for index, heading in enumerate(heading_matches):
-        decision_id = heading.group(1)
-        end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(ledger_text)
-        blocks.setdefault(decision_id, []).append(ledger_text[heading.end():end])
-
-    snapshot: dict[str, dict[str, str | bool]] = {}
-    for decision_id in sorted(required_decisions):
-        decision_blocks = blocks.get(decision_id, [])
-        if len(decision_blocks) != 1:
-            raise ConfigError(
-                f"full mode requires exactly one authoritative ledger entry for {decision_id}; "
-                f"found {len(decision_blocks)}"
-            )
-        block = decision_blocks[0]
-        statuses = re.findall(
-            r"^\*\*Status:\*\*[ \t]*(.*?)[ \t]*$",
-            block,
-            flags=re.MULTILINE,
-        )
-        if len(statuses) != 1:
-            raise ConfigError(
-                f"full mode decision {decision_id} must have exactly one ledger Status; "
-                f"found {len(statuses)}"
-            )
-        status = statuses[0].strip()
-        if status != "DECIDED":
-            raise ConfigError(
-                f"full mode decision {decision_id} ledger Status must be exactly DECIDED, "
-                f"got {status!r}"
-            )
-
-        selected_options = re.findall(
-            r"^\*\*(?:Choosed|Chosen) Option:\*\*[ \t]*(.*?)[ \t]*$",
-            block,
-            flags=re.MULTILINE,
-        )
-        selected_options.extend(
-            re.findall(
-                r"^\*\*(?:Choosed|Chosen) Option:[ \t]*(.*?)[ \t]*\*\*[ \t]*$",
-                block,
-                flags=re.MULTILINE,
-            )
-        )
-        if len(selected_options) != 1:
-            raise ConfigError(
-                f"full mode decision {decision_id} must have exactly one ledger Choosed Option; "
-                f"found {len(selected_options)}"
-            )
-        selected_option = re.sub(r"[ \t]+", " ", selected_options[0].strip())
-        if (
-            len(selected_option) >= 2
-            and selected_option[0] == selected_option[-1]
-            and selected_option[0] in {'"', "'", "`"}
-        ):
-            selected_option = selected_option[1:-1].strip()
-        if not selected_option:
-            raise ConfigError(
-                f"full mode decision {decision_id} requires a nonblank ledger Choosed Option"
-            )
-        approval_fields = _approval_fields_from_block(block, decision_id=decision_id)
-        invalid_placeholders = {
-            "",
-            "n/a",
-            "na",
-            "none",
-            "not identified",
-            "pending",
-            "tbd",
-            "unknown",
-            "unresolved",
-        }
-        if approval_fields["approver"].casefold() in invalid_placeholders:
-            raise ConfigError(
-                f"full mode decision {decision_id} requires a named approving stakeholder"
-            )
-        if approval_fields["approval_source"].casefold() in invalid_placeholders:
-            raise ConfigError(
-                f"full mode decision {decision_id} requires a concrete approval source"
-            )
-        try:
-            date.fromisoformat(approval_fields["approval_date"])
-        except ValueError as exc:
-            raise ConfigError(
-                f"full mode decision {decision_id} Approval Date must use a valid YYYY-MM-DD date"
-            ) from exc
-        snapshot[decision_id] = {
-            "status": status,
-            "selected_option": selected_option,
-            "approved": decision_id in approved_decisions,
-            **approval_fields,
-        }
-
-    snapshot_payload = [
-        {"decision_id": decision_id, **snapshot[decision_id]}
-        for decision_id in sorted(snapshot)
-    ]
-    snapshot_hash = hashlib.sha256(
-        json.dumps(
-            snapshot_payload,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    return snapshot, snapshot_hash
 
 
 __all__ = ["ConfigError", "ValidatedConfig", "load_config", "validate_config"]
