@@ -6,6 +6,78 @@ import re
 from typing import Any, Mapping
 
 
+CANONICAL_N_RATE_UNIT = "kg N ha-1"
+CANONICAL_YIELD_UNIT = "t ha-1"
+_IRRI_TOKEN = re.compile(r"(?<![\w.])irri(?![\w.])", flags=re.IGNORECASE)
+_UNIT_ALIASES = {
+    "n_rate": {
+        "kg n ha-1": CANONICAL_N_RATE_UNIT,
+        "kg n/ha": CANONICAL_N_RATE_UNIT,
+        "kg n ha^-1": CANONICAL_N_RATE_UNIT,
+    },
+    "yield": {
+        "t ha-1": CANONICAL_YIELD_UNIT,
+        "t/ha": CANONICAL_YIELD_UNIT,
+        "tonnes ha-1": CANONICAL_YIELD_UNIT,
+    },
+}
+
+
+def canonicalize_irri(value: str | None) -> str | None:
+    """Standardize standalone textual references to the IRRI abbreviation.
+
+    URL hostnames are excluded because their conventional representation is
+    lowercase, for example ``https://books.irri.org``.
+    """
+
+    if value is None:
+        return None
+    return _IRRI_TOKEN.sub("IRRI", value)
+
+
+def canonical_unit(value: str | None, quantity: str) -> str | None:
+    """Return a canonical analysis unit only for an explicit supported declaration."""
+
+    aliases = _UNIT_ALIASES.get(quantity)
+    if aliases is None:
+        raise ValueError(f"Unknown unit quantity: {quantity}")
+    token = " ".join((value or "").strip().casefold().split())
+    return aliases.get(token)
+
+
+def normalize_country_code(value: str | None) -> str | None:
+    """Normalize explicit country evidence without guessing unknown country names."""
+
+    token = " ".join((value or "").strip().casefold().split())
+    if not token or token in {"unresolved", "not stated", "n/a", "na"}:
+        return None
+    if token in {"ph", "phl", "philippines", "republic of the philippines"}:
+        return "PH"
+    if re.fullmatch(r"[a-z]{2}", token):
+        return token.upper()
+    return None
+
+
+def classify_experiment_priority(
+    experiment_type_raw: str | None,
+    experimental_design_raw: str | None,
+) -> str:
+    """Expose priority evidence while retaining standard and unresolved trials."""
+
+    evidence = " ".join(
+        part.strip().casefold()
+        for part in (experiment_type_raw or "", experimental_design_raw or "")
+        if part.strip()
+    )
+    if not evidence:
+        return "unresolved"
+    priority_tokens = (
+        "long term", "long-term", "fertilizer response", "fertiliser response",
+        "nitrogen response", "n response",
+    )
+    return "priority" if any(token in evidence for token in priority_tokens) else "standard"
+
+
 @dataclass(frozen=True)
 class NumericParse:
     value: float | None
@@ -165,8 +237,10 @@ def classify_treatment(
     else:
         nutrient_control_class = "nonzero_n"
 
+    treatment_text_class = _text_treatment_class(treatment_raw, treatment_mapping)
     return {
-        "treatment_text_class": _text_treatment_class(treatment_raw, treatment_mapping),
+        "treatment_text_class": treatment_text_class,
+        "treatment_fit_role": "comparison_only" if treatment_text_class == "FP" else "curve_candidate",
         "nutrient_control_class": nutrient_control_class,
         "is_zero_n": is_zero_n,
         "is_zero_n_with_pk": is_zero_n_with_pk,
@@ -178,11 +252,17 @@ def classify_treatment(
 
 
 __all__ = [
+    "CANONICAL_N_RATE_UNIT",
+    "CANONICAL_YIELD_UNIT",
     "NumericParse",
     "YieldNormalization",
+    "canonicalize_irri",
     "classify_missing",
+    "canonical_unit",
+    "classify_experiment_priority",
     "classify_treatment",
     "normalize_category",
+    "normalize_country_code",
     "normalize_yield",
     "parse_numeric",
 ]
