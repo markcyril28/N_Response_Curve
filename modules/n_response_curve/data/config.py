@@ -23,9 +23,18 @@ class ConfigError(ValueError):
 
 RUN_MODES = {"validate", "test", "full"}
 KNOWN_MODELS = {"linear", "quadratic", "linear_plateau", "quadratic_plateau", "mitscherlich"}
-KNOWN_SOURCE_TYPES = {"literature", "ltcce", "rcm_validation", "nopt", "future"}
+KNOWN_SOURCE_TYPES = {
+    "literature",
+    "ltcce",
+    "rcm_validation",
+    "nopt",
+    "combined_nopt_rcm",
+    "future",
+}
 KNOWN_SOURCE_AVAILABILITY = {"available", "expected_unavailable"}
 KNOWN_SOURCE_CONFIRMATION_STATUSES = {"verified", "pending"}
+KNOWN_SOURCE_ENCODINGS = {"utf-8-sig", "cp1252"}
+KNOWN_DATA_CLASSIFICATIONS = {"internal", "restricted"}
 KNOWN_COMPARISON_DIMENSIONS = {"water_regime", "season", "region", "province", "variety", "recommendation_class"}
 KNOWN_SERIES_IDENTITY_DIMENSIONS = {
     "water_regime", "season", "region", "province", "variety", "planting_year",
@@ -426,7 +435,7 @@ def validate_config(
                 "source_type", "data_path", "schema_map", "provider", "provenance_notes",
                 "workbook", "sheet", "checksum", "manifest_reference",
                 "availability", "confirmation_status", "shape_adapter_version", "country_code",
-                "source_family",
+                "source_family", "encoding", "data_classification",
             },
             where=f"[sources.{source_name}]",
         )
@@ -459,10 +468,23 @@ def validate_config(
         _require_string(source, "shape_adapter_version", where=f"[sources.{source_name}]")
         source.setdefault("country_code", "PH" if source_name == "core_trial_data" else "UNRESOLVED")
         source.setdefault("source_family", source["source_type"])
+        source.setdefault("encoding", "utf-8-sig")
+        source.setdefault("data_classification", "internal")
         _require_string(source, "country_code", where=f"[sources.{source_name}]")
         if source["country_code"] != "UNRESOLVED" and re.fullmatch(r"[A-Z]{2}", source["country_code"]) is None:
             raise ConfigError(f"[sources.{source_name}].country_code must be an uppercase ISO alpha-2 code or 'UNRESOLVED'")
         _require_string(source, "source_family", where=f"[sources.{source_name}]")
+        _require_string(source, "encoding", where=f"[sources.{source_name}]")
+        if source["encoding"] not in KNOWN_SOURCE_ENCODINGS:
+            raise ConfigError(
+                f"[sources.{source_name}].encoding must be one of {sorted(KNOWN_SOURCE_ENCODINGS)}"
+            )
+        _require_string(source, "data_classification", where=f"[sources.{source_name}]")
+        if source["data_classification"] not in KNOWN_DATA_CLASSIFICATIONS:
+            raise ConfigError(
+                f"[sources.{source_name}].data_classification must be one of "
+                f"{sorted(KNOWN_DATA_CLASSIFICATIONS)}"
+            )
         source_paths[source_name] = _resolve_relative_path(source["data_path"], root, f"[sources.{source_name}].data_path")
         _resolve_relative_path(source["schema_map"], root, f"[sources.{source_name}].schema_map")
         for key in ("provider", "provenance_notes"):
