@@ -101,6 +101,7 @@ def build_derived_curve_views(
                 "model_policy_sha256": model_policy_sha256,
             }
             selected_ids = {attempt.model_attempt_uid for attempt in evidence.selected_attempts}
+            credible_ids = {attempt.model_attempt_uid for attempt in evidence.credible_attempts}
             attempt_records = tuple(
                 {
                     **record,
@@ -109,6 +110,8 @@ def build_derived_curve_views(
                         "derived_attempt", (view_id, record["model_attempt_uid"])
                     ),
                     "selected_for_view": record["model_attempt_uid"] in selected_ids,
+                    "credible_for_view": record["model_attempt_uid"] in credible_ids,
+                    "model_reporting_policy": evidence.reporting_policy,
                 }
                 for record in evidence.model_attempt_records
             )
