@@ -106,7 +106,8 @@ yield_min_t_ha = 0.0
 yield_max_t_ha = 30.0
 high_n_review_threshold_kg_ha = 200.0
 
-# Only these row-level QC failures block a decision-approved Phase 2 full gate.
+# Current partial gate: these row-level QC failures block Phase 2 full processing.
+# This does not implement decided OPS-03 Option B's all-warning/unresolved/excluded validate/full gate.
 critical_error_codes = [
   "YIELD_UNIT_CONFLICT",
 ]
@@ -133,7 +134,7 @@ candidate_models = [
 parameter_bounds = { n_rate_min_kg_ha = 0.0, n_rate_max_kg_ha = 400.0 }
 allow_uncertainty = false
 uncertainty_method = "deferred_until_evidence_gate"
-allow_baseline_response_metrics = false # ELG-10 remains open.
+allow_baseline_response_metrics = false # ELG-10 C is decided; class-separated metrics are not yet implemented.
 
 # Output and logging controls
 [outputs]
@@ -187,8 +188,8 @@ dataset_versions = [
   "D05_pk_varying_sensitivity",
   "D06_organic_bio_sensitivity",
   "D07_high_n_full_range",
-  # "D08_high_n_trimmed_sensitivity", # Deferred until an explicit high-N trimming rule is approved.
-  # "D09_complete_recommendation_set", # Deferred while ELG-11 membership remains open.
+  # "D08_high_n_trimmed_sensitivity", # Deferred under ELG-07 D until a reviewed diagnostic rule exists.
+  # "D09_complete_recommendation_set", # ELG-11 A is decided; exact membership is not yet implemented.
   "D10_factor_specific_complete_case",
   # "D11_balanced_interaction_cells", # Deferred with interaction families under ANA-06 Option C.
   # "D12_climate_enriched_future",
@@ -207,7 +208,7 @@ curve_outcomes = [
   "curve_shape_class",
   "optimum_status",
   "agronomic_optimum_n_kg_ha",
-  # "economic_optimum_n_kg_ha", # Enable only after price scenarios are approved.
+  # "economic_optimum_n_kg_ha", # MOD-06 A: enable only with an approved, versioned scenario table.
   "plateau_onset_n_kg_ha",
   "predicted_observed_domain_peak_yield_t_ha",
   "finite_maximum_yield_t_ha",
@@ -219,8 +220,8 @@ curve_outcomes = [
   "observed_max_gap_to_finite_maximum_t_ha",
   "observed_max_gap_to_supported_maximum_t_ha",
   "observed_max_attainment_fraction",
-  # "yield_at_zero_n_t_ha", # Deferred while ELG-10 baseline membership remains open.
-  # "yield_response_above_zero_n_t_ha", # Deferred with the baseline estimand.
+  # "yield_at_zero_n_t_ha", # ELG-10 C: disabled until verified zero-N classes are separated.
+  # "yield_response_above_zero_n_t_ha", # Disabled with the class-specific baseline estimands.
   "recommendation_yield_gap_t_ha",
   "target_yield_status",
   "target_yield_gap_t_ha",
@@ -245,7 +246,7 @@ analysis_families = [
   # "penalized_predictive_models", # Disabled by ANA-11.
   # "curve_feature_clustering", # Disabled by ANA-11.
   "dataset_and_source_robustness",
-  # "marginal_contrasts", # Deferred with inferential families until upstream gates are approved.
+  # "marginal_contrasts", # Deferred until upstream support/estimand artifacts and gates pass.
 ]
 
 deferred_analysis_families = [
@@ -272,7 +273,7 @@ run_supported_only = true
 group_cross_validation_by = "study_uid"
 multiple_testing_method = "benjamini_hochberg"
 
-# No [analysis_matrix.support_policy] is active while ANA-05 remains open.
+# ANA-05 A is decided, but its exact versioned [analysis_matrix.support_policy] table is absent.
 # Inferential, predictive, and higher-order families therefore remain disabled.
 
 # Registered source and schema contract. Change this block only when a source

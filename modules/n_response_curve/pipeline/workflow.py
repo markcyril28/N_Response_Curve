@@ -26,6 +26,7 @@ from n_response_curve.analysis.factor_catalog import FactorCatalogEntry, build_f
 from n_response_curve.reporting.plots import write_observed_series_figures, write_response_curve_figures
 from n_response_curve.analysis.r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
 from n_response_curve.analysis.r_specs import RAnalysisPreparation, prepare_r_analysis
+from n_response_curve.pipeline.policy_governance import RuntimePolicySnapshot
 from n_response_curve.reporting.release import (
     ReleasePackage,
     ReportingError,
@@ -40,6 +41,7 @@ from n_response_curve.logging.run_logging import RunLogger
 class PhaseThreeResult:
     evidence: CurveEvidenceResult
     input_records: tuple[dict[str, Any], ...]
+    test_subset: Mapping[str, Any] | None
 
 
 @dataclass(frozen=True)
