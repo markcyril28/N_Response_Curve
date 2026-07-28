@@ -37,8 +37,6 @@ enabled_sources = [
   "core_trial_data",
   # "ph_combined_nopt_rcm", # Received and registered; disabled until its adapter, mapping, precision, and restricted-data gates pass.
   # "ltcce",
-  # "rcm_validation", # Reserved for a separately supplied standalone source; do not alias the combined file.
-  # "nopt", # Reserved for a separately supplied standalone source; do not alias the combined file.
 ]
 
 enabled_models = [
@@ -66,7 +64,6 @@ output_formats = [
 
 figure_formats = [
   "png",
-  #"svg",
   "jpeg",
 ]
 
@@ -317,31 +314,7 @@ source_family = "ltcce"
 data_path = "WF/01_Curated_Dataset/future_sources/ltcce.csv"
 schema_map = "WF/01_Curated_Dataset/future_sources/ltcce_schema.csv"
 provider = "pending_team_source"
-provenance_notes = "Inactive until the long-term experiment source and Decision 1 are confirmed."
-availability = "expected_unavailable"
-confirmation_status = "pending"
-shape_adapter_version = "unassigned"
-
-[sources.rcm_validation]
-source_type = "rcm_validation"
-country_code = "PH"
-source_family = "rcm_validation"
-data_path = "WF/01_Curated_Dataset/future_sources/rcm_validation.csv"
-schema_map = "WF/01_Curated_Dataset/future_sources/rcm_validation_schema.csv"
-provider = "pending_team_source"
-provenance_notes = "Reserved for a separately supplied standalone RCM-validation source. The received combined FP/RCM/NOPT artifact is registered once as ph_combined_nopt_rcm and must not be duplicated here."
-availability = "expected_unavailable"
-confirmation_status = "pending"
-shape_adapter_version = "unassigned"
-
-[sources.nopt]
-source_type = "nopt"
-country_code = "PH"
-source_family = "nopt"
-data_path = "WF/01_Curated_Dataset/future_sources/nopt.csv"
-schema_map = "WF/01_Curated_Dataset/future_sources/nopt_schema.csv"
-provider = "pending_team_source"
-provenance_notes = "Reserved for a separately supplied standalone NOPT source. The received combined FP/RCM/NOPT artifact is registered once as ph_combined_nopt_rcm and must not be duplicated here."
+provenance_notes = "Inactive until LTCCE identity, receipt, ownership, structure, and provenance are verified."
 availability = "expected_unavailable"
 confirmation_status = "pending"
 shape_adapter_version = "unassigned"
