@@ -7,6 +7,11 @@ import sys
 
 from dataclasses import dataclass
 
+from n_response_curve.analysis.policy_artifacts import (
+    AnalysisPolicyBundle,
+    PolicyArtifactError,
+    load_analysis_policy_manifest,
+)
 from n_response_curve.data.config import ConfigError, ValidatedConfig, load_config
 from n_response_curve.data.curate import CurationResult, curate_ingestion
 from n_response_curve.data.duplicates import SeriesResolution, resolve_response_series
@@ -15,6 +20,7 @@ from n_response_curve.data.ingest import IngestionResult, ingest_configured_sour
 from n_response_curve.data.provenance import SourceIntegrityReport, verify_source_integrity  # noqa: F401  (Phase 1 compatibility re-export)
 from n_response_curve.data.qc import QcReport, build_qc_report
 from n_response_curve.logging.run_logging import RunLogger
+from n_response_curve.pipeline.policy_governance import validate_runtime_policy
 from n_response_curve.pipeline.workflow import release_phases_three_to_five, run_phase_four, run_phase_three
 
 
@@ -25,6 +31,23 @@ class PhaseTwoResult:
     resolution: SeriesResolution
     eligibility: EligibilityResult
     qc: QcReport
+
+
+def _load_analysis_policy(
+    config: ValidatedConfig,
+) -> AnalysisPolicyBundle | None:
+    if config.analysis_policy_manifest is None:
+        return None
+    if config.analysis_policy_manifest_sha256 is None:
+        raise ConfigError("Analysis policy manifest hash is unavailable")
+    try:
+        return load_analysis_policy_manifest(
+            config.analysis_policy_manifest,
+            expected_sha256=config.analysis_policy_manifest_sha256,
+            project_root=config.project_root,
+        )
+    except PolicyArtifactError as exc:
+        raise ConfigError(f"Analysis policy validation failed: {exc}") from exc
 
 
 def run_phase_two(config: ValidatedConfig) -> PhaseTwoResult:
@@ -57,13 +80,13 @@ def run_phase_two(config: ValidatedConfig) -> PhaseTwoResult:
 
 
 def _enforce_phase_two_qc_gate(config: ValidatedConfig, phase_two: PhaseTwoResult) -> None:
-    """Apply the configured operational QC failure policy after complete Phase 2 review."""
+    """Fail validate/full after the complete Phase 2 review finds any review state."""
 
     if config.run_mode not in {"validate", "full"}:
         return
     policy = str(config.raw["run"]["qc_gate"])
     review_rows = phase_two.qc.review_rows
-    if policy != "fail_on_any_review" or not review_rows:
+    if not review_rows:
         return
     affected_uids = sorted(str(row.get("record_uid", "unresolved")) for row in review_rows)
     preview = ", ".join(affected_uids[:20])
@@ -121,6 +144,8 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
 
 def run(config_path: str | Path, *, project_root: str | Path) -> int:
     config = load_config(config_path, project_root=project_root, check_files=True, preflight_engines=True)
+    analysis_policy = _load_analysis_policy(config)
+    policy_snapshot = validate_runtime_policy(config)
     run_id = f"n_response_{config.run_mode}_{config.raw['run']['random_seed']}"
     run_log = RunLogger(level=str(config.raw["logging"]["level"]), run_id=run_id)
     run_context = {
@@ -132,6 +157,11 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     if launcher_run_id:
         run_context["launcher_run_id"] = launcher_run_id
     run_log.info("run_started", **run_context)
+    if analysis_policy is not None:
+        run_log.info(
+            "analysis_policy_validated",
+            component_sha256=dict(analysis_policy.artifact_sha256),
+        )
     with run_log.stage("phase_2"):
         phase_two = run_phase_two(config)
         _enforce_phase_two_qc_gate(config, phase_two)
@@ -175,6 +205,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         phase_three,
         phase_four,
         run_log=run_log,
+        policy_snapshot=policy_snapshot,
     )
     run_log.info(
         "run_completed",
