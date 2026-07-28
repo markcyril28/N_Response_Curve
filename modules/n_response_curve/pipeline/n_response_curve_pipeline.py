@@ -84,7 +84,6 @@ def _enforce_phase_two_qc_gate(config: ValidatedConfig, phase_two: PhaseTwoResul
 
     if config.run_mode not in {"validate", "full"}:
         return
-    policy = str(config.raw["run"]["qc_gate"])
     review_rows = phase_two.qc.review_rows
     if not review_rows:
         return
