@@ -304,7 +304,7 @@ def build_management_system_proximity(
             output.append(
                 ManagementSystemProximity(
                     management_proximity_uid=_stable_uid("management-proximity-v1", series_uid, system_class),
-                    estimand_version="ANA-15-option-a-v1",
+                    estimand_version="management-system-proximity-v1",
                     response_series_uid=series_uid,
                     dataset_version_id=dataset_version_id,
                     dataset_version_status=dataset_version_status,
