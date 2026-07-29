@@ -21,7 +21,7 @@ from sklearn.metrics import (
     r2_score,
     silhouette_score,
 )
-from sklearn.model_selection import GroupKFold, cross_val_score
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -59,7 +59,11 @@ def _predictive_result(
     for row in rows:
         outcome = row.get(candidate.curve_outcome)
         values = {
-            name: factor_value(row, name)
+            name: factor_value(
+                row,
+                name,
+                representation=candidate.factor_representations.get(name),
+            )
             for name in candidate.factor_names
         }
         group = str(row.get("study_uid") or "")
@@ -138,7 +142,13 @@ def _predictive_result(
         )
         scoring = "balanced_accuracy"
 
-    outer = GroupKFold(n_splits=min(5, len(set(groups))))
+    group_count = len(set(groups))
+    outer_repeat_count = min(10, max(5, group_count))
+    outer = GroupShuffleSplit(
+        n_splits=outer_repeat_count,
+        test_size=max(1, math.ceil(group_count * 0.2)),
+        random_state=20260720,
+    )
     outer_splits = tuple(outer.split(features, response, groups))
     performance: list[dict[str, float]] = []
     importances: dict[str, list[float]] = {
@@ -292,6 +302,8 @@ def _predictive_result(
             "continuous" if numeric_outcome else "categorical"
         ),
         "group_cross_validation_by": "study_uid",
+        "resampling_design": "adaptive_repeated_group_shuffle",
+        "configured_outer_repeat_count": outer_repeat_count,
         "outer_fold_count": len(performance),
         "tuning_search_space": list(parameter_grid),
         "selected_parameters_by_fold": selected_parameters,
