@@ -103,8 +103,9 @@ yield_min_t_ha = 0.0
 yield_max_t_ha = 30.0
 high_n_review_threshold_kg_ha = 200.0
 
-# Current partial gate: these row-level QC failures block Phase 2 full processing.
-# This does not implement decided OPS-03 Option B's all-warning/unresolved/excluded validate/full gate.
+# Named critical codes remain useful severity metadata. Independently, the
+# implemented OPS-03 Option B gate makes every warning, unresolved state, or
+# exclusion found by complete Phase 2 review block validate/full promotion.
 critical_error_codes = [
   "YIELD_UNIT_CONFLICT",
 ]
@@ -131,7 +132,7 @@ candidate_models = [
 parameter_bounds = { n_rate_min_kg_ha = 0.0, n_rate_max_kg_ha = 400.0 }
 allow_uncertainty = false
 uncertainty_method = "deferred_until_evidence_gate"
-allow_baseline_response_metrics = false # ELG-10 C is decided; class-separated metrics are not yet implemented.
+allow_baseline_response_metrics = false # ELG-10 C stays inactive until reviewed class and model-policy artifacts are configured.
 
 # Output and logging controls
 [outputs]
@@ -186,7 +187,7 @@ dataset_versions = [
   "D06_organic_bio_sensitivity",
   "D07_high_n_full_range",
   # "D08_high_n_trimmed_sensitivity", # Deferred under ELG-07 D until a reviewed diagnostic rule exists.
-  # "D09_complete_recommendation_set", # ELG-11 A is decided; exact membership is not yet implemented.
+  # "D09_complete_recommendation_set", # ELG-11 A stays inactive until reviewed membership evidence is configured.
   "D10_factor_specific_complete_case",
   # "D11_balanced_interaction_cells", # Deferred with interaction families under ANA-06 Option C.
   # "D12_climate_enriched_future",
@@ -217,7 +218,7 @@ curve_outcomes = [
   "observed_max_gap_to_finite_maximum_t_ha",
   "observed_max_gap_to_supported_maximum_t_ha",
   "observed_max_attainment_fraction",
-  # "yield_at_zero_n_t_ha", # ELG-10 C: disabled until verified zero-N classes are separated.
+  # "yield_at_zero_n_t_ha", # ELG-10 C: disabled until reviewed zero-N class evidence is configured.
   # "yield_response_above_zero_n_t_ha", # Disabled with the class-specific baseline estimands.
   "recommendation_yield_gap_t_ha",
   "target_yield_status",
