@@ -30,6 +30,14 @@ _INTERACTION_ORDER_FAMILIES = frozenset(
 )
 
 
+def _json_data(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_data(nested) for key, nested in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_data(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class SourceCombination:
     """One deterministic source-family membership set."""
@@ -51,6 +59,11 @@ class PrespecifiedHypothesis:
     analysis_family: str
     engine: str
     multiplicity_family_id: str
+    support_rule_id: str | None = None
+    support_policy: Mapping[str, Any] = field(default_factory=dict)
+    factor_representations: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -75,6 +88,11 @@ class AnalysisCandidate:
     hypothesis_id: str | None = None
     prespecified_contrast: Mapping[str, Any] = field(default_factory=dict)
     multiplicity_family_id: str | None = None
+    support_rule_id: str | None = None
+    support_policy: Mapping[str, Any] = field(default_factory=dict)
+    factor_representations: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -197,40 +215,102 @@ def _selected_rows(
     return rows
 
 
-def _support_policy_values(policy: Mapping[str, Any] | None) -> dict[str, int] | None:
+def _support_policy_values(
+    policy: Mapping[str, Any] | None,
+) -> dict[str, int | float] | None:
     if policy is None:
         return None
-    required = (
+    legacy = {
         "minimum_independent_studies",
         "minimum_factor_cell_count",
         "maximum_factor_cardinality",
         "minimum_residual_information",
-    )
-    values: dict[str, int] = {}
-    for key in required:
-        value = policy.get(key)
+    }
+    reviewed = {
+        "minimum_independent_series",
+        "minimum_observations_per_cell",
+        "minimum_class_events_per_parameter",
+        "minimum_residual_df",
+        "maximum_missing_fraction",
+        "maximum_factor_cardinality",
+        "minimum_independent_studies",
+    }
+    keys = set(policy)
+    if legacy.issubset(keys):
+        normalized: dict[str, int | float] = {
+            "minimum_independent_series": 1,
+            "minimum_observations_per_cell": policy["minimum_factor_cell_count"],
+            "minimum_class_events_per_parameter": 1,
+            "minimum_residual_df": policy["minimum_residual_information"],
+            "maximum_missing_fraction": 1.0,
+            "maximum_factor_cardinality": policy["maximum_factor_cardinality"],
+            "minimum_independent_studies": policy["minimum_independent_studies"],
+            "cell_support_uses_independent_studies": 1,
+        }
+    elif reviewed.issubset(keys):
+        normalized = {key: policy[key] for key in reviewed}
+        normalized["cell_support_uses_independent_studies"] = 0
+    else:
+        required = reviewed if keys & (reviewed - legacy) else legacy
+        missing = sorted(required - keys)
+        raise ValueError(
+            "Support policy is missing required field(s): " + ", ".join(missing)
+        )
+    for key in reviewed - {"maximum_missing_fraction"}:
+        value = normalized[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"Support policy {key!r} must be an integer >= 1")
-        values[key] = value
-    return values
+    maximum_missing_fraction = normalized["maximum_missing_fraction"]
+    if (
+        isinstance(maximum_missing_fraction, bool)
+        or not isinstance(maximum_missing_fraction, (int, float))
+        or not 0.0 <= float(maximum_missing_fraction) <= 1.0
+    ):
+        raise ValueError(
+            "Support policy 'maximum_missing_fraction' must be numeric in [0, 1]"
+        )
+    normalized["maximum_missing_fraction"] = float(maximum_missing_fraction)
+    return normalized
 
 
 def _support_summary(
     rows: Sequence[Mapping[str, Any]],
     factor_names: Sequence[str],
-) -> tuple[int, dict[str, int], dict[str, int], int, int]:
+    factor_representations: Mapping[str, Mapping[str, Any]],
+) -> tuple[int, int, dict[str, int], dict[str, int], int, int, float]:
     complete_rows: list[Mapping[str, Any]] = []
     for row in rows:
-        if all(factor_value(row, name) is not None for name in factor_names):
+        if all(
+            factor_value(
+                row,
+                name,
+                representation=factor_representations.get(name),
+            )
+            is not None
+            for name in factor_names
+        ):
             complete_rows.append(row)
     studies = {str(row.get("study_uid") or "") for row in complete_rows}
     studies.discard("")
+    independent_series = {
+        str(row.get("response_series_uid") or "") for row in complete_rows
+    }
+    independent_series.discard("")
     missing_group_count = sum(not str(row.get("study_uid") or "") for row in complete_rows)
     cell_counts: dict[str, int] = {}
     cell_studies: dict[str, set[str]] = {}
     if factor_names:
         for row in complete_rows:
-            cell = "|".join(str(factor_value(row, name)) for name in factor_names)
+            cell = "|".join(
+                str(
+                    factor_value(
+                        row,
+                        name,
+                        representation=factor_representations.get(name),
+                    )
+                )
+                for name in factor_names
+            )
             cell_counts[cell] = cell_counts.get(cell, 0) + 1
             cell_studies.setdefault(cell, set())
             study_uid = str(row.get("study_uid") or "")
@@ -238,10 +318,12 @@ def _support_summary(
                 cell_studies[cell].add(study_uid)
     return (
         len(studies),
+        len(independent_series),
         {key: cell_counts[key] for key in sorted(cell_counts)},
         {key: len(cell_studies.get(key, set())) for key in sorted(cell_counts)},
         len(complete_rows),
         missing_group_count,
+        (len(rows) - len(complete_rows)) / len(rows) if rows else 1.0,
     )
 
 
@@ -250,8 +332,10 @@ def _reasons_for_candidate(
     version: DatasetVersion,
     rows: Sequence[Mapping[str, Any]],
     factor_entries: Sequence[FactorCatalogEntry],
+    factor_representations: Mapping[str, Mapping[str, Any]],
+    curve_outcome: str,
     analysis_family: str,
-    support_policy: Mapping[str, int] | None,
+    support_policy: Mapping[str, int | float] | None,
 ) -> tuple[str, tuple[str, ...], int, Mapping[str, int], Mapping[str, int]]:
     if version.status != "available":
         return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}, {}
@@ -271,9 +355,18 @@ def _reasons_for_candidate(
         return "pruned", ("NO_CONFIGURED_FACTORS",), 0, {}, {}
     if any(entry.leakage_restricted for entry in factor_entries):
         return "pruned", ("LEAKAGE_RESTRICTED_FACTOR",), 0, {}, {}
-    independent_studies, cell_counts, cell_study_counts, complete_rows, missing_group_count = _support_summary(
+    (
+        independent_studies,
+        independent_series,
+        cell_counts,
+        cell_study_counts,
+        complete_rows,
+        missing_group_count,
+        missing_fraction,
+    ) = _support_summary(
         rows,
         [entry.factor_name for entry in factor_entries],
+        factor_representations,
     )
     if analysis_family == "one_factor_descriptive":
         return (
@@ -288,13 +381,38 @@ def _reasons_for_candidate(
         reasons.append("MISSING_GROUP_IDENTITY")
     if independent_studies < support_policy["minimum_independent_studies"]:
         reasons.append("INSUFFICIENT_INDEPENDENT_STUDY_SUPPORT")
+    if independent_series < support_policy["minimum_independent_series"]:
+        reasons.append("INSUFFICIENT_INDEPENDENT_SERIES_SUPPORT")
+    if missing_fraction > support_policy["maximum_missing_fraction"]:
+        reasons.append("MISSING_FRACTION_EXCEEDS_SUPPORT_POLICY")
     if len(cell_counts) > support_policy["maximum_factor_cardinality"]:
         reasons.append("FACTOR_CARDINALITY_EXCEEDS_SUPPORT_POLICY")
-    if cell_study_counts and min(cell_study_counts.values()) < support_policy["minimum_factor_cell_count"]:
+    support_counts = (
+        cell_study_counts
+        if support_policy["cell_support_uses_independent_studies"]
+        else cell_counts
+    )
+    if (
+        support_counts
+        and min(support_counts.values())
+        < support_policy["minimum_observations_per_cell"]
+    ):
         reasons.append("INSUFFICIENT_FACTOR_CELL_SUPPORT")
     residual_information = complete_rows - len(factor_entries) - 1
-    if residual_information < support_policy["minimum_residual_information"]:
+    if residual_information < support_policy["minimum_residual_df"]:
         reasons.append("INSUFFICIENT_RESIDUAL_INFORMATION")
+    outcome_counts: dict[str, int] = {}
+    for row in rows:
+        value = row.get(curve_outcome)
+        if isinstance(value, str) and value:
+            outcome_counts[value] = outcome_counts.get(value, 0) + 1
+    if outcome_counts:
+        required_events = (
+            support_policy["minimum_class_events_per_parameter"]
+            * max(1, len(factor_entries))
+        )
+        if min(outcome_counts.values()) < required_events:
+            reasons.append("INSUFFICIENT_CLASS_EVENTS_PER_PARAMETER")
     if reasons:
         return "pruned", tuple(sorted(reasons)), independent_studies, cell_counts, cell_study_counts
     return "run", (), independent_studies, cell_counts, cell_study_counts
