@@ -147,8 +147,18 @@ def build_descriptive_comparisons(
                 comparison_type=f"factor_stratum:{entry.factor_name}",
                 outcome_name=outcome_name,
                 labels=(
-                    (str(factor_value(row, entry.factor_name)) if factor_value(row, entry.factor_name) is not None else "<missing>", row)
+                    (
+                        str(value) if value is not None else "<missing>",
+                        row,
+                    )
                     for row in rows
+                    for value in (
+                        factor_value(
+                            row,
+                            entry.factor_name,
+                            representation=representations.get(entry.factor_name),
+                        ),
+                    )
                 ),
             )
         )
