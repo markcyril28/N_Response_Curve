@@ -111,12 +111,14 @@ def build_descriptive_comparisons(
     *,
     outcome_name: str,
     factor_catalog: Sequence[FactorCatalogEntry],
+    factor_representations: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[DescriptiveComparison, ...]:
     """Summarize coverage/missingness by source, recommendation, and explicit factor strata."""
 
     if not isinstance(outcome_name, str) or not outcome_name:
         raise ValueError("outcome_name must be a nonempty string")
     rows = tuple(dict(row) for row in curve_rows)
+    representations = factor_representations or {}
     summaries: list[DescriptiveComparison] = []
     summaries.extend(
         _grouped_summaries(
