@@ -164,7 +164,7 @@ def build_management_system_proximity(
     dataset_membership_sha256: str | None = None,
     dataset_record_uids: Iterable[str] | None = None,
 ) -> tuple[ManagementSystemProximity, ...]:
-    """Build ANA-15 Option A system-specific maximum and RCM target gaps.
+    """Build system-specific maximum and recommendation-target gaps.
 
     The response-series identifier is the same-context boundary. A system yield is
     accepted only when exactly one auditable observed system row is present, so the
