@@ -427,16 +427,26 @@ def _candidate(
     factor_entries: Sequence[FactorCatalogEntry],
     engine: str,
     rows: Sequence[Mapping[str, Any]],
-    support_policy: Mapping[str, int] | None,
+    support_policy: Mapping[str, int | float] | None,
     hypothesis: PrespecifiedHypothesis | None = None,
 ) -> AnalysisCandidate:
     factor_names = tuple(entry.factor_name for entry in factor_entries)
+    effective_support_policy = (
+        _support_policy_values(hypothesis.support_policy)
+        if hypothesis is not None and hypothesis.support_policy
+        else support_policy
+    )
+    factor_representations = (
+        hypothesis.factor_representations if hypothesis is not None else {}
+    )
     status, reasons, independent_studies, cell_counts, cell_study_counts = _reasons_for_candidate(
         version=version,
         rows=rows,
         factor_entries=factor_entries,
+        factor_representations=factor_representations,
+        curve_outcome=outcome,
         analysis_family=analysis_family,
-        support_policy=support_policy,
+        support_policy=effective_support_policy,
     )
     specification = {
         "analysis_family": analysis_family,
@@ -445,10 +455,23 @@ def _candidate(
         "engine": engine,
         "factor_names": factor_names,
         "hypothesis_id": hypothesis.hypothesis_id if hypothesis is not None else None,
-        "contrast_specification": dict(hypothesis.contrast_specification) if hypothesis is not None else {},
+        "contrast_specification": (
+            _json_data(hypothesis.contrast_specification)
+            if hypothesis is not None
+            else {}
+        ),
         "multiplicity_family_id": hypothesis.multiplicity_family_id if hypothesis is not None else None,
+        "support_rule_id": hypothesis.support_rule_id if hypothesis is not None else None,
+        "factor_representations": (
+            {
+                name: _json_data(representation)
+                for name, representation in hypothesis.factor_representations.items()
+            }
+            if hypothesis is not None
+            else {}
+        ),
         "source_families": combination.source_families,
-        "support_policy": dict(support_policy or {}),
+        "support_policy": _json_data(effective_support_policy or {}),
         "version_membership_sha256": version.membership_sha256,
     }
     raw_hash = hashlib.sha256(
@@ -473,8 +496,22 @@ def _candidate(
         factor_cell_counts=cell_counts,
         factor_cell_study_counts=cell_study_counts,
         hypothesis_id=hypothesis.hypothesis_id if hypothesis is not None else None,
-        prespecified_contrast=dict(hypothesis.contrast_specification) if hypothesis is not None else {},
+        prespecified_contrast=(
+            _json_data(hypothesis.contrast_specification)
+            if hypothesis is not None
+            else {}
+        ),
         multiplicity_family_id=hypothesis.multiplicity_family_id if hypothesis is not None else None,
+        support_rule_id=hypothesis.support_rule_id if hypothesis is not None else None,
+        support_policy=_json_data(effective_support_policy or {}),
+        factor_representations=(
+            {
+                name: _json_data(representation)
+                for name, representation in hypothesis.factor_representations.items()
+            }
+            if hypothesis is not None
+            else {}
+        ),
     )
 
 
@@ -510,16 +547,37 @@ def _normalize_hypotheses(
             contrast = raw.get("contrast_specification", {})
             if not isinstance(contrast, Mapping):
                 raise ValueError("Prespecified hypothesis contrast_specification must be a mapping")
+            hypothesis_support = raw.get("support_policy", {})
+            factor_representations = raw.get("factor_representations", {})
+            if not isinstance(hypothesis_support, Mapping):
+                raise ValueError("Prespecified hypothesis support_policy must be a mapping")
+            if not isinstance(factor_representations, Mapping) or any(
+                not isinstance(value, Mapping)
+                for value in factor_representations.values()
+            ):
+                raise ValueError(
+                    "Prespecified hypothesis factor_representations must map factors to mappings"
+                )
             hypothesis = PrespecifiedHypothesis(
                 hypothesis_id=str(raw["hypothesis_id"]),
                 dataset_version_id=str(raw["dataset_version_id"]),
                 source_combination_id=str(raw["source_combination_id"]),
                 curve_outcome=str(raw["curve_outcome"]),
                 factor_names=factor_names,
-                contrast_specification=dict(contrast),
+                contrast_specification=_json_data(contrast),
                 analysis_family=str(raw["analysis_family"]),
                 engine=str(raw["engine"]),
                 multiplicity_family_id=str(raw["multiplicity_family_id"]),
+                support_rule_id=(
+                    str(raw["support_rule_id"])
+                    if raw.get("support_rule_id") is not None
+                    else None
+                ),
+                support_policy=_json_data(hypothesis_support),
+                factor_representations={
+                    str(name): _json_data(value)
+                    for name, value in factor_representations.items()
+                },
             )
         else:
             raise ValueError("Prespecified hypotheses must be mappings or PrespecifiedHypothesis values")
@@ -536,10 +594,26 @@ def _normalize_hypotheses(
             raise ValueError("Prespecified hypothesis identifiers and ownership fields must be nonempty")
         if len(hypothesis.factor_names) != len(set(hypothesis.factor_names)):
             raise ValueError("Prespecified hypothesis factor_names must be unique")
+        if set(hypothesis.factor_representations) - set(hypothesis.factor_names):
+            raise ValueError(
+                "Prespecified hypothesis factor representations must belong to declared factors"
+            )
+        if hypothesis.support_policy and not hypothesis.support_rule_id:
+            raise ValueError(
+                "Prespecified hypothesis support_policy requires support_rule_id"
+            )
         try:
-            json.dumps(dict(hypothesis.contrast_specification), allow_nan=False, sort_keys=True)
+            json.dumps(_json_data(hypothesis.contrast_specification), allow_nan=False, sort_keys=True)
+            json.dumps(_json_data(hypothesis.support_policy), allow_nan=False, sort_keys=True)
+            json.dumps(
+                _json_data(hypothesis.factor_representations),
+                allow_nan=False,
+                sort_keys=True,
+            )
         except (TypeError, ValueError) as exc:
-            raise ValueError("Prespecified hypothesis contrast must be finite JSON data") from exc
+            raise ValueError(
+                "Prespecified hypothesis semantic controls must be finite JSON data"
+            ) from exc
         normalized.append(hypothesis)
     identifiers = [item.hypothesis_id for item in normalized]
     if len(identifiers) != len(set(identifiers)):
