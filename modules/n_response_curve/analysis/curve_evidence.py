@@ -852,88 +852,52 @@ def _all_credible_curve_row(
             "model_attempt_record": None,
         }
     )
-    if len(credible) == 1:
-        sole = credible[0]
-        row.update(
-            {
-                "model_disagreement_status": "single_credible_candidate",
-                "sole_credible_model_attempt_uid": sole.model_attempt_uid,
-                "sole_credible_model_name": sole.model_name,
-                "reason_codes": tuple(
-                    sorted(
-                        set(row["reason_codes"])
-                        | {"MODEL_SELECTION_DISABLED_MOD_02_OPTION_D"}
-                    )
-                ),
-            }
-        )
-        return row
-
+    summary = _disagreement_summary(credible, policy=policy)
     row.update(
         {
-            "model_disagreement_status": "multiple_credible_candidates_rule_unapproved",
-            "sole_credible_model_attempt_uid": None,
-            "sole_credible_model_name": None,
-            "curve_shape_class": "uncertain_or_mixed",
-            "optimum_status": "SUPPRESSED_MODEL_DISAGREEMENT",
-            "agronomic_optimum_n_kg_ha": None,
-            "plateau_onset_n_kg_ha": None,
-            "predicted_max_yield_t_ha": None,
-            "predicted_observed_domain_peak_yield_t_ha": None,
-            "finite_maximum_yield_t_ha": None,
-            "fitted_asymptote_yield_t_ha": None,
-            "supported_max_yield_t_ha": None,
-            "maximum_reference_basis": "none",
-            "maximum_proximity_status": "MODEL_DISAGREEMENT_UNRESOLVED",
-            "observed_max_gap_to_finite_maximum_t_ha": None,
-            "observed_max_gap_to_supported_maximum_t_ha": None,
-            "observed_max_attainment_fraction": None,
-            "evidence_strength": "multiple_credible_models_no_single_summary",
-            "reason_codes": tuple(
-                sorted(
-                    set(row["reason_codes"])
-                    | {
-                        "MODEL_SELECTION_DISABLED_MOD_02_OPTION_D",
-                        "MOD_05_DISAGREEMENT_RULE_UNAPPROVED",
-                        "SINGLE_MODEL_CONCLUSION_SUPPRESSED",
-                    }
-                )
-            ),
-        }
-    )
-    return row
-
-
-def _ranked_curve_row(
-    rows: Sequence[Mapping[str, Any]],
-    selected: ModelAttempt,
-    credible: Sequence[ModelAttempt],
-    *,
-    zero_tolerance: float,
-    baseline_metrics_enabled: bool,
-) -> dict[str, Any] | None:
-    row = _curve_row(
-        rows,
-        selected,
-        zero_tolerance=zero_tolerance,
-        baseline_metrics_enabled=baseline_metrics_enabled,
-    )
-    if row is None:
-        return None
-    row.update(
-        {
-            "model_reporting_policy": "aicc_then_grouped_prediction",
-            "credible_model_count": len(credible),
-            "credible_model_attempt_uids": tuple(
-                attempt.model_attempt_uid for attempt in credible
-            ),
-            "credible_model_names": tuple(attempt.model_name for attempt in credible),
-            "model_disagreement_status": "ranked_selection",
+            "model_disagreement_status": summary.status,
+            "materially_different_credible_conclusions": summary.materially_different,
+            "curve_shape_class": summary.curve_shape_class,
+            "optimum_status": summary.optimum_status,
+            "maximum_reference_basis": summary.maximum_reference_basis,
+            "maximum_proximity_status": summary.maximum_proximity_status,
+            **summary.values,
+            "agronomic_optimum_n_range_kg_ha": summary.ranges[
+                "agronomic_optimum_n_kg_ha"
+            ],
+            "plateau_onset_n_range_kg_ha": summary.ranges["plateau_onset_n_kg_ha"],
+            "supported_max_yield_range_t_ha": summary.ranges[
+                "supported_max_yield_t_ha"
+            ],
             "sole_credible_model_attempt_uid": (
                 credible[0].model_attempt_uid if len(credible) == 1 else None
             ),
             "sole_credible_model_name": credible[0].model_name if len(credible) == 1 else None,
         }
+    )
+    observed_max = float(row["observed_max_yield_t_ha"])
+    supported_max = row["supported_max_yield_t_ha"]
+    finite_maximum = row["finite_maximum_yield_t_ha"]
+    row["observed_max_gap_to_finite_maximum_t_ha"] = (
+        finite_maximum - observed_max if finite_maximum is not None else None
+    )
+    row["observed_max_gap_to_supported_maximum_t_ha"] = (
+        supported_max - observed_max if supported_max is not None else None
+    )
+    row["observed_max_attainment_fraction"] = (
+        observed_max / supported_max
+        if supported_max is not None and supported_max > 0.0
+        else None
+    )
+    row["reason_codes"] = tuple(
+        sorted(set(row["reason_codes"]) | set(summary.reason_codes))
+    )
+    if len(credible) == 1:
+        return row
+    row["evidence_strength"] = (
+        "four_level_restricted_credible_set"
+        if row["series_distinct_n_level_count"] == 4
+        else "five_plus_level_broad_credible_set"
     )
     return row
 
