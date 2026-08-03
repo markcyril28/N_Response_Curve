@@ -436,6 +436,7 @@ def select_dataset_version_records(
 
 __all__ = [
     "KNOWN_DATASET_VERSIONS",
+    "DatasetMembershipDiagnostic",
     "DatasetVersion",
     "build_dataset_versions",
     "select_dataset_version_records",
