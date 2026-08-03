@@ -178,28 +178,54 @@ def _management_signature(record: Mapping[str, Any]) -> tuple[str, ...]:
         for key in (
             "treatment_id",
             "treatment_text_class",
+            "canonical_treatment_class",
             "treatment",
             "p_rate_kg_p2o5_ha",
             "k_rate_kg_k2o_ha",
             "organic_fertilizer_present",
             "biofertilizer_present",
+            "source_arm_role",
         )
     )
 
 
-def _probable_cross_source_signature(record: Mapping[str, Any]) -> tuple[str, ...] | None:
-    study_id = str(record.get("study_id", "")).strip()
-    trial_id = str(record.get("trial_id", "")).strip()
-    n_rate = record.get("n_rate_kg_ha")
-    if not study_id or not trial_id or n_rate is None:
-        return None
-    return (
-        study_id,
-        trial_id,
-        str(n_rate),
-        str(record.get("treatment_id", "")).strip(),
-        str(record.get("treatment", "")).strip(),
-    )
+def _reviewed_series_arm_discriminator(
+    record: Mapping[str, Any],
+) -> tuple[str, ...]:
+    source_arm_id = str(record.get("source_arm_id") or "").strip()
+    source_arm_role = str(record.get("source_arm_role") or "").strip()
+    if source_arm_id and source_arm_role != "canonical_source_row":
+        return ("source_arm", source_arm_id)
+    if (
+        record.get("recommendation_set_membership_status")
+        == "verified_context_comparable"
+        and record.get("treatment_classification_status") == "resolved"
+    ):
+        treatment_class = str(record.get("treatment_text_class") or "").strip()
+        if treatment_class in {"RCM", "FP", "NOPT_NPK"}:
+            return ("reviewed_recommendation_class", treatment_class)
+        if (
+            record.get("nutrient_control_class") == "zero_n_with_pk"
+            and record.get("is_zero_n_with_pk") is True
+        ):
+            return ("reviewed_recommendation_class", "zero_n_with_pk")
+    return ()
+
+
+def _reviewed_comparison_set_uid(record: Mapping[str, Any]) -> str:
+    comparison_set_uid = str(record.get("comparison_set_uid") or "").strip()
+    if not comparison_set_uid:
+        return ""
+    source_arm_role = str(record.get("source_arm_role") or "").strip()
+    if source_arm_role and source_arm_role != "canonical_source_row":
+        return comparison_set_uid
+    if (
+        record.get("recommendation_set_membership_status")
+        == "verified_context_comparable"
+        and record.get("treatment_classification_status") == "resolved"
+    ):
+        return comparison_set_uid
+    return ""
 
 
 def _add_sorted_unique(record: dict[str, Any], field: str, value: str) -> tuple[str, ...]:
