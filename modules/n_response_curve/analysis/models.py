@@ -157,6 +157,10 @@ def _attempt(
     supported_max_yield_t_ha: float | None = None,
     maximum_reference_basis: str = "none",
     maximum_proximity_status: str = "NO_SUPPORTED_MAXIMUM_REFERENCE",
+    model_gate_policy_id: str | None = None,
+    uncertainty_status: str = "suppressed_no_supported_evidence_basis",
+    uncertainty_method: str | None = None,
+    uncertainty_evidence_basis: Iterable[str] = (),
     predictions: Iterable[Mapping[str, float]] = (),
 ) -> ModelAttempt:
     input_snapshot_sha256 = stable_json_sha256(identity_payload["observations"])
@@ -175,6 +179,7 @@ def _attempt(
         model_name=model_name,
         input_snapshot_sha256=input_snapshot_sha256,
         model_policy_sha256=model_policy_sha256,
+        model_gate_policy_id=model_gate_policy_id,
         status=status,
         reason_codes=tuple(sorted(set(reason_codes))),
         n_observations=n_observations,
@@ -198,6 +203,9 @@ def _attempt(
         supported_max_yield_t_ha=supported_max_yield_t_ha,
         maximum_reference_basis=maximum_reference_basis,
         maximum_proximity_status=maximum_proximity_status,
+        uncertainty_status=uncertainty_status,
+        uncertainty_method=uncertainty_method,
+        uncertainty_evidence_basis=tuple(sorted(set(uncertainty_evidence_basis))),
         predictions=tuple(MappingProxyType(dict(row)) for row in predictions),
     )
 
