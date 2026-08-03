@@ -1041,8 +1041,21 @@ def build_curve_evidence(
     """Fit an explicit membership while retaining observational evidence for all rows."""
 
     copied_records = tuple(dict(record) for record in records)
+    if (
+        tuple(model_names) != tuple(dict.fromkeys(model_names))
+        or set(model_names) != set(MODEL_ORDER)
+    ):
+        raise ValueError(
+            "Curve evidence requires the complete canonical model roster"
+        )
+    reporting_policy = policy.get("model_selection_metric")
+    if reporting_policy != _ALL_CREDIBLE_POLICY or policy.get("tie_breaking") != "not_applicable":
+        raise ValueError(
+            "Curve evidence requires all credible candidates without model selection"
+        )
+    permitted_uids = set(curve_fit_record_uids(copied_records, primary_only=False))
     if fit_record_uids is None:
-        fit_records = copied_records
+        requested = permitted_uids
     else:
         requested_uids = tuple(str(record_uid) for record_uid in fit_record_uids)
         if len(requested_uids) != len(set(requested_uids)):
@@ -1051,10 +1064,12 @@ def build_curve_evidence(
         unknown_uids = sorted(set(requested_uids) - available_uids)
         if unknown_uids:
             raise ValueError("fit_record_uids contains unknown records: " + ", ".join(unknown_uids))
-        requested = set(requested_uids)
-        fit_records = tuple(
-            record for record in copied_records if str(record.get("record_uid", "")) in requested
-        )
+        requested = set(requested_uids).intersection(permitted_uids)
+    fit_records = tuple(
+        record
+        for record in copied_records
+        if str(record.get("record_uid", "")) in requested
+    )
     attempts = fit_response_models(fit_records, model_names=model_names, policy=policy)
     by_series: dict[str, list[ModelAttempt]] = {}
     for attempt in attempts:
@@ -1073,23 +1088,13 @@ def build_curve_evidence(
         for series_uid in sorted(credible_by_series)
         for attempt in credible_by_series[series_uid]
     )
-    selected_attempts = (
-        ()
-        if reporting_policy == _ALL_CREDIBLE_POLICY
-        else tuple(
-            selected
-            for series_uid in sorted(by_series)
-            if (selected := select_reportable_model(by_series[series_uid])) is not None
-        )
-    )
-    selected_by_series = {
-        attempt.response_series_uid: attempt for attempt in selected_attempts
-    }
+    selected_attempts: tuple[ModelAttempt, ...] = ()
     grouped_rows = _series_rows(copied_records)
     grouped_fit_rows = _series_rows(fit_records)
+    all_exclusions = _fit_exclusions(copied_records, primary_only=False)
     zero_tolerance = float(policy.get("convergence_tolerance", 1e-8))
-    baseline_metrics_enabled = bool(
-        policy.get("allow_baseline_response_metrics", False)
+    baseline_metrics_enabled = (
+        policy.get("baseline_response_policy") == _SEPARATE_BASELINE_POLICY
     )
     series_evidence_rows = tuple(
         evidence_row
@@ -1100,42 +1105,39 @@ def build_curve_evidence(
                 by_series.get(series_uid, ()),
                 selected_by_series.get(series_uid),
                 credible=credible_by_series.get(series_uid, ()),
-                reporting_policy=reporting_policy,
+                policy=policy,
+                fit_exclusion_reasons=tuple(
+                    sorted(
+                        {
+                            reason
+                            for row in grouped_rows[series_uid]
+                            for reason in all_exclusions.get(
+                                str(row.get("record_uid") or ""),
+                                (),
+                            )
+                        }
+                    )
+                ),
                 zero_tolerance=zero_tolerance,
             )
         ) is not None
     )
-    if reporting_policy == _ALL_CREDIBLE_POLICY:
-        curve_rows = tuple(
-            curve
-            for series_uid in sorted(credible_by_series)
-            if (
-                curve := _all_credible_curve_row(
-                    grouped_fit_rows.get(series_uid, ()),
-                    credible_by_series[series_uid],
-                    zero_tolerance=zero_tolerance,
-                    baseline_metrics_enabled=baseline_metrics_enabled,
-                )
+    curve_rows = tuple(
+        curve
+        for series_uid in sorted(credible_by_series)
+        if (
+            curve := _all_credible_curve_row(
+                grouped_fit_rows.get(series_uid, ()),
+                grouped_rows.get(series_uid, ()),
+                credible_by_series[series_uid],
+                zero_tolerance=zero_tolerance,
+                baseline_metrics_enabled=baseline_metrics_enabled,
+                policy=policy,
             )
-            is not None
         )
-        prediction_attempts = credible_attempts_flat
-    else:
-        curve_rows = tuple(
-            curve
-            for selected in selected_attempts
-            if (
-                curve := _ranked_curve_row(
-                    grouped_fit_rows.get(selected.response_series_uid, ()),
-                    selected,
-                    credible_by_series.get(selected.response_series_uid, ()),
-                    zero_tolerance=zero_tolerance,
-                    baseline_metrics_enabled=baseline_metrics_enabled,
-                )
-            )
-            is not None
-        )
-        prediction_attempts = selected_attempts
+        is not None
+    )
+    prediction_attempts = credible_attempts_flat
     curve_series = {str(row["response_series_uid"]) for row in curve_rows}
     predictions = tuple(
         prediction
@@ -1158,6 +1160,10 @@ def build_curve_evidence(
         }
         for attempt in attempts
     )
+    economic_optimum_rows = _economic_optimum_rows(
+        credible_attempts_flat,
+        policy=policy,
+    )
     return CurveEvidenceResult(
         reporting_policy=reporting_policy,
         model_attempts=tuple(attempts),
@@ -1167,6 +1173,7 @@ def build_curve_evidence(
         series_evidence_rows=series_evidence_rows,
         curve_rows=curve_rows,
         prediction_rows=predictions,
+        economic_optimum_rows=economic_optimum_rows,
     )
 
 
