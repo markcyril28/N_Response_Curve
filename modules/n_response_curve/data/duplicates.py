@@ -108,6 +108,45 @@ def _record_sort_key(record: Mapping[str, Any]) -> tuple[str, int, str]:
     )
 
 
+def _nonempty(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be nonempty")
+    return value.strip()
+
+
+def _review_date(value: object, *, label: str) -> str:
+    text = _nonempty(value, label=label)
+    try:
+        date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an ISO date") from exc
+    return text
+
+
+def _validate_duplicate_rules(rules: DuplicateRuleSet) -> None:
+    _nonempty(rules.version, label="Duplicate rules version")
+    _nonempty(rules.review_id, label="Duplicate rules review evidence")
+    if not rules.exact_key_fields:
+        raise ValueError("Duplicate rules require at least one deterministic exact key")
+    if len(rules.exact_key_fields) != len(set(rules.exact_key_fields)):
+        raise ValueError("Duplicate exact-key fields must be unique")
+    if not rules.probable_key_fields:
+        raise ValueError("Duplicate rules require at least one probable-match field")
+    if len(rules.probable_key_fields) != len(set(rules.probable_key_fields)):
+        raise ValueError("Duplicate probable-key fields must be unique")
+    if set(rules.probable_numeric_tolerances) - set(rules.probable_key_fields):
+        raise ValueError("Probable numeric tolerances reference fields outside the probable key")
+    for field, tolerance in rules.probable_numeric_tolerances.items():
+        if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)):
+            raise ValueError(f"Probable tolerance for {field!r} must be numeric")
+        if not math.isfinite(float(tolerance)) or float(tolerance) < 0:
+            raise ValueError(f"Probable tolerance for {field!r} must be finite and nonnegative")
+    if set(rules.casefold_fields) - (
+        set(rules.exact_key_fields) | set(rules.probable_key_fields)
+    ):
+        raise ValueError("Case-fold fields must belong to an exact or probable key")
+
+
 def _raw_context_value(record: Mapping[str, Any], dimension: str) -> str | None:
     key = _CONTEXT_FIELD_ALIASES.get(dimension, dimension)
     value = record.get(key)
