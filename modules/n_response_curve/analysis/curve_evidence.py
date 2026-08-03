@@ -907,8 +907,9 @@ def _series_evidence_row(
     attempts: Sequence[ModelAttempt],
     selected: ModelAttempt | None,
     *,
-    credible: Sequence[ModelAttempt] = (),
-    reporting_policy: str = "aicc_then_grouped_prediction",
+    credible: Sequence[ModelAttempt],
+    policy: Mapping[str, Any],
+    fit_exclusion_reasons: Sequence[str],
     zero_tolerance: float,
 ) -> dict[str, Any] | None:
     supported_tiers = {
@@ -917,9 +918,10 @@ def _series_evidence_row(
     }
     if not supported_tiers.intersection({"A", "B", "C"}):
         return None
+    descriptive_rows = _descriptive_candidate_rows(rows)
     complete = [
         (n_rate, yield_value)
-        for row in rows
+        for row in descriptive_rows
         if (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
         and (yield_value := finite_number(row.get("yield_t_ha"))) is not None
     ]
@@ -932,42 +934,46 @@ def _series_evidence_row(
         if low_yields and high_yields and len(levels) >= 2
         else None
     )
-    report_all = reporting_policy == _ALL_CREDIBLE_POLICY
-    sole_credible = credible[0] if report_all and len(credible) == 1 else None
-    reported_attempt = sole_credible if report_all else selected
-    evidence_reasons: list[str] = []
+    summary = _disagreement_summary(credible, policy=policy)
+    evidence_reasons: list[str] = list(fit_exclusion_reasons)
     if len(levels) == 2:
         evidence_strength = "two_level_contrast_only"
         evidence_status = "contrast_only"
         evidence_reasons.append("TWO_LEVEL_CONTRAST_ONLY")
-    elif report_all and len(credible) > 1:
-        evidence_strength = "multiple_credible_models_no_single_summary"
-        evidence_status = "credible_model_set_reported"
-        evidence_reasons.extend(
-            (
-                "MODEL_SELECTION_DISABLED_MOD_02_OPTION_D",
-                "MOD_05_DISAGREEMENT_RULE_UNAPPROVED",
-                "SINGLE_MODEL_CONCLUSION_SUPPRESSED",
-            )
+    elif len(levels) == 3:
+        evidence_strength = "three_level_descriptive_only"
+        evidence_status = "descriptive_only"
+        evidence_reasons.append("DESCRIPTIVE_LEVEL_SUPPORT_ONLY")
+    elif len(credible) > 1:
+        evidence_strength = (
+            "four_level_restricted_credible_set"
+            if len(levels) == 4
+            else "five_plus_level_broad_credible_set"
         )
-    elif len(levels) == 3 and reported_attempt is not None and reported_attempt.model_name == "linear":
-        evidence_strength = "three_level_linear_only"
-        evidence_status = "credible_model_reported" if report_all else "curve_model_selected"
-    elif reported_attempt is not None:
-        evidence_strength = "four_plus_level_curve"
-        evidence_status = "credible_model_reported" if report_all else "curve_model_selected"
+        evidence_status = "credible_model_set_reported"
+        evidence_reasons.extend(summary.reason_codes)
+    elif len(credible) == 1:
+        evidence_strength = (
+            "four_level_restricted_fit"
+            if len(levels) == 4
+            else "five_plus_level_broad_roster"
+        )
+        evidence_status = "credible_model_reported"
+        evidence_reasons.extend(summary.reason_codes)
     elif len(levels) < 2:
         evidence_strength = "insufficient_n_level_support"
         evidence_status = "unsupported"
         evidence_reasons.append("INSUFFICIENT_N_LEVEL_SUPPORT")
-    else:
-        evidence_strength = "no_reportable_curve_model"
+    elif len(levels) == 4:
+        evidence_strength = "four_level_restricted_fit_unavailable"
         evidence_status = "unsupported"
-        evidence_reasons.append("NO_REPORTABLE_CURVE_MODEL")
-    if report_all and credible:
-        evidence_reasons.append("MODEL_SELECTION_DISABLED_MOD_02_OPTION_D")
+        evidence_reasons.append("NO_CREDIBLE_RESTRICTED_MODEL")
+    else:
+        evidence_strength = "five_plus_level_broad_roster_unavailable"
+        evidence_status = "unsupported"
+        evidence_reasons.append("NO_CREDIBLE_BROAD_ROSTER_MODEL")
     source_name = _one_value(rows, "source_name")
-    multiple_credible = report_all and len(credible) > 1
+    sole_credible = credible[0] if len(credible) == 1 else None
     return {
         "response_series_uid": str(rows[0].get("response_series_uid") or ""),
         "source_name": source_name,
@@ -986,49 +992,16 @@ def _series_evidence_row(
         ),
         "evidence_status": evidence_status,
         "evidence_strength": evidence_strength,
-        "curve_shape_class": (
-            "uncertain_or_mixed"
-            if multiple_credible
-            else reported_attempt.curve_shape_class
-            if reported_attempt is not None
-            else "unavailable"
-        ),
-        "optimum_status": (
-            "SUPPRESSED_MODEL_DISAGREEMENT"
-            if multiple_credible
-            else reported_attempt.optimum_status
-            if reported_attempt is not None
-            else "unavailable"
-        ),
-        "maximum_reference_basis": (
-            "none"
-            if multiple_credible
-            else reported_attempt.maximum_reference_basis
-            if reported_attempt is not None
-            else "none"
-        ),
-        "maximum_proximity_status": (
-            "MODEL_DISAGREEMENT_UNRESOLVED"
-            if multiple_credible
-            else reported_attempt.maximum_proximity_status
-            if reported_attempt is not None
-            else "unavailable"
-        ),
+        "curve_shape_class": summary.curve_shape_class,
+        "optimum_status": summary.optimum_status,
+        "maximum_reference_basis": summary.maximum_reference_basis,
+        "maximum_proximity_status": summary.maximum_proximity_status,
         "target_yield_status": "not_configured",
-        "model_reporting_policy": reporting_policy,
-        "model_disagreement_status": (
-            "multiple_credible_candidates_rule_unapproved"
-            if multiple_credible
-            else "single_credible_candidate"
-            if sole_credible is not None
-            else "ranked_selection"
-            if selected is not None
-            else "no_credible_candidate"
-        ),
-        "selected_model_attempt_uid": (
-            selected.model_attempt_uid if not report_all and selected is not None else None
-        ),
-        "selected_model_name": selected.model_name if not report_all and selected is not None else None,
+        "model_reporting_policy": _ALL_CREDIBLE_POLICY,
+        "model_disagreement_status": summary.status,
+        "materially_different_credible_conclusions": summary.materially_different,
+        "selected_model_attempt_uid": None,
+        "selected_model_name": None,
         "sole_credible_model_attempt_uid": (
             sole_credible.model_attempt_uid if sole_credible is not None else None
         ),
@@ -1038,7 +1011,7 @@ def _series_evidence_row(
         "credible_model_count": len(credible),
         "model_attempt_uids": tuple(attempt.model_attempt_uid for attempt in attempts),
         "model_reason_codes": tuple(sorted({reason for attempt in attempts for reason in attempt.reason_codes})),
-        "reason_codes": tuple(sorted(set(evidence_reasons))),
+        "reason_codes": tuple(sorted(set(evidence_reasons) | set(summary.reason_codes))),
     }
 
 
