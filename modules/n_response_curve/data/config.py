@@ -208,6 +208,8 @@ TOP_LEVEL_SECTIONS = {
     "logging",
     "engines",
     "analysis_hypotheses",
+    "analysis_policy",
+    "source_data_policy",
     "analysis_matrix",
 }
 
@@ -237,6 +239,11 @@ class ValidatedConfig:
     analysis_families: tuple[str, ...]
     interaction_orders: tuple[int, ...]
     engine_assignments: Mapping[str, str]
+    analysis_policy_manifest: Path | None
+    analysis_policy_manifest_sha256: str | None
+    source_data_policy_manifest: Path | None
+    source_data_policy_manifest_sha256: str | None
+    source_data_policy_secret_env: str | None
     run_mode: str
 
     @property
@@ -323,6 +330,125 @@ def validate_config(
         raise ConfigError("[analysis_hypotheses].specifications must be a list of tables")
     hypotheses["specifications"] = [dict(item) for item in specifications]
     data["analysis_hypotheses"] = hypotheses
+    analysis_policy = data.get("analysis_policy", {})
+    if not isinstance(analysis_policy, Mapping):
+        raise ConfigError("[analysis_policy] must be a table")
+    analysis_policy = dict(analysis_policy)
+    _check_unknown_keys(
+        analysis_policy,
+        {"manifest_path", "manifest_sha256"},
+        where="[analysis_policy]",
+    )
+    if bool(analysis_policy) and set(analysis_policy) != {
+        "manifest_path",
+        "manifest_sha256",
+    }:
+        raise ConfigError(
+            "[analysis_policy] must contain both manifest_path and manifest_sha256"
+        )
+    analysis_policy_manifest: Path | None = None
+    analysis_policy_manifest_sha256: str | None = None
+    if analysis_policy:
+        _require_string(
+            analysis_policy,
+            "manifest_path",
+            where="[analysis_policy]",
+        )
+        _require_string(
+            analysis_policy,
+            "manifest_sha256",
+            where="[analysis_policy]",
+        )
+        analysis_policy_manifest_sha256 = str(
+            analysis_policy["manifest_sha256"]
+        ).lower()
+        if re.fullmatch(
+            r"[0-9a-f]{64}",
+            analysis_policy_manifest_sha256,
+        ) is None:
+            raise ConfigError(
+                "[analysis_policy].manifest_sha256 must be a lowercase SHA-256"
+            )
+        analysis_policy_manifest = _resolve_relative_path(
+            analysis_policy["manifest_path"],
+            root,
+            "[analysis_policy].manifest_path",
+        )
+        if analysis_policy_manifest.suffix.casefold() != ".json":
+            raise ConfigError(
+                "[analysis_policy].manifest_path must reference a JSON artifact"
+            )
+        if check_files:
+            _require_file(
+                analysis_policy_manifest,
+                "analysis policy manifest",
+            )
+    data["analysis_policy"] = analysis_policy
+    source_data_policy = data.get("source_data_policy", {})
+    if not isinstance(source_data_policy, Mapping):
+        raise ConfigError("[source_data_policy] must be a table")
+    source_data_policy = dict(source_data_policy)
+    source_data_policy_keys = {
+        "manifest_path",
+        "manifest_sha256",
+        "pseudonym_secret_env",
+    }
+    _check_unknown_keys(
+        source_data_policy,
+        source_data_policy_keys,
+        where="[source_data_policy]",
+    )
+    if bool(source_data_policy) and set(source_data_policy) != source_data_policy_keys:
+        raise ConfigError(
+            "[source_data_policy] must contain manifest_path, manifest_sha256, "
+            "and pseudonym_secret_env"
+        )
+    source_data_policy_manifest: Path | None = None
+    source_data_policy_manifest_sha256: str | None = None
+    source_data_policy_secret_env: str | None = None
+    if source_data_policy:
+        for key in source_data_policy_keys:
+            _require_string(
+                source_data_policy,
+                key,
+                where="[source_data_policy]",
+            )
+        source_data_policy_manifest_sha256 = str(
+            source_data_policy["manifest_sha256"]
+        ).lower()
+        if re.fullmatch(
+            r"[0-9a-f]{64}",
+            source_data_policy_manifest_sha256,
+        ) is None:
+            raise ConfigError(
+                "[source_data_policy].manifest_sha256 must be a lowercase SHA-256"
+            )
+        source_data_policy_secret_env = str(
+            source_data_policy["pseudonym_secret_env"]
+        )
+        if re.fullmatch(
+            r"N_RESPONSE_[A-Z0-9_]+",
+            source_data_policy_secret_env,
+        ) is None:
+            raise ConfigError(
+                "[source_data_policy].pseudonym_secret_env must use the "
+                "dedicated N_RESPONSE_ namespace"
+            )
+        source_data_policy_manifest = _resolve_relative_path(
+            source_data_policy["manifest_path"],
+            root,
+            "[source_data_policy].manifest_path",
+        )
+        if source_data_policy_manifest.suffix.casefold() != ".json":
+            raise ConfigError(
+                "[source_data_policy].manifest_path must reference a JSON artifact"
+            )
+        if check_files:
+            _require_file(
+                source_data_policy_manifest,
+                "source-data policy manifest",
+            )
+    data["source_data_policy"] = source_data_policy
     selection_defaults = data["selection"]
     selection_defaults.setdefault("scope_countries", ["PH"])
     selection_defaults.setdefault("series_identity_dimensions", ["water_regime", "season"])
