@@ -159,6 +159,7 @@ def execute_python_candidates(
                 selected_rows,
                 outcome_name=candidate.curve_outcome,
                 factor_catalog=selected_factors,
+                factor_representations=candidate.factor_representations,
             )
             results.append(
                 PythonAnalysisResult(
