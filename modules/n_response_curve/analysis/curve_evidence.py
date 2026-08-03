@@ -77,6 +77,7 @@ class CurveEvidenceResult:
     series_evidence_rows: tuple[dict[str, Any], ...]
     curve_rows: tuple[dict[str, Any], ...]
     prediction_rows: tuple[dict[str, Any], ...]
+    economic_optimum_rows: tuple[dict[str, Any], ...]
 
 
 def _series_rows(records: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
