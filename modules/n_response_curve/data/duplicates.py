@@ -464,18 +464,17 @@ def _initialize_duplicate_statuses(
         if len(ordered) == 1:
             continue
         canonical = ordered[0]
-        signature = (
-            str(canonical.get("source_uid", "")),
-            tuple(str(value) for value in canonical.get("raw_cells", ())),
+        group_uid = _stable_identifier(
+            "duplicate",
+            ("exact", rules.version, *signature),
         )
-        group_uid = _stable_identifier("duplicate", ("exact_source_raw_cells", *signature))
         _add_duplicate_relationship(canonical, "exact_duplicate_canonical")
         _add_duplicate_group(
             canonical,
             duplicate_group_uid=group_uid,
             relationship="exact_duplicate_canonical",
             confidence="exact",
-            evidence_codes=("SAME_SOURCE_UID", "IDENTICAL_RAW_CELLS"),
+            evidence_codes=tuple(f"EXACT_KEY:{field}" for field in rules.exact_key_fields),
             review_status="auto_classified",
             canonical_record_uid=str(canonical["record_uid"]),
         )
