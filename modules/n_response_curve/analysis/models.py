@@ -773,6 +773,125 @@ def _predictions(
     )
 
 
+def _parameter_jacobian(
+    model_name: str,
+    n_values: np.ndarray,
+    parameters: Mapping[str, float],
+) -> np.ndarray:
+    parameter_names = _MODEL_PARAMETER_NAMES[model_name]
+    parameter_vector = np.asarray(
+        [parameters[name] for name in parameter_names],
+        dtype=float,
+    )
+    jacobian = np.empty((len(n_values), len(parameter_names)), dtype=float)
+    step_scale = math.sqrt(np.finfo(float).eps)
+    for index in range(len(parameter_names)):
+        step = step_scale * max(abs(float(parameter_vector[index])), 1.0)
+        upper = parameter_vector.copy()
+        lower = parameter_vector.copy()
+        upper[index] += step
+        lower[index] -= step
+        upper_values = evaluate_model(
+            model_name,
+            n_values.tolist(),
+            _parameter_mapping(model_name, upper),
+        )
+        lower_values = evaluate_model(
+            model_name,
+            n_values.tolist(),
+            _parameter_mapping(model_name, lower),
+        )
+        jacobian[:, index] = (upper_values - lower_values) / (2.0 * step)
+    return jacobian
+
+
+def _reported_se_delta_intervals(
+    model_name: str,
+    parameters: Mapping[str, float],
+    observed_n_rates: np.ndarray,
+    observation_evidence: Sequence[Mapping[str, Any]],
+    predictions: Sequence[Mapping[str, float]],
+    *,
+    method: str,
+) -> tuple[tuple[dict[str, float], ...], str, tuple[str, ...]]:
+    confidence_level = UNCERTAINTY_METHOD_CONFIDENCE_LEVELS.get(method)
+    if confidence_level is None:
+        return (
+            tuple(dict(row) for row in predictions),
+            "suppressed_unreviewed_method",
+            ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+        )
+    try:
+        standard_errors = np.asarray(
+            [float(row["yield_se_t_ha"]) for row in observation_evidence],
+            dtype=float,
+        )
+        observed_jacobian = _parameter_jacobian(
+            model_name,
+            observed_n_rates,
+            parameters,
+        )
+        if np.linalg.matrix_rank(observed_jacobian) < observed_jacobian.shape[1]:
+            raise np.linalg.LinAlgError("rank-deficient parameter Jacobian")
+        bread = np.linalg.inv(observed_jacobian.T @ observed_jacobian)
+        observation_covariance = np.diag(standard_errors**2)
+        parameter_covariance = (
+            bread
+            @ observed_jacobian.T
+            @ observation_covariance
+            @ observed_jacobian
+            @ bread
+        )
+        prediction_n_rates = np.asarray(
+            [float(row["n_rate_kg_ha"]) for row in predictions],
+            dtype=float,
+        )
+        prediction_jacobian = _parameter_jacobian(
+            model_name,
+            prediction_n_rates,
+            parameters,
+        )
+        prediction_variances = np.einsum(
+            "ij,jk,ik->i",
+            prediction_jacobian,
+            parameter_covariance,
+            prediction_jacobian,
+        )
+        if not np.isfinite(prediction_variances).all() or np.min(prediction_variances) < -1.0e-10:
+            raise np.linalg.LinAlgError("invalid propagated variance")
+        prediction_standard_errors = np.sqrt(np.maximum(prediction_variances, 0.0))
+    except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
+        return (
+            tuple(dict(row) for row in predictions),
+            "suppressed_numerically_unavailable",
+            ("UNCERTAINTY_INTERVAL_NUMERICALLY_UNAVAILABLE",),
+        )
+
+    critical_value = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
+    bounded_rows: list[dict[str, float]] = []
+    for row, standard_error in zip(
+        predictions,
+        prediction_standard_errors,
+        strict=True,
+    ):
+        fitted_yield = float(row["predicted_yield_t_ha"])
+        margin = critical_value * float(standard_error)
+        bounded_rows.append(
+            {
+                **row,
+                "confidence_lower_95pct_t_ha": fitted_yield - margin,
+                "confidence_upper_95pct_t_ha": fitted_yield + margin,
+                "fitted_mean_se_t_ha": float(standard_error),
+                "confidence_level": confidence_level,
+            }
+        )
+    return (
+        tuple(bounded_rows),
+        f"available_{method}",
+        (),
+    )
+
+
 def _optimum_summary(
     model_name: str,
     parameters: Mapping[str, float],
