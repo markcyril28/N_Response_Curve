@@ -766,10 +766,45 @@ def _curate_source(
     return records
 
 
-def curate_ingestion(ingestion: IngestionResult, config: Any) -> CurationResult:
+def curate_ingestion(
+    ingestion: IngestionResult,
+    config: Any,
+    *,
+    source_maps: Mapping[str, ReviewedSourceMap] | None = None,
+    category_lookups: Mapping[str, ReviewedLookupTable] | None = None,
+    restricted_policy: RestrictedDataPolicy | None = None,
+    require_reviewed_controls: bool = False,
+) -> CurationResult:
     """Map configured raw positions to canonical values while preserving all raw cells."""
 
-    records = tuple(record for source in ingestion.sources for record in _curate_source(source, config))
+    maps = source_maps or {}
+    lookups = category_lookups or {}
+    if require_reviewed_controls:
+        validate_reviewed_curation_controls(
+            ingestion,
+            source_maps=maps,
+            category_lookups=lookups,
+        )
+    else:
+        unknown_maps = set(maps) - {
+            source.source_name for source in ingestion.sources
+        }
+        if unknown_maps:
+            raise ValueError(
+                "Reviewed maps reference source(s) absent from ingestion: "
+                + ", ".join(sorted(unknown_maps))
+            )
+    records = tuple(
+        record
+        for source in ingestion.sources
+        for record in _curate_source(
+            source,
+            config,
+            source_map=maps.get(source.source_name),
+            category_lookups=lookups,
+            restricted_policy=restricted_policy,
+        )
+    )
     record_uids = [record["record_uid"] for record in records]
     if len(record_uids) != len(set(record_uids)):
         raise ValueError("Canonical record identifiers must be unique")
