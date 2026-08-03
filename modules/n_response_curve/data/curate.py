@@ -808,7 +808,108 @@ def curate_ingestion(
     record_uids = [record["record_uid"] for record in records]
     if len(record_uids) != len(set(record_uids)):
         raise ValueError("Canonical record identifiers must be unique")
-    return CurationResult(records=records)
+    parent_row_uids = tuple(
+        sorted({str(record["parent_row_uid"]) for record in records})
+    )
+    expected_parent_rows = sum(len(source.rows) for source in ingestion.sources)
+    if len(parent_row_uids) != expected_parent_rows:
+        raise ValueError("Canonical parent-row identities do not reconcile to ingested rows")
+    return CurationResult(records=records, parent_row_uids=parent_row_uids)
 
 
-__all__ = ["CurationResult", "curate_ingestion"]
+def project_public_records(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    policy: RestrictedDataPolicy,
+) -> tuple[dict[str, Any], ...]:
+    """Create a disclosure-reviewed projection without copying restricted raw evidence."""
+
+    for label, value in (
+        ("access review", policy.access_review_id),
+        ("automated disclosure review", policy.automated_disclosure_review_id),
+        ("human disclosure review", policy.human_disclosure_review_id),
+    ):
+        if not value.strip():
+            raise ValueError(f"Restricted-data {label} evidence must be nonempty")
+    prohibited_fields = {
+        *policy.identifier_fields,
+        *policy.precise_location_fields,
+        *(set(policy.detailed_location_fields) - set(policy.approved_geography_fields)),
+        "source_path",
+        "schema_map_path",
+        "raw_cells",
+        "raw_headers",
+        "raw_column_ids",
+        "column_dispositions",
+        "restricted_path_aliases",
+        "record_uid",
+        "parent_row_uid",
+        "source_uid",
+        "source_row_number",
+        "source_physical_line_number",
+        "controlled_subject_uid",
+    }
+    prohibited_raw_fields = {
+        f"{field}{suffix}"
+        for field in (
+            *policy.identifier_fields,
+            *policy.precise_location_fields,
+            *policy.detailed_location_fields,
+        )
+        for suffix in ("_raw", "_missing_state", "_raw_state")
+    }
+    allowed_fields = set(policy.public_release_fields)
+    forbidden_allowlist_fields = allowed_fields & prohibited_fields
+    if forbidden_allowlist_fields:
+        raise ValueError(
+            "Restricted-data public allowlist contains prohibited field(s): "
+            + ", ".join(sorted(forbidden_allowlist_fields))
+        )
+    public: list[dict[str, Any]] = []
+    for source_record in records:
+        record = dict(source_record)
+        if record.get("data_classification") != "restricted":
+            record.pop("source_path", None)
+            record.pop("schema_map_path", None)
+            record.pop("raw_cells", None)
+            record.pop("restricted_path_aliases", None)
+            public.append(record)
+            continue
+        if record.get("restricted_release_status") != "eligible_for_reviewed_public_projection":
+            raise ValueError("Restricted record has not completed access and disclosure controls")
+        projection = {
+            key: value
+            for key, value in record.items()
+            if key in allowed_fields
+            and key not in prohibited_fields
+            and key not in prohibited_raw_fields
+        }
+        record_uid = str(record.get("record_uid") or "").strip()
+        if not record_uid:
+            raise ValueError("Restricted record lacks an internal record identity")
+        projection["public_record_uid"] = _controlled_pseudonym(
+            f"public-record:{record_uid}",
+            salt=policy.pseudonym_salt,
+        )
+        projection["data_classification"] = "public_deidentified"
+        projection["disclosure_review_status"] = "automated_and_human_review_recorded"
+        projection["access_review_id"] = policy.access_review_id
+        projection["automated_disclosure_review_id"] = (
+            policy.automated_disclosure_review_id
+        )
+        projection["human_disclosure_review_id"] = policy.human_disclosure_review_id
+        public.append(projection)
+    return tuple(public)
+
+
+__all__ = [
+    "CurationResult",
+    "PhysicalColumnDisposition",
+    "REQUIRED_REVIEWED_LOOKUP_FIELDS",
+    "RestrictedDataPolicy",
+    "ReviewedSourceMap",
+    "SourceArmMap",
+    "curate_ingestion",
+    "project_public_records",
+    "validate_reviewed_curation_controls",
+]
