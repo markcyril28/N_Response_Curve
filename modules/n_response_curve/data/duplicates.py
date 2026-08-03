@@ -230,10 +230,11 @@ def _reviewed_comparison_set_uid(record: Mapping[str, Any]) -> str:
 
 def _add_sorted_unique(record: dict[str, Any], field: str, value: str) -> tuple[str, ...]:
     existing = record.get(field, ())
-    values = {
-        str(item)
-        for item in existing
-    } if isinstance(existing, (list, tuple, set, frozenset)) else set()
+    values = (
+        {str(item) for item in existing}
+        if isinstance(existing, (list, tuple, set, frozenset))
+        else set()
+    )
     values.add(value)
     normalized = tuple(sorted(values))
     record[field] = normalized
