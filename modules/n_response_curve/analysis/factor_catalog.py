@@ -59,6 +59,11 @@ _FACTOR_METADATA: Mapping[str, Mapping[str, Any]] = {
 
 
 KNOWN_FACTORS = frozenset(_FACTOR_METADATA)
+_REPRESENTATION_DATA_TYPE_ALIASES = {
+    "continuous_numeric": "numeric",
+    "categorical_factor": "categorical",
+    "ordered_factor": "categorical",
+}
 
 
 def _missing(value: object, data_type: str) -> bool:
