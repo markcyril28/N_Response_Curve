@@ -2,13 +2,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
+from ..data.provenance import stable_identifier, stable_json_sha256
 
+from ..data.provenance import stable_identifier, stable_json_sha256
+    MODEL_ORDER,
+    MODEL_ORDER,
 from ..reporting.plots import prediction_rows
 from .models import (
+    MODEL_ORDER,
     ModelAttempt,
     credible_model_attempts,
+    fit_response_models,
+    model_attempt_record,
+    ModelAttempt,
+)
+from .reviewed_methods import (
+    ECONOMIC_DECISION_RULE,
+    ECONOMIC_GRAIN_PRICE_TO_PER_TONNE,
+    ECONOMIC_N_COST_UNIT,
+from .reviewed_methods import (
+    ECONOMIC_DECISION_RULE,
+    ECONOMIC_GRAIN_PRICE_TO_PER_TONNE,
+    ECONOMIC_N_COST_UNIT,
     fit_response_models,
     model_attempt_record,
     select_reportable_model,
@@ -17,6 +35,34 @@ from .values import finite_number
 
 
 _ALL_CREDIBLE_POLICY = "all_credible_no_selection"
+_SEPARATE_BASELINE_POLICY = "separate_verified_classes"
+_P_K_FIT_BLOCK_REASONS = frozenset(
+    {
+        "P_K_UNRESOLVED",
+        "P_K_UNRESOLVED_EXCLUDED",
+        "P_K_VARY_WITH_N",
+        "P_K_VARY_WITH_N_EXCLUDED",
+    }
+)
+_ORGANIC_FIT_BLOCK_REASONS = frozenset(
+    {
+        "ORGANIC_OR_BIOFERTILIZER",
+        "ORGANIC_OR_BIOFERTILIZER_EXCLUDED",
+    }
+)
+
+@dataclass(frozen=True)
+class _DisagreementSummary:
+    status: str
+    curve_shape_class: str
+    optimum_status: str
+    maximum_reference_basis: str
+    maximum_proximity_status: str
+    materially_different: bool | None
+    values: Mapping[str, float | None]
+    ranges: Mapping[str, tuple[float, float] | None]
+    reason_codes: tuple[str, ...]
+
 
 
 @dataclass(frozen=True)
