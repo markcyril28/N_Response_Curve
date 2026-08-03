@@ -111,6 +111,7 @@ def _stable_uid(*parts: object) -> str:
     encoded = "\x00".join(str(part) for part in parts).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
+
 def _controlled_pseudonym(value: str, *, salt: bytes) -> str:
     if len(salt) < 16:
         raise ValueError("Restricted-data pseudonym salt must contain at least 16 bytes")
@@ -588,7 +589,11 @@ def _curate_source(
     schema = raw_config["schema"]
     schema_fields: Mapping[str, Mapping[str, Any]] = schema["fields"]
     missing_values = raw_config["missing_values"]
-    fill_positions = _fill_down_positions(source, tuple(config.fill_down_fields))
+    effective_map = source_map or _legacy_source_map(source, config)
+    _validate_reviewed_source_map(source, effective_map)
+    mapping_review_status = "reviewed" if source_map is not None else "review_required"
+    fill_positions = _fill_down_positions(source, effective_map.fill_down_headers)
+    schema_fields = effective_map.fields
     study_id_position = next(
         (position for position, header in fill_positions.items() if header == "Study_ID"),
         None,
@@ -598,6 +603,10 @@ def _curate_source(
     source_uid = _stable_uid("source-v1", source.source_name, source.source_sha256)
     records: list[dict[str, Any]] = []
     previous_source_row_number = 1
+    source_arms = _source_arms(effective_map)
+    recommendation_context_verified = {
+        arm.role for arm in source_arms
+    }.issuperset({"management_comparison", "response_candidate"})
 
     for raw_row in source.rows:
         if any(
