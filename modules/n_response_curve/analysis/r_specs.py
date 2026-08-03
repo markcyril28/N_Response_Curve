@@ -41,6 +41,7 @@ def _normalized_rows(
     rows: Sequence[Mapping[str, Any]],
     factor_names: Sequence[str],
     *,
+    factor_representations: Mapping[str, Mapping[str, Any]],
     outcome_name: str,
     stable_key: str,
     observation_level: bool,
@@ -49,7 +50,11 @@ def _normalized_rows(
     for raw_row in rows:
         row = dict(raw_row)
         factors = {
-            name: factor_value(row, name)
+            name: factor_value(
+                row,
+                name,
+                representation=factor_representations.get(name),
+            )
             for name in factor_names
         }
         if (
@@ -61,8 +66,16 @@ def _normalized_rows(
             continue
         if observation_level and finite_number(row.get("n_rate_kg_ha")) is None:
             continue
-        row.update(factors)
-        normalized.append(row)
+        analysis_row = {
+            stable_key: row[stable_key],
+            "study_uid": row["study_uid"],
+            outcome_name: row[outcome_name],
+            **factors,
+        }
+        if observation_level:
+            analysis_row["response_series_uid"] = row["response_series_uid"]
+            analysis_row["n_rate_kg_ha"] = row["n_rate_kg_ha"]
+        normalized.append(analysis_row)
     return tuple(
         sorted(
             normalized,
@@ -209,6 +222,7 @@ def prepare_r_analysis(
     normalized = _normalized_rows(
         rows,
         candidate.factor_names,
+        factor_representations=candidate.factor_representations,
         outcome_name=outcome_name,
         stable_key=stable_key,
         observation_level=observation_level,
@@ -347,6 +361,13 @@ def prepare_r_analysis(
         "analysis_family": candidate.analysis_family,
         "hypothesis_id": candidate.hypothesis_id,
         "factor_names": list(candidate.factor_names),
+        "factor_representations": {
+            name: dict(representation)
+            for name, representation in candidate.factor_representations.items()
+        },
+        "support_rule_id": candidate.support_rule_id,
+        "support_policy": dict(candidate.support_policy),
+        "estimand": dict(candidate.prespecified_contrast),
         "engine": "r",
         "support_gates_passed": True,
         "model_formula": formula,
