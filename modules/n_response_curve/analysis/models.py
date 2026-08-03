@@ -104,6 +104,9 @@ class ModelAttempt:
     supported_max_yield_t_ha: float | None
     maximum_reference_basis: str
     maximum_proximity_status: str
+    uncertainty_status: str
+    uncertainty_method: str | None
+    uncertainty_evidence_basis: tuple[str, ...]
     predictions: tuple[Mapping[str, float], ...]
 
 
