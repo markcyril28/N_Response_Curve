@@ -5,11 +5,8 @@ import hashlib
 import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
-from ..data.provenance import stable_identifier, stable_json_sha256
 
 from ..data.provenance import stable_identifier, stable_json_sha256
-    MODEL_ORDER,
-    MODEL_ORDER,
 from ..reporting.plots import prediction_rows
 from .models import (
     MODEL_ORDER,
@@ -17,19 +14,11 @@ from .models import (
     credible_model_attempts,
     fit_response_models,
     model_attempt_record,
-    ModelAttempt,
 )
 from .reviewed_methods import (
     ECONOMIC_DECISION_RULE,
     ECONOMIC_GRAIN_PRICE_TO_PER_TONNE,
     ECONOMIC_N_COST_UNIT,
-from .reviewed_methods import (
-    ECONOMIC_DECISION_RULE,
-    ECONOMIC_GRAIN_PRICE_TO_PER_TONNE,
-    ECONOMIC_N_COST_UNIT,
-    fit_response_models,
-    model_attempt_record,
-    select_reportable_model,
 )
 from .values import finite_number
 
@@ -62,7 +51,6 @@ class _DisagreementSummary:
     values: Mapping[str, float | None]
     ranges: Mapping[str, tuple[float, float] | None]
     reason_codes: tuple[str, ...]
-
 
 
 @dataclass(frozen=True)
@@ -719,7 +707,6 @@ def _curve_row(
     source_name = _one_value(evidence_rows, "source_name")
     if source_name is None:
         return None
-    selected_record = model_attempt_record(selected)
     observed_max = float(max(yields))
     supported_max = representative.supported_max_yield_t_ha
     attainment = (
@@ -905,7 +892,6 @@ def _all_credible_curve_row(
 def _series_evidence_row(
     rows: Sequence[Mapping[str, Any]],
     attempts: Sequence[ModelAttempt],
-    selected: ModelAttempt | None,
     *,
     credible: Sequence[ModelAttempt],
     policy: Mapping[str, Any],
@@ -1074,11 +1060,6 @@ def build_curve_evidence(
     by_series: dict[str, list[ModelAttempt]] = {}
     for attempt in attempts:
         by_series.setdefault(attempt.response_series_uid, []).append(attempt)
-    reporting_policy = str(
-        policy.get("model_selection_metric", "aicc_then_grouped_prediction")
-    )
-    if reporting_policy not in {"aicc_then_grouped_prediction", _ALL_CREDIBLE_POLICY}:
-        raise ValueError(f"Unknown model reporting policy: {reporting_policy}")
     credible_by_series = {
         series_uid: credible_model_attempts(series_attempts)
         for series_uid, series_attempts in sorted(by_series.items())
@@ -1103,7 +1084,6 @@ def build_curve_evidence(
             evidence_row := _series_evidence_row(
                 grouped_rows[series_uid],
                 by_series.get(series_uid, ()),
-                selected_by_series.get(series_uid),
                 credible=credible_by_series.get(series_uid, ()),
                 policy=policy,
                 fit_exclusion_reasons=tuple(
