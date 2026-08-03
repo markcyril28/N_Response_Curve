@@ -585,18 +585,23 @@ def _fit_parameters(
     minimum_yield: float,
     maximum_yield: float,
     tolerance: float,
+    gate: _ReviewedModelGate,
 ) -> tuple[np.ndarray | None, tuple[str, ...]]:
     if model_name == "linear":
         matrix = np.column_stack((np.ones_like(x), x))
         parameters, _, rank, _ = np.linalg.lstsq(matrix, y, rcond=None)
         if rank < 2:
             return None, ("RANK_DEFICIENT_DESIGN",)
+        if np.any(parameters < gate.lower_bounds) or np.any(parameters > gate.upper_bounds):
+            return None, ("PARAMETERS_OUTSIDE_REVIEWED_BOUNDS",)
         return parameters, ()
     if model_name == "quadratic":
         matrix = np.column_stack((np.ones_like(x), x, x**2))
         parameters, _, rank, _ = np.linalg.lstsq(matrix, y, rcond=None)
         if rank < 3:
             return None, ("RANK_DEFICIENT_DESIGN",)
+        if np.any(parameters < gate.lower_bounds) or np.any(parameters > gate.upper_bounds):
+            return None, ("PARAMETERS_OUTSIDE_REVIEWED_BOUNDS",)
         return parameters, ()
 
     x_min, x_max = _observed_bounds(x)
@@ -608,6 +613,14 @@ def _fit_parameters(
     interior_upper = x_max - x_span * 1e-6
     if interior_lower >= interior_upper:
         return None, ("INSUFFICIENT_N_RATE_RANGE",)
+
+    lower = gate.lower_bounds.copy()
+    upper = gate.upper_bounds.copy()
+    if model_name in {"linear_plateau", "quadratic_plateau"}:
+        lower[2] = max(lower[2], interior_lower)
+        upper[2] = min(upper[2], interior_upper)
+        if lower[2] >= upper[2]:
+            return None, ("NO_REVIEWED_INTERIOR_PLATEAU_DOMAIN",)
 
     if model_name == "linear_plateau":
         initial_slope = max((y[-1] - y[0]) / x_span, safe_y_span / (1000.0 * x_span))
@@ -629,7 +642,10 @@ def _fit_parameters(
     else:
         return None, ("UNKNOWN_MODEL",)
 
-    initial = np.clip(initial, lower + np.finfo(float).eps, upper - np.finfo(float).eps)
+    initial = np.minimum(
+        np.maximum(initial, np.nextafter(lower, upper)),
+        np.nextafter(upper, lower),
+    )
     evaluator = _EVALUATORS[model_name]
     try:
         result = least_squares(
@@ -639,7 +655,7 @@ def _fit_parameters(
             xtol=tolerance,
             ftol=tolerance,
             gtol=tolerance,
-            max_nfev=10000,
+            max_nfev=gate.optimizer_max_iterations,
         )
     except (FloatingPointError, ValueError, RuntimeError) as exc:
         return None, (f"OPTIMIZER_ERROR:{type(exc).__name__}",)
