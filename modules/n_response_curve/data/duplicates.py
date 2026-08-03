@@ -158,9 +158,7 @@ def _raw_context_value(record: Mapping[str, Any], dimension: str) -> str | None:
 
 def _context_value(record: Mapping[str, Any], dimension: str) -> str | None:
     normalized = _raw_context_value(record, dimension)
-    if normalized is None:
-        return None
-    if normalized.casefold() in _MISSING_CONTEXT_VALUES:
+    if normalized is None or normalized.casefold() in _MISSING_CONTEXT_VALUES:
         return None
     return normalized
 
