@@ -483,7 +483,6 @@ def _initialize_duplicate_statuses(
             _add_duplicate_relationship(duplicate, "exact_duplicate_noncanonical")
             duplicate["duplicate_of_record_uid"] = canonical["record_uid"]
             duplicate["analytical_record_status"] = "duplicate_noncanonical"
-            duplicate["duplicate_of_record_uid"] = canonical["record_uid"]
             _add_duplicate_group(
                 duplicate,
                 duplicate_group_uid=group_uid,
@@ -712,10 +711,6 @@ def resolve_response_series(
             _mark_unresolved(record, "DUPLICATE_RULES_NOT_SUPPLIED")
             continue
         duplicate_relationships = set(record["duplicate_relationships"])
-        if "exact_duplicate_noncanonical" in duplicate_relationships:
-            _mark_unresolved(record, "EXACT_DUPLICATE_NONCANONICAL")
-        if "probable_cross_source_duplicate" in duplicate_relationships:
-            _mark_unresolved(record, "PROBABLE_CROSS_SOURCE_DUPLICATE")
         if {
             "exact_duplicate_noncanonical",
             "probable_duplicate_noncanonical",
@@ -879,10 +874,7 @@ def resolve_response_series(
                     _mark_unresolved(record, reason)
             continue
 
-        series_uid = _stable_identifier("series", key)
         for record in group:
-            count_at_level = same_n_count.get(str(record["record_uid"]), 0)
-            record["same_n_status"] = "repeated_measurement" if count_at_level > 1 else "unique_n_level"
             record["response_series_uid"] = series_uid
             record["comparison_set_uid"] = comparison_set_uid
             record["series_status"] = "resolved"
