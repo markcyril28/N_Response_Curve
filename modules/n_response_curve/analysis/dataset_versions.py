@@ -82,18 +82,44 @@ def _membership_hash(
     ).hexdigest()
 
 
-def _version(version_id: str, record_uids: Iterable[str], *, status: str = "available", reason_codes: Iterable[str] = ()) -> DatasetVersion:
+def _version(
+    version_id: str,
+    record_uids: Iterable[str],
+    *,
+    status: str = "available",
+    reason_codes: Iterable[str] = (),
+    authority_status: str = "authoritative",
+    authority_reason_codes: Iterable[str] = (),
+    membership_diagnostics: Iterable[DatasetMembershipDiagnostic] = (),
+) -> DatasetVersion:
     sorted_uids = tuple(sorted(set(record_uids)))
     sorted_reasons = tuple(sorted(set(reason_codes)))
+    sorted_authority_reasons = tuple(sorted(set(authority_reason_codes)))
+    sorted_diagnostics = tuple(
+        sorted(membership_diagnostics, key=lambda item: item.response_series_uid)
+    )
     if status == "available" and not sorted_uids:
         status = "unavailable"
-        sorted_reasons = ("NO_RECORDS_MATCH_DATASET_VERSION",)
+        sorted_reasons = tuple(
+            sorted(set(sorted_reasons) | {"NO_RECORDS_MATCH_DATASET_VERSION"})
+        )
     return DatasetVersion(
         version_id=version_id,
         status=status,
         record_uids=sorted_uids,
         reason_codes=sorted_reasons,
-        membership_sha256=_membership_hash(version_id, status, sorted_uids, sorted_reasons),
+        membership_sha256=_membership_hash(
+            version_id,
+            status,
+            sorted_uids,
+            sorted_reasons,
+            authority_status=authority_status,
+            authority_reason_codes=sorted_authority_reasons,
+            membership_diagnostics=sorted_diagnostics,
+        ),
+        authority_status=authority_status,
+        authority_reason_codes=sorted_authority_reasons,
+        membership_diagnostics=sorted_diagnostics,
     )
 
 
