@@ -18,6 +18,8 @@ class DerivedCurveView:
     reason_codes: tuple[str, ...]
     dataset_version_id: str
     dataset_version_membership_sha256: str
+    dataset_version_authority_status: str
+    dataset_version_authority_reason_codes: tuple[str, ...]
     source_combination_id: str
     source_families: tuple[str, ...]
     record_uids: tuple[str, ...]
@@ -27,6 +29,7 @@ class DerivedCurveView:
     model_attempt_records: tuple[dict[str, Any], ...]
     curve_rows: tuple[dict[str, Any], ...]
     prediction_rows: tuple[dict[str, Any], ...]
+    economic_optimum_rows: tuple[dict[str, Any], ...]
 
 
 def _view_metadata(
@@ -40,6 +43,10 @@ def _view_metadata(
     return {
         "dataset_version_id": version.version_id,
         "dataset_version_membership_sha256": version.membership_sha256,
+        "dataset_version_authority_status": version.authority_status,
+        "dataset_version_authority_reason_codes": list(
+            version.authority_reason_codes
+        ),
         "source_combination_id": source_combination.combination_id,
         "source_families": list(source_combination.source_families),
         "record_uids": list(record_uids),
@@ -95,6 +102,8 @@ def build_derived_curve_views(
                 "accepted_model_view_id": view_id,
                 "dataset_version_id": version.version_id,
                 "dataset_version_membership_sha256": version.membership_sha256,
+                "dataset_version_authority_status": version.authority_status,
+                "dataset_version_authority_reason_codes": version.authority_reason_codes,
                 "source_combination_id": source_combination.combination_id,
                 "source_families": source_combination.source_families,
                 "canonical_input_sha256": canonical_input_sha256,
@@ -135,6 +144,18 @@ def build_derived_curve_views(
                 }
                 for index, row in enumerate(evidence.prediction_rows)
             )
+            economic_optimum_rows = tuple(
+                {
+                    **row,
+                    **common_fields,
+                    "view_id": view_id,
+                    "derived_economic_optimum_uid": stable_identifier(
+                        "derived_economic_optimum",
+                        (view_id, row["economic_optimum_uid"]),
+                    ),
+                }
+                for row in evidence.economic_optimum_rows
+            )
             if version.status != "available":
                 status = version.status
                 reason_codes = version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)
@@ -154,6 +175,8 @@ def build_derived_curve_views(
                     reason_codes=tuple(reason_codes),
                     dataset_version_id=version.version_id,
                     dataset_version_membership_sha256=version.membership_sha256,
+                    dataset_version_authority_status=version.authority_status,
+                    dataset_version_authority_reason_codes=version.authority_reason_codes,
                     source_combination_id=source_combination.combination_id,
                     source_families=source_combination.source_families,
                     record_uids=record_uids,
@@ -163,6 +186,7 @@ def build_derived_curve_views(
                     model_attempt_records=attempt_records,
                     curve_rows=curve_rows,
                     prediction_rows=prediction_records,
+                    economic_optimum_rows=economic_optimum_rows,
                 )
             )
     views.sort(key=lambda view: (view.dataset_version_id, view.source_families))
