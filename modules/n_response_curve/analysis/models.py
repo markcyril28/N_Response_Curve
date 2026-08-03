@@ -705,6 +705,7 @@ def _grouped_prediction_summary(
     maximum_yield: float,
     minimum_residual_df: int,
     tolerance: float,
+    gate: _ReviewedModelGate,
 ) -> tuple[float | None, int]:
     """Evaluate a fitted model by leaving out every distinct N-rate level once."""
 
@@ -728,6 +729,7 @@ def _grouped_prediction_summary(
             minimum_yield=minimum_yield,
             maximum_yield=maximum_yield,
             tolerance=tolerance,
+            gate=gate,
         )
         if parameters is None:
             return None, 0
