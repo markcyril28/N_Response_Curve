@@ -295,15 +295,149 @@ def _add_duplicate_group(
     record["duplicate_groups"] = tuple(
         sorted(
             groups,
-            key=lambda group: (
-                str(group["duplicate_group_uid"]),
-                str(group["relationship"]),
+            key=lambda item: (
+                str(item["duplicate_group_uid"]),
+                str(item["relationship"]),
             ),
         )
     )
 
 
-def _initialize_duplicate_statuses(records: list[dict[str, Any]]) -> None:
+def _normalized_key_value(
+    record: Mapping[str, Any],
+    field: str,
+    *,
+    casefold_fields: set[str],
+) -> object | None:
+    value = record.get(field)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = " ".join(value.strip().split())
+        if not value or value.casefold() in _MISSING_CONTEXT_VALUES:
+            return None
+        return value.casefold() if field in casefold_fields else value
+    if isinstance(value, (tuple, list)):
+        return tuple(str(item) for item in value)
+    return value
+
+
+def _exact_signature(
+    record: Mapping[str, Any],
+    rules: DuplicateRuleSet,
+) -> tuple[object, ...] | None:
+    casefold_fields = set(rules.casefold_fields)
+    values = tuple(
+        _normalized_key_value(record, field, casefold_fields=casefold_fields)
+        for field in rules.exact_key_fields
+    )
+    return None if any(value is None for value in values) else values
+
+
+def _probable_match(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+    rules: DuplicateRuleSet,
+) -> bool:
+    if rules.probable_cross_source_only and str(left.get("source_uid")) == str(
+        right.get("source_uid")
+    ):
+        return False
+    casefold_fields = set(rules.casefold_fields)
+    for field in rules.probable_key_fields:
+        left_value = _normalized_key_value(left, field, casefold_fields=casefold_fields)
+        right_value = _normalized_key_value(right, field, casefold_fields=casefold_fields)
+        if left_value is None or right_value is None:
+            return False
+        if field in rules.probable_numeric_tolerances:
+            if isinstance(left_value, bool) or isinstance(right_value, bool):
+                return False
+            if not isinstance(left_value, (int, float)) or not isinstance(
+                right_value,
+                (int, float),
+            ):
+                return False
+            if abs(float(left_value) - float(right_value)) > float(
+                rules.probable_numeric_tolerances[field]
+            ):
+                return False
+        elif left_value != right_value:
+            return False
+    return True
+
+
+def _connected_components(
+    records: list[dict[str, Any]],
+    rules: DuplicateRuleSet,
+) -> list[list[dict[str, Any]]]:
+    parent = list(range(len(records)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for left_index, left in enumerate(records):
+        for right_index in range(left_index + 1, len(records)):
+            if _probable_match(left, records[right_index], rules):
+                union(left_index, right_index)
+    components: dict[int, list[dict[str, Any]]] = {}
+    for index, record in enumerate(records):
+        components.setdefault(find(index), []).append(record)
+    return [component for component in components.values() if len(component) > 1]
+
+
+def _validated_adjudications(
+    adjudications: Iterable[DuplicateAdjudication],
+    *,
+    rules_version: str,
+    designated_reviewers: Iterable[str],
+) -> dict[str, DuplicateAdjudication]:
+    reviewer_set = {
+        str(reviewer).strip()
+        for reviewer in designated_reviewers
+        if str(reviewer).strip()
+    }
+    indexed: dict[str, DuplicateAdjudication] = {}
+    for adjudication in adjudications:
+        if adjudication.duplicate_group_uid in indexed:
+            raise ValueError("Duplicate group has more than one adjudication")
+        if adjudication.rules_version != rules_version:
+            raise ValueError("Duplicate adjudication references a different rules version")
+        if adjudication.disposition not in {"same_trial", "distinct_trials"}:
+            raise ValueError("Duplicate adjudication disposition is invalid")
+        if adjudication.reviewer not in reviewer_set:
+            raise ValueError("Duplicate adjudication reviewer is not designated")
+        _review_date(adjudication.reviewed_on, label="Duplicate adjudication date")
+        _nonempty(adjudication.rationale, label="Duplicate adjudication rationale")
+        if (
+            adjudication.disposition == "same_trial"
+            and not adjudication.canonical_record_uid
+        ):
+            raise ValueError("Same-trial duplicate adjudication requires a canonical record")
+        if (
+            adjudication.disposition == "distinct_trials"
+            and adjudication.canonical_record_uid is not None
+        ):
+            raise ValueError("Distinct-trial adjudication cannot select a canonical record")
+        indexed[adjudication.duplicate_group_uid] = adjudication
+    return indexed
+
+
+def _initialize_duplicate_statuses(
+    records: list[dict[str, Any]],
+    *,
+    rules: DuplicateRuleSet | None,
+    adjudications: Iterable[DuplicateAdjudication],
+    designated_reviewers: Iterable[str],
+) -> None:
     for record in records:
         record["duplicate_relationships"] = ()
         record["duplicate_groups"] = ()
