@@ -89,7 +89,95 @@ def _canonical_value(value: object, data_type: str) -> object:
     return str(value)
 
 
-def factor_value(record: Mapping[str, Any], factor_name: str) -> object:
+def _reviewed_factor_value(
+    record: Mapping[str, Any],
+    factor_name: str,
+    representation: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> object:
+    if representation.get("factor_name") not in {None, factor_name}:
+        raise ValueError("Reviewed factor representation is bound to another factor")
+    source_fields = representation.get("source_fields")
+    if (
+        not isinstance(source_fields, (list, tuple))
+        or not source_fields
+        or any(not isinstance(field, str) or not field for field in source_fields)
+    ):
+        raise ValueError("Reviewed factor representation requires nonempty source fields")
+    if not set(source_fields).issubset(set(metadata["fields"])):
+        raise ValueError("Reviewed factor representation uses an unregistered source field")
+    leakage_exclusions = representation.get("leakage_exclusions", ())
+    if not isinstance(leakage_exclusions, (list, tuple)) or any(
+        not isinstance(field, str) or not field for field in leakage_exclusions
+    ):
+        raise ValueError("Reviewed factor representation leakage exclusions are malformed")
+    if set(source_fields) & set(leakage_exclusions):
+        raise ValueError("Reviewed factor source field is also a leakage exclusion")
+    representation_data_type = str(representation.get("data_type") or "")
+    canonical_data_type = _REPRESENTATION_DATA_TYPE_ALIASES.get(
+        representation_data_type,
+        representation_data_type,
+    )
+    if canonical_data_type != metadata["type"]:
+        raise ValueError("Reviewed factor representation data type conflicts with the catalog")
+    if representation.get("unit") != metadata.get("unit"):
+        raise ValueError("Reviewed factor representation unit conflicts with the catalog")
+    if representation.get("role") != metadata["role"]:
+        raise ValueError("Reviewed factor representation role conflicts with the catalog")
+    if representation.get("missingness_rule") != "no_imputation":
+        raise ValueError("Reviewed factor representation must use no_imputation")
+    if representation.get("learned_within_training_only") is not True:
+        raise ValueError(
+            "Reviewed factor representation must restrict learned transforms to training"
+        )
+
+    transformation = representation.get("transformation")
+    raw_values = [record.get(field) for field in source_fields]
+    if transformation in {"identity", "direct"}:
+        if len(raw_values) != 1:
+            raise ValueError("Direct factor representations require exactly one source field")
+        return _canonical_value(raw_values[0], str(metadata["type"]))
+    if transformation in {"fixed_category_map", "fixed_one_hot"}:
+        if len(raw_values) != 1:
+            raise ValueError("Fixed categorical representations require one source field")
+        category_map = representation.get("category_map")
+        if not isinstance(category_map, Mapping) or not category_map:
+            raise ValueError("Fixed categorical representation requires category_map")
+        raw_value = raw_values[0]
+        if raw_value is None:
+            return None
+        mapped = category_map.get(str(raw_value))
+        return None if mapped is None else _canonical_value(mapped, "categorical")
+    if transformation == "range_difference":
+        if len(raw_values) != 2:
+            raise ValueError("Range-difference representation requires two source fields")
+        minimum = finite_number(raw_values[0])
+        maximum = finite_number(raw_values[1])
+        return None if minimum is None or maximum is None else maximum - minimum
+    if transformation == "logical_not":
+        if len(raw_values) != 1 or raw_values[0] is None:
+            return None
+        return not bool(raw_values[0])
+    if transformation == "normalized_token":
+        if len(raw_values) != 1 or raw_values[0] is None:
+            return None
+        token = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            str(raw_values[0]).strip().casefold(),
+        ).strip("_")
+        return token or None
+    raise ValueError(
+        f"Reviewed factor representation uses unsupported transformation: {transformation!r}"
+    )
+
+
+def factor_value(
+    record: Mapping[str, Any],
+    factor_name: str,
+    *,
+    representation: Mapping[str, Any] | None = None,
+) -> object:
     """Return a mapped factor value without writing a normalized value into the record."""
 
     metadata = _FACTOR_METADATA.get(factor_name)
