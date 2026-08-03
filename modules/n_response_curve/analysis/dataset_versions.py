@@ -186,9 +186,38 @@ def _reason_codes(record: Mapping[str, Any]) -> set[str]:
     return {str(reason) for reason in raw}
 
 
-def _series_complete_recommendation_set(records: Sequence[Mapping[str, Any]]) -> set[str]:
-    required = {"zero_n_with_pk", "RCM", "FP", "NOPT_NPK"}
-    observed_by_series: dict[str, set[str]] = {}
+def _recommendation_member_class(record: Mapping[str, Any]) -> str | None:
+    treatment_class = str(record.get("treatment_text_class", ""))
+    if treatment_class in {"RCM", "FP", "NOPT_NPK"}:
+        return treatment_class
+    n_rate = finite_number(record.get("n_rate_kg_ha"))
+    if (
+        record.get("nutrient_control_class") == "zero_n_with_pk"
+        and record.get("is_zero_n_with_pk") is True
+        and n_rate is not None
+        and abs(n_rate) <= 1.0e-8
+    ):
+        return "zero_n_with_pk"
+    return None
+
+
+def _verified_recommendation_member(record: Mapping[str, Any]) -> bool:
+    return (
+        _eligible(record)
+        and record.get("treatment_classification_status") == "resolved"
+        and record.get("recommendation_set_membership_status")
+        == "verified_context_comparable"
+        and finite_number(record.get("n_rate_kg_ha")) is not None
+        and finite_number(record.get("yield_t_ha")) is not None
+    )
+
+
+def _recommendation_set_membership(
+    records: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, ...], tuple[DatasetMembershipDiagnostic, ...]]:
+    required = frozenset({"zero_n_with_pk", "RCM", "NOPT_NPK"})
+    optional = frozenset({"FP"})
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:
         if not _eligible(record):
             continue
