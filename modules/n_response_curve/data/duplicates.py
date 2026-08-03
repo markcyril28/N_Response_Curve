@@ -248,6 +248,7 @@ def _append_reason(record: dict[str, Any], reason: str) -> None:
 def _mark_unresolved(record: dict[str, Any], reason: str) -> None:
     record["response_series_uid"] = None
     record["series_status"] = "review"
+    record["analytical_record_status"] = "review"
     _append_reason(record, reason)
 
 
@@ -268,18 +269,29 @@ def _add_duplicate_group(
     evidence_codes: tuple[str, ...],
     review_status: str,
     canonical_record_uid: str | None,
+    rules_version: str,
+    adjudication: DuplicateAdjudication | None = None,
 ) -> None:
     groups = [dict(group) for group in record.get("duplicate_groups", ())]
-    groups.append(
-        {
-            "duplicate_group_uid": duplicate_group_uid,
-            "relationship": relationship,
-            "confidence": confidence,
-            "evidence_codes": tuple(evidence_codes),
-            "review_status": review_status,
-            "canonical_record_uid": canonical_record_uid,
-        }
-    )
+    group: dict[str, Any] = {
+        "duplicate_group_uid": duplicate_group_uid,
+        "relationship": relationship,
+        "confidence": confidence,
+        "evidence_codes": tuple(evidence_codes),
+        "review_status": review_status,
+        "canonical_record_uid": canonical_record_uid,
+        "rules_version": rules_version,
+    }
+    if adjudication is not None:
+        group.update(
+            {
+                "reviewer": adjudication.reviewer,
+                "reviewed_on": adjudication.reviewed_on,
+                "rationale": adjudication.rationale,
+                "disposition": adjudication.disposition,
+            }
+        )
+    groups.append(group)
     record["duplicate_groups"] = tuple(
         sorted(
             groups,
