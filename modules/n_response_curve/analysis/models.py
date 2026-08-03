@@ -225,7 +225,9 @@ def _observed_bounds(n_rates: np.ndarray) -> tuple[float, float]:
 
 
 def _minimum_distinct_levels(model_name: str) -> int:
-    return 3 if model_name == "linear" else 4
+    if model_name not in MODEL_ORDER:
+        raise ValueError(f"Unknown response model: {model_name}")
+    return _MINIMUM_FITTED_LEVEL_COUNT
 
 
 def _require_policy_number(policy: Mapping[str, Any], key: str) -> float:
