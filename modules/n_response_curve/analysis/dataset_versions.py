@@ -373,17 +373,23 @@ def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]])
         return _version(
             version_id,
             _uids(trimmed_groups),
+            authority_status="non_authoritative",
+            authority_reason_codes=(
+                "REVIEWED_HIGH_N_TRIMMING_DIAGNOSTIC_UNAVAILABLE",
+            ),
         )
     if version_id == "D09_complete_recommendation_set":
-        complete_series = _series_complete_recommendation_set(records)
+        member_uids, diagnostics = _recommendation_set_membership(records)
+        withheld = any(diagnostic.status == "withheld" for diagnostic in diagnostics)
         return _version(
             version_id,
-            (
-                _record_uid(record)
-                for rows in eligible.values()
-                if str(rows[0].get("response_series_uid") or "") in complete_series
-                for record in rows
+            member_uids,
+            reason_codes=(
+                ("INCOMPLETE_RECOMMENDATION_SETS_WITHHELD",)
+                if withheld
+                else ()
             ),
+            membership_diagnostics=diagnostics,
         )
     if version_id == "D10_factor_specific_complete_case":
         return _version(version_id, (), status="unavailable", reason_codes=("FACTOR_CONTEXT_REQUIRED",))
