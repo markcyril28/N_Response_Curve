@@ -1322,6 +1322,31 @@ def fit_candidate_model(
             observed_n_max_kg_ha=observed_max,
             residual_df=residual_df,
             parameters=parameter_map,
+            model_gate_policy_id=model_gate.policy_id,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
+        )
+    if (
+        not model_gate.allow_boundary_parameters
+        and _at_reviewed_parameter_boundary(parameters, model_gate)
+    ):
+        return _attempt(
+            response_series_uid=response_series_uid,
+            model_name=model_name,
+            identity_payload=identity_payload,
+            status="failed",
+            reason_codes=("PARAMETER_AT_DISALLOWED_REVIEWED_BOUNDARY",),
+            n_observations=n_observations,
+            distinct_n_level_count=distinct_levels,
+            observed_n_min_kg_ha=observed_min,
+            observed_n_max_kg_ha=observed_max,
+            residual_df=residual_df,
+            parameters=parameter_map,
+            model_gate_policy_id=model_gate.policy_id,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
         )
     rss = float(np.sum((predicted_observed - y) ** 2))
     optimum_summary = _optimum_summary(
@@ -1331,9 +1356,53 @@ def fit_candidate_model(
         observed_n_rates=x,
         observed_min=observed_min,
         observed_max=observed_max,
-        tolerance=tolerance,
+        optimum_boundary_tolerance_n_kg_ha=(
+            model_gate.optimum_boundary_tolerance_n_kg_ha
+        ),
+        flat_response_tolerance_t_ha=model_gate.flat_response_tolerance_t_ha,
         parameter_rank_full=_parameter_rank_is_full(model_name, x, parameters),
     )
+    if optimum_summary.curve_shape_class not in model_gate.reportable_shape_classes:
+        return _attempt(
+            response_series_uid=response_series_uid,
+            model_name=model_name,
+            identity_payload=identity_payload,
+            status="failed",
+            reason_codes=(
+                *optimum_summary.reason_codes,
+                "CURVE_SHAPE_OUTSIDE_REVIEWED_PLAUSIBILITY_POLICY",
+            ),
+            n_observations=n_observations,
+            distinct_n_level_count=distinct_levels,
+            observed_n_min_kg_ha=observed_min,
+            observed_n_max_kg_ha=observed_max,
+            residual_df=residual_df,
+            parameters=parameter_map,
+            curve_shape_class=optimum_summary.curve_shape_class,
+            optimum_status=optimum_summary.optimum_status,
+            model_gate_policy_id=model_gate.policy_id,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
+            predictions=predictions,
+        )
+    if uncertainty_status == "eligible_for_reviewed_method" and uncertainty_method:
+        (
+            predictions,
+            uncertainty_status,
+            executed_uncertainty_reasons,
+        ) = _reported_se_delta_intervals(
+            model_name,
+            parameter_map,
+            x,
+            tuple(observation_evidence or ()),
+            predictions,
+            method=uncertainty_method,
+        )
+        uncertainty_reasons = (
+            *uncertainty_reasons,
+            *executed_uncertainty_reasons,
+        )
     reasons = list(optimum_summary.reason_codes)
     aicc = _aicc(rss, n_observations, parameter_count)
     if aicc is None:
@@ -1345,16 +1414,17 @@ def fit_candidate_model(
         minimum_yield=minimum_yield,
         maximum_yield=maximum_yield,
         minimum_residual_df=minimum_residual_df,
-        tolerance=tolerance,
+        tolerance=model_gate.optimizer_tolerance,
+        gate=model_gate,
     )
     if grouped_prediction_rmse is None:
         reasons.append("GROUPED_PREDICTION_UNAVAILABLE")
-    if policy.get("allow_uncertainty") is not True:
-        reasons.append("UNCERTAINTY_DISABLED_BY_CONFIG")
+    reasons.extend(uncertainty_reasons)
     return _attempt(
         response_series_uid=response_series_uid,
         model_name=model_name,
         identity_payload=identity_payload,
+        model_gate_policy_id=model_gate.policy_id,
         status="fitted",
         reason_codes=reasons,
         n_observations=n_observations,
@@ -1378,6 +1448,9 @@ def fit_candidate_model(
         supported_max_yield_t_ha=optimum_summary.supported_max_yield_t_ha,
         maximum_reference_basis=optimum_summary.maximum_reference_basis,
         maximum_proximity_status=optimum_summary.maximum_proximity_status,
+        uncertainty_status=uncertainty_status,
+        uncertainty_method=uncertainty_method,
+        uncertainty_evidence_basis=uncertainty_basis,
         predictions=predictions,
     )
 
@@ -1406,6 +1479,21 @@ def fit_response_models(
         record_uids = [str(row.get("record_uid", "")) for row in rows]
         n_rates = [row.get("n_rate_kg_ha") for row in rows]
         yields = [row.get("yield_t_ha") for row in rows]
+        observation_evidence = [
+            {
+                key: row.get(key)
+                for key in (
+                    "experimental_unit_status",
+                    "mean_independence_review_id",
+                    "mean_independence_status",
+                    "replicate_count",
+                    "replication_status",
+                    "yield_se_status",
+                    "yield_se_t_ha",
+                )
+            }
+            for row in rows
+        ]
         for model_name in selected_models:
             attempts.append(
                 fit_candidate_model(
@@ -1413,6 +1501,7 @@ def fit_response_models(
                     n_rates,
                     yields,
                     record_uids=record_uids,
+                    observation_evidence=observation_evidence,
                     model_name=model_name,
                     policy=policy,
                 )
@@ -1467,6 +1556,7 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "model_name": attempt.model_name,
         "input_snapshot_sha256": attempt.input_snapshot_sha256,
         "model_policy_sha256": attempt.model_policy_sha256,
+        "model_gate_policy_id": attempt.model_gate_policy_id,
         "status": attempt.status,
         "reason_codes": list(attempt.reason_codes),
         "n_observations": attempt.n_observations,
@@ -1490,6 +1580,9 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "supported_max_yield_t_ha": attempt.supported_max_yield_t_ha,
         "maximum_reference_basis": attempt.maximum_reference_basis,
         "maximum_proximity_status": attempt.maximum_proximity_status,
+        "uncertainty_status": attempt.uncertainty_status,
+        "uncertainty_method": attempt.uncertainty_method,
+        "uncertainty_evidence_basis": list(attempt.uncertainty_evidence_basis),
         "predictions": [dict(row) for row in attempt.predictions],
     }
 
