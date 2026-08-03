@@ -183,6 +183,13 @@ def factor_value(
     metadata = _FACTOR_METADATA.get(factor_name)
     if metadata is None:
         raise ValueError(f"Unknown explanatory factor: {factor_name}")
+    if representation is not None:
+        return _reviewed_factor_value(
+            record,
+            factor_name,
+            representation,
+            metadata,
+        )
     if factor_name == "observed_n_range":
         minimum = finite_number(record.get("series_observed_n_min_kg_ha"))
         maximum = finite_number(record.get("series_observed_n_max_kg_ha"))
