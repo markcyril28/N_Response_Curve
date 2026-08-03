@@ -17,12 +17,86 @@ from .schema import (
     canonical_unit,
     classify_experiment_priority,
     classify_missing,
+    classify_raw_state,
     classify_treatment,
     normalize_category,
+    normalize_category_with_evidence,
     normalize_country_code,
     normalize_yield,
     parse_numeric,
+    sensitive_path_alias,
+    validate_reviewed_lookup_table,
 )
+
+
+_COLUMN_ROLES = frozenset(
+    {"canonical", "descriptive", "held", "restricted", "source_metadata", "blank"}
+)
+REQUIRED_REVIEWED_LOOKUP_FIELDS = (
+    "water_regime",
+    "season",
+    "treatment_class",
+)
+_KNOWN_TREATMENT_LOOKUP_CLASSES = frozenset(
+    {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK", "other", "unresolved"}
+)
+_REQUIRED_TREATMENT_LOOKUP_CLASSES = frozenset(
+    {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK"}
+)
+
+
+@dataclass(frozen=True)
+class PhysicalColumnDisposition:
+    """Reviewed analytical role for one physical source column."""
+
+    position: int
+    role: str
+    canonical_field: str | None = None
+    variable_family: str | None = None
+
+
+@dataclass(frozen=True)
+class SourceArmMap:
+    """One reviewed long-form arm expanded from a physical parent row."""
+
+    arm_id: str
+    role: str
+    field_positions: Mapping[str, int]
+    constants: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class ReviewedSourceMap:
+    """Versioned, source-bound physical mapping and full column disposition."""
+
+    source_name: str
+    map_version: str
+    review_id: str
+    source_sha256: str
+    encoding: str
+    workbook_csv_basis: str
+    fields: Mapping[str, int]
+    expected_headers: Mapping[int, str]
+    dispositions: tuple[PhysicalColumnDisposition, ...]
+    fill_down_headers: tuple[str, ...] = ()
+    arms: tuple[SourceArmMap, ...] = ()
+    normalization_map_version: str | None = None
+    normalization_review_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RestrictedDataPolicy:
+    """Controls required before producing a public projection of restricted rows."""
+
+    pseudonym_salt: bytes
+    identifier_fields: tuple[str, ...]
+    precise_location_fields: tuple[str, ...]
+    detailed_location_fields: tuple[str, ...]
+    approved_geography_fields: tuple[str, ...]
+    public_release_fields: tuple[str, ...]
+    access_review_id: str
+    automated_disclosure_review_id: str
+    human_disclosure_review_id: str
 
 
 @dataclass(frozen=True)
@@ -30,11 +104,19 @@ class CurationResult:
     """Traceable canonical records constructed without changing raw source rows."""
 
     records: tuple[dict[str, Any], ...]
+    parent_row_uids: tuple[str, ...] = ()
 
 
 def _stable_uid(*parts: object) -> str:
     encoded = "\x00".join(str(part) for part in parts).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+def _controlled_pseudonym(value: str, *, salt: bytes) -> str:
+    if len(salt) < 16:
+        raise ValueError("Restricted-data pseudonym salt must contain at least 16 bytes")
+    digest = hmac.new(salt, value.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+    return f"subject_{digest}"
+
 
 
 def _header_positions(source: IngestedSource, header: str) -> tuple[int, ...]:
