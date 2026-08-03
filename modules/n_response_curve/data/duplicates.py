@@ -456,10 +456,10 @@ def _initialize_duplicate_statuses(
 
     exact_groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
     for record in records:
-        raw_cells = tuple(str(value) for value in record.get("raw_cells", ()))
-        signature = (str(record.get("source_uid", "")), raw_cells)
-        by_exact_signature.setdefault(signature, []).append(record)
-    for duplicates in by_exact_signature.values():
+        signature = _exact_signature(record, rules)
+        if signature is not None:
+            exact_groups.setdefault(signature, []).append(record)
+    for signature, duplicates in exact_groups.items():
         ordered = sorted(duplicates, key=_record_sort_key)
         if len(ordered) == 1:
             continue
