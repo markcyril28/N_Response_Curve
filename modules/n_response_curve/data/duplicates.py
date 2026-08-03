@@ -443,8 +443,18 @@ def _initialize_duplicate_statuses(
         record["duplicate_groups"] = ()
         record["duplicate_status"] = "not_assessed" if rules is None else "unique"
         record["duplicate_of_record_uid"] = None
+        record["duplicate_rules_version"] = rules.version if rules else None
 
-    by_exact_signature: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
+    if rules is None:
+        return
+    _validate_duplicate_rules(rules)
+    reviewed = _validated_adjudications(
+        adjudications,
+        rules_version=rules.version,
+        designated_reviewers=designated_reviewers,
+    )
+
+    exact_groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
     for record in records:
         raw_cells = tuple(str(value) for value in record.get("raw_cells", ()))
         signature = (str(record.get("source_uid", "")), raw_cells)
