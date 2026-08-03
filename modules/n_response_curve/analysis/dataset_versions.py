@@ -224,16 +224,90 @@ def _recommendation_set_membership(
         series_uid = record.get("response_series_uid")
         if not isinstance(series_uid, str) or not series_uid:
             continue
-        observed = observed_by_series.setdefault(series_uid, set())
-        treatment_class = str(record.get("treatment_text_class", ""))
-        if treatment_class in {"RCM", "FP", "NOPT_NPK"}:
-            observed.add(treatment_class)
-        if (
-            record.get("nutrient_control_class") == "zero_n_with_pk"
-            or record.get("is_zero_n_with_pk") is True
-        ):
-            observed.add("zero_n_with_pk")
-    return {series_uid for series_uid, observed in observed_by_series.items() if required.issubset(observed)}
+        comparison_set_uid = record.get("comparison_set_uid")
+        group_uid = (
+            str(comparison_set_uid)
+            if isinstance(comparison_set_uid, str) and comparison_set_uid
+            else series_uid
+        )
+        grouped.setdefault(group_uid, []).append(record)
+    included_uids: list[str] = []
+    diagnostics: list[DatasetMembershipDiagnostic] = []
+    for group_uid in sorted(grouped):
+        rows = grouped[group_uid]
+        response_series_uids = tuple(
+            sorted(
+                {
+                    str(row.get("response_series_uid") or "")
+                    for row in rows
+                    if str(row.get("response_series_uid") or "")
+                }
+            )
+        )
+        comparison_set_uids = {
+            str(row.get("comparison_set_uid") or "")
+            for row in rows
+            if str(row.get("comparison_set_uid") or "")
+        }
+        comparison_set_uid = (
+            next(iter(comparison_set_uids))
+            if len(comparison_set_uids) == 1
+            else None
+        )
+        observed = {
+            member_class
+            for row in rows
+            if (member_class := _recommendation_member_class(row)) is not None
+        }
+        verified = {
+            member_class
+            for row in rows
+            if (member_class := _recommendation_member_class(row)) is not None
+            and _verified_recommendation_member(row)
+        }
+        missing = required - observed
+        ineligible_required = (required & observed) - verified
+        ineligible_optional = (optional & observed) - verified
+        complete = not missing and not ineligible_required
+        reasons: set[str] = set()
+        reasons.update(f"MISSING_REQUIRED_CLASS:{value}" for value in missing)
+        reasons.update(
+            f"INELIGIBLE_REQUIRED_CLASS:{value}" for value in ineligible_required
+        )
+        reasons.update(
+            f"INELIGIBLE_OPTIONAL_CLASS:{value}" for value in ineligible_optional
+        )
+        if complete:
+            reasons.add("COMPLETE_VERIFIED_RECOMMENDATION_SET")
+            included_uids.extend(
+                _record_uid(row)
+                for row in rows
+                if (member_class := _recommendation_member_class(row)) is not None
+                and member_class in required | optional
+                and _verified_recommendation_member(row)
+            )
+        else:
+            reasons.add("INCOMPLETE_RECOMMENDATION_SET_WITHHELD")
+        diagnostics.append(
+            DatasetMembershipDiagnostic(
+                response_series_uid=(
+                    response_series_uids[0]
+                    if len(response_series_uids) == 1
+                    else f"comparison:{group_uid}"
+                ),
+                status="included" if complete else "withheld",
+                required_classes=tuple(sorted(required)),
+                verified_classes=tuple(sorted(verified)),
+                missing_classes=tuple(sorted(missing)),
+                ineligible_required_classes=tuple(sorted(ineligible_required)),
+                ineligible_optional_classes=tuple(sorted(ineligible_optional)),
+                optional_classes_present=tuple(sorted(optional & observed)),
+                reason_codes=tuple(sorted(reasons)),
+                comparison_set_uid=comparison_set_uid,
+                response_series_uids=response_series_uids,
+            )
+        )
+    return tuple(included_uids), tuple(diagnostics)
 
 
 def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]]) -> DatasetVersion:
