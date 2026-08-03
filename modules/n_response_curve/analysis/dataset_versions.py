@@ -219,8 +219,6 @@ def _recommendation_set_membership(
     optional = frozenset({"FP"})
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:
-        if not _eligible(record):
-            continue
         series_uid = record.get("response_series_uid")
         if not isinstance(series_uid, str) or not series_uid:
             continue
