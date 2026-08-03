@@ -477,47 +477,182 @@ def _initialize_duplicate_statuses(
             evidence_codes=tuple(f"EXACT_KEY:{field}" for field in rules.exact_key_fields),
             review_status="auto_classified",
             canonical_record_uid=str(canonical["record_uid"]),
+            rules_version=rules.version,
         )
         for duplicate in ordered[1:]:
             _add_duplicate_relationship(duplicate, "exact_duplicate_noncanonical")
+            duplicate["duplicate_of_record_uid"] = canonical["record_uid"]
+            duplicate["analytical_record_status"] = "duplicate_noncanonical"
             duplicate["duplicate_of_record_uid"] = canonical["record_uid"]
             _add_duplicate_group(
                 duplicate,
                 duplicate_group_uid=group_uid,
                 relationship="exact_duplicate_noncanonical",
                 confidence="exact",
-                evidence_codes=("SAME_SOURCE_UID", "IDENTICAL_RAW_CELLS"),
+                evidence_codes=tuple(
+                    f"EXACT_KEY:{field}" for field in rules.exact_key_fields
+                ),
                 review_status="auto_classified",
                 canonical_record_uid=str(canonical["record_uid"]),
+                rules_version=rules.version,
             )
 
-    by_probable_signature: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-    for record in records:
-        signature = _probable_cross_source_signature(record)
-        if signature is not None:
-            by_probable_signature.setdefault(signature, []).append(record)
-    for candidates in by_probable_signature.values():
-        source_uids = {str(record.get("source_uid", "")) for record in candidates}
-        if len(source_uids) < 2:
-            continue
-        signature = _probable_cross_source_signature(candidates[0])
-        if signature is None:
-            continue
-        group_uid = _stable_identifier("duplicate", ("probable_cross_source", *signature))
+    for candidates in _connected_components(records, rules):
+        ordered_uids = tuple(
+            sorted(str(record["record_uid"]) for record in candidates)
+        )
+        group_uid = _stable_identifier(
+            "duplicate",
+            ("probable", rules.version, *ordered_uids),
+        )
+        adjudication = reviewed.get(group_uid)
+        canonical_uid: str | None = None
+        review_status = "review_required"
+        if adjudication is not None:
+            if adjudication.canonical_record_uid not in set(ordered_uids) and (
+                adjudication.canonical_record_uid is not None
+            ):
+                raise ValueError(
+                    "Duplicate adjudication canonical record is outside its candidate group"
+                )
+            canonical_uid = adjudication.canonical_record_uid
+            review_status = "adjudicated"
         for record in candidates:
-            _add_duplicate_relationship(record, "probable_cross_source_duplicate")
+            record_uid = str(record["record_uid"])
+            if adjudication is None or adjudication.disposition == "distinct_trials":
+                relationship = "probable_duplicate_review"
+            elif record_uid == canonical_uid:
+                relationship = "probable_duplicate_canonical"
+            else:
+                relationship = "probable_duplicate_noncanonical"
+                record["duplicate_of_record_uid"] = canonical_uid
+                record["analytical_record_status"] = "duplicate_noncanonical"
+            _add_duplicate_relationship(record, relationship)
             _add_duplicate_group(
                 record,
                 duplicate_group_uid=group_uid,
-                relationship="probable_cross_source_duplicate",
+                relationship=relationship,
                 confidence="probable",
-                evidence_codes=(
-                    "CROSS_SOURCE_MATCH",
-                    "MATCHING_STUDY_TRIAL_N_TREATMENT_SIGNATURE",
+                evidence_codes=tuple(
+                    (
+                        f"PROBABLE_KEY:{field}:TOLERANCE="
+                        f"{rules.probable_numeric_tolerances[field]}"
+                    )
+                    if field in rules.probable_numeric_tolerances
+                    else f"PROBABLE_KEY:{field}"
+                    for field in rules.probable_key_fields
                 ),
-                review_status="review_required",
-                canonical_record_uid=None,
+                review_status=review_status,
+                canonical_record_uid=canonical_uid,
+                rules_version=rules.version,
+                adjudication=adjudication,
             )
+
+    unknown_adjudications = set(reviewed) - {
+        str(group["duplicate_group_uid"])
+        for record in records
+        for group in record["duplicate_groups"]
+    }
+    if unknown_adjudications:
+        raise ValueError(
+            "Duplicate adjudication references unknown candidate group(s): "
+            + ", ".join(sorted(unknown_adjudications))
+        )
+
+
+def _validated_repeat_adjudications(
+    adjudications: Iterable[RepeatAdjudication],
+    *,
+    designated_reviewers: Iterable[str],
+) -> dict[tuple[str, ...], RepeatAdjudication]:
+    reviewer_set = {
+        str(reviewer).strip()
+        for reviewer in designated_reviewers
+        if str(reviewer).strip()
+    }
+    indexed: dict[tuple[str, ...], RepeatAdjudication] = {}
+    for adjudication in adjudications:
+        record_uids = tuple(sorted(adjudication.record_uids))
+        if len(record_uids) < 2 or len(record_uids) != len(set(record_uids)):
+            raise ValueError("Repeat adjudication must identify at least two unique records")
+        if record_uids in indexed:
+            raise ValueError("Repeated-observation group has more than one adjudication")
+        if adjudication.classification not in _REPEAT_CLASSIFICATIONS:
+            raise ValueError("Repeat adjudication classification is invalid")
+        if adjudication.reviewer not in reviewer_set:
+            raise ValueError("Repeat adjudication reviewer is not designated")
+        _review_date(adjudication.reviewed_on, label="Repeat adjudication date")
+        _nonempty(adjudication.rationale, label="Repeat adjudication rationale")
+        _nonempty(adjudication.review_id, label="Repeat adjudication review evidence")
+        indexed[record_uids] = adjudication
+    return indexed
+
+
+def _repeat_aggregate(
+    records: list[dict[str, Any]],
+    *,
+    series_uid: str,
+    comparison_set_uid: str,
+    adjudication: RepeatAdjudication,
+) -> dict[str, Any]:
+    yields = [record.get("yield_t_ha") for record in records]
+    if any(
+        record.get("yield_parse_status") != "parsed"
+        or isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        for record, value in zip(records, yields, strict=True)
+    ):
+        raise ValueError("Exchangeable replicate aggregation requires complete parsed yields")
+    numeric_yields = [float(value) for value in yields]
+    ordered_uids = tuple(sorted(str(record["record_uid"]) for record in records))
+    aggregate = {
+        key: value
+        for key, value in records[0].items()
+        if key
+        not in {
+            "raw_cells",
+            "raw_headers",
+            "raw_column_ids",
+            "source_row_number",
+            "source_physical_line_start",
+            "source_physical_line_end",
+        }
+    }
+    aggregate_uid = _stable_identifier(
+        "aggregate",
+        ("exchangeable-replicates", series_uid, *ordered_uids),
+    )
+    aggregate.update(
+        {
+            "record_uid": aggregate_uid,
+            "record_kind": "exchangeable_replicate_aggregate",
+            "source_record_uids": ordered_uids,
+            "replicate_count": len(records),
+            "yield_t_ha": statistics.fmean(numeric_yields),
+            "yield_sd_t_ha": (
+                statistics.stdev(numeric_yields) if len(numeric_yields) > 1 else None
+            ),
+            "yield_se_t_ha": (
+                statistics.stdev(numeric_yields) / math.sqrt(len(numeric_yields))
+                if len(numeric_yields) > 1
+                else None
+            ),
+            "yield_parse_status": "parsed",
+            "response_series_uid": series_uid,
+            "comparison_set_uid": comparison_set_uid,
+            "series_status": "resolved",
+            "same_n_status": "exchangeable_replicate_aggregate",
+            "analytical_record_status": "included",
+            "repeat_review_id": adjudication.review_id,
+            "repeat_reviewer": adjudication.reviewer,
+            "repeat_reviewed_on": adjudication.reviewed_on,
+            "yield_se_status": "verified",
+            "replication_status": "verified",
+            "experimental_unit_status": "verified",
+            "uncertainty_evidence_review_id": adjudication.review_id,
+        }
+    )
+    return aggregate
 
 
 def resolve_response_series(
@@ -526,8 +661,12 @@ def resolve_response_series(
     context_dimensions: tuple[str, ...] | list[str] | None = None,
     series_identity_dimensions: tuple[str, ...] | list[str] | None = None,
     n_level_tolerance_kg_ha: float = 1e-8,
+    duplicate_rules: DuplicateRuleSet | None = None,
+    duplicate_adjudications: Iterable[DuplicateAdjudication] = (),
+    repeat_adjudications: Iterable[RepeatAdjudication] = (),
+    designated_reviewers: Iterable[str] = (),
 ) -> SeriesResolution:
-    """Split only resolved contexts and route ambiguous/duplicate candidates to review."""
+    """Resolve only reviewed contexts, duplicates, and repeated observations."""
 
     ledger = [dict(record) for record in records]
     record_uids = [str(record.get("record_uid", "")) for record in ledger]
@@ -549,13 +688,29 @@ def resolve_response_series(
 
     for record in ledger:
         record["response_series_uid"] = None
+        record["comparison_set_uid"] = record.get("comparison_set_uid")
         record["series_status"] = "review"
         record["series_reason_codes"] = ()
         record["same_n_status"] = "not_assessed"
-    _initialize_duplicate_statuses(ledger)
+        record["repeat_group_uid"] = None
+        record["analytical_record_status"] = "included"
+    _initialize_duplicate_statuses(
+        ledger,
+        rules=duplicate_rules,
+        adjudications=duplicate_adjudications,
+        designated_reviewers=designated_reviewers,
+    )
+    reviewed_repeats = _validated_repeat_adjudications(
+        repeat_adjudications,
+        designated_reviewers=designated_reviewers,
+    )
 
     candidate_groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
+    comparison_keys: dict[tuple[object, ...], tuple[object, ...]] = {}
     for record in ledger:
+        if duplicate_rules is None:
+            _mark_unresolved(record, "DUPLICATE_RULES_NOT_SUPPLIED")
+            continue
         duplicate_relationships = set(record["duplicate_relationships"])
         if "exact_duplicate_noncanonical" in duplicate_relationships:
             _mark_unresolved(record, "EXACT_DUPLICATE_NONCANONICAL")
@@ -563,8 +718,17 @@ def resolve_response_series(
             _mark_unresolved(record, "PROBABLE_CROSS_SOURCE_DUPLICATE")
         if {
             "exact_duplicate_noncanonical",
-            "probable_cross_source_duplicate",
+            "probable_duplicate_noncanonical",
         }.intersection(duplicate_relationships):
+            _mark_unresolved(record, "DUPLICATE_NONCANONICAL")
+            record["analytical_record_status"] = "duplicate_noncanonical"
+            continue
+        if "probable_duplicate_review" in duplicate_relationships and any(
+            group["review_status"] == "review_required"
+            for group in record["duplicate_groups"]
+            if group["relationship"] == "probable_duplicate_review"
+        ):
+            _mark_unresolved(record, "PROBABLE_DUPLICATE_REVIEW_REQUIRED")
             continue
         study_id = str(record.get("study_id", "")).strip()
         trial_id = str(record.get("trial_id", "")).strip()
@@ -586,41 +750,133 @@ def resolve_response_series(
                 context_values.append(value)
         if missing_context:
             continue
-        key = (
+        comparison_key = (
             str(record.get("source_uid", "")),
             study_id,
             trial_id,
             str(record.get("scope_country_code") or "unresolved"),
             *context_values,
         )
+        key = (
+            *comparison_key,
+            *_reviewed_series_arm_discriminator(record),
+        )
+        comparison_keys[key] = comparison_key
         candidate_groups.setdefault(key, []).append(record)
 
-    for key, group in sorted(candidate_groups.items(), key=lambda item: tuple(map(str, item[0]))):
+    aggregates: list[dict[str, Any]] = []
+    used_repeat_adjudications: set[tuple[str, ...]] = set()
+    for key, group in sorted(
+        candidate_groups.items(),
+        key=lambda item: tuple(map(str, item[0])),
+    ):
         n_groups: list[tuple[float, list[dict[str, Any]]]] = []
         parsed_n_rows: list[tuple[float, dict[str, Any]]] = []
         for record in group:
             n_rate = record.get("n_rate_kg_ha")
-            if record.get("n_rate_parse_status") == "parsed" and isinstance(n_rate, (int, float)):
+            if (
+                record.get("n_rate_parse_status") == "parsed"
+                and isinstance(n_rate, (int, float))
+                and not isinstance(n_rate, bool)
+            ):
                 parsed_n_rows.append((float(n_rate), record))
-        for n_rate, record in sorted(parsed_n_rows, key=lambda item: (item[0], _record_sort_key(item[1]))):
+        for n_rate, record in sorted(
+            parsed_n_rows,
+            key=lambda item: (item[0], _record_sort_key(item[1])),
+        ):
             if not n_groups or abs(n_rate - n_groups[-1][0]) > n_level_tolerance_kg_ha:
                 n_groups.append((n_rate, [record]))
             else:
                 n_groups[-1][1].append(record)
-        same_n_count = {
-            str(record["record_uid"]): len(rows_at_level)
+
+        series_uid = _stable_identifier("series", key)
+        reviewed_comparison_uids = {
+            _reviewed_comparison_set_uid(record)
+            for record in group
+            if _reviewed_comparison_set_uid(record)
+        }
+        if len(reviewed_comparison_uids) > 1:
+            for record in group:
+                _mark_unresolved(record, "MIXED_COMPARISON_SET_UID")
+            continue
+        comparison_set_uid = (
+            next(iter(reviewed_comparison_uids))
+            if reviewed_comparison_uids
+            else _stable_identifier("comparison-set", comparison_keys[key])
+        )
+        group_review_reasons: set[str] = set()
+        approved_repeat_groups: list[
+            tuple[list[dict[str, Any]], RepeatAdjudication]
+        ] = []
+        same_n_members = {
+            str(record["record_uid"]): rows_at_level
             for _, rows_at_level in n_groups
+            if len(rows_at_level) > 1
             for record in rows_at_level
         }
-        has_management_conflict = any(
-            len({ _management_signature(record) for record in same_n_records }) > 1
-            for _, same_n_records in n_groups
-            if len(same_n_records) > 1
-        )
-        if has_management_conflict:
+        for _, same_n_records in n_groups:
+            if len(same_n_records) == 1:
+                same_n_records[0]["same_n_status"] = "unique_n_level"
+                continue
+            ordered_uids = tuple(
+                sorted(str(record["record_uid"]) for record in same_n_records)
+            )
+            repeat_group_uid = _stable_identifier(
+                "repeat",
+                (series_uid, *ordered_uids),
+            )
+            adjudication = reviewed_repeats.get(ordered_uids)
+            for record in same_n_records:
+                record["repeat_group_uid"] = repeat_group_uid
+            same_parent = len(
+                {
+                    str(record.get("parent_row_uid") or record["record_uid"])
+                    for record in same_n_records
+                }
+            ) < len(same_n_records)
+            different_management = len(
+                {_management_signature(record) for record in same_n_records}
+            ) > 1
+            if same_parent:
+                status = "linked_arms_same_n"
+                reason = "LINKED_ARMS_ARE_NOT_REPLICATES"
+            elif adjudication is None:
+                status = "repeat_review_required"
+                reason = "REPEAT_CLASSIFICATION_REQUIRED"
+            elif adjudication.classification == "exchangeable_replicates":
+                if different_management:
+                    raise ValueError(
+                        "Exchangeable replicate adjudication spans different management"
+                    )
+                status = "confirmed_exchangeable_replicate"
+                reason = ""
+                approved_repeat_groups.append((same_n_records, adjudication))
+                used_repeat_adjudications.add(ordered_uids)
+            elif adjudication.classification == "management_variant":
+                status = "different_management_same_n"
+                reason = "MANAGEMENT_VARIANT_REQUIRES_SERIES_SPLIT"
+                used_repeat_adjudications.add(ordered_uids)
+            elif adjudication.classification == "duplicate":
+                status = "repeat_classified_duplicate"
+                reason = "REPEAT_DUPLICATE_REQUIRES_CANONICAL_LINK"
+                used_repeat_adjudications.add(ordered_uids)
+            else:
+                status = "unequal_experimental_units"
+                reason = "UNEQUAL_EXPERIMENTAL_UNITS_NOT_AGGREGATED"
+                used_repeat_adjudications.add(ordered_uids)
+            for record in same_n_records:
+                record["same_n_status"] = status
+                if adjudication is not None:
+                    record["repeat_review_id"] = adjudication.review_id
+                    record["repeat_reviewer"] = adjudication.reviewer
+                    record["repeat_reviewed_on"] = adjudication.reviewed_on
+            if reason:
+                group_review_reasons.add(reason)
+
+        if group_review_reasons:
             for record in group:
-                record["same_n_status"] = "different_management_same_n"
-                _mark_unresolved(record, "MANAGEMENT_CONFLICT_AT_N_LEVEL")
+                for reason in sorted(group_review_reasons):
+                    _mark_unresolved(record, reason)
             continue
 
         series_uid = _stable_identifier("series", key)
@@ -628,10 +884,41 @@ def resolve_response_series(
             count_at_level = same_n_count.get(str(record["record_uid"]), 0)
             record["same_n_status"] = "repeated_measurement" if count_at_level > 1 else "unique_n_level"
             record["response_series_uid"] = series_uid
+            record["comparison_set_uid"] = comparison_set_uid
             record["series_status"] = "resolved"
             record["series_reason_codes"] = ()
+            if str(record["record_uid"]) in same_n_members:
+                record["analytical_record_status"] = "replaced_by_repeat_aggregate"
+            elif record.get("analytical_record_status") == "included":
+                record["analytical_record_status"] = "included"
+        for repeat_records, adjudication in approved_repeat_groups:
+            aggregates.append(
+                _repeat_aggregate(
+                    repeat_records,
+                    series_uid=series_uid,
+                    comparison_set_uid=comparison_set_uid,
+                    adjudication=adjudication,
+                )
+            )
 
-    return SeriesResolution(records=tuple(ledger))
+    unknown_repeat_adjudications = set(reviewed_repeats) - used_repeat_adjudications
+    if unknown_repeat_adjudications:
+        raise ValueError(
+            "Repeat adjudication references records that do not form one same-N group"
+        )
+    aggregate_uids = [str(record["record_uid"]) for record in aggregates]
+    if len(aggregate_uids) != len(set(aggregate_uids)):
+        raise ValueError("Repeat aggregate identifiers must be unique")
+    return SeriesResolution(
+        records=tuple(ledger),
+        aggregate_records=tuple(aggregates),
+    )
 
 
-__all__ = ["SeriesResolution", "resolve_response_series"]
+__all__ = [
+    "DuplicateAdjudication",
+    "DuplicateRuleSet",
+    "RepeatAdjudication",
+    "SeriesResolution",
+    "resolve_response_series",
+]
