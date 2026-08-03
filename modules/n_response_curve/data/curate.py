@@ -12,6 +12,7 @@ from .ingest import IngestedSource, IngestionResult, RawRow
 from .schema import (
     CANONICAL_N_RATE_UNIT,
     CANONICAL_YIELD_UNIT,
+    ReviewedLookupTable,
     canonicalize_irri,
     canonical_unit,
     classify_experiment_priority,
