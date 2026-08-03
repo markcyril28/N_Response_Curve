@@ -126,7 +126,574 @@ def _record_reason_codes(record: Mapping[str, Any]) -> set[str]:
 
 def _series_fit_exclusion_reasons(
     rows: Sequence[Mapping[str, Any]],
-    selected: ModelAttempt,
+) -> tuple[str, ...]:
+    reasons = {reason for row in rows for reason in _record_reason_codes(row)}
+    exclusions: set[str] = set()
+    if reasons.intersection(_P_K_FIT_BLOCK_REASONS):
+        exclusions.add("NUTRIENT_CONSTANCY_NOT_VERIFIED_FOR_FITTING")
+    if reasons.intersection(_ORGANIC_FIT_BLOCK_REASONS):
+        exclusions.add("ORGANIC_OR_BIOFERTILIZER_FITTING_NOT_APPROVED")
+    p_statuses = {
+        row.get("series_p_constant")
+        for row in rows
+        if "series_p_constant" in row
+    }
+    k_statuses = {
+        row.get("series_k_constant")
+        for row in rows
+        if "series_k_constant" in row
+    }
+    if p_statuses and p_statuses != {True}:
+        exclusions.add("NUTRIENT_CONSTANCY_NOT_VERIFIED_FOR_FITTING")
+    if k_statuses and k_statuses != {True}:
+        exclusions.add("NUTRIENT_CONSTANCY_NOT_VERIFIED_FOR_FITTING")
+    if any(
+        bool(row.get("organic_fertilizer_present"))
+        or bool(row.get("biofertilizer_present"))
+        or bool(row.get("series_organic_or_biofertilizer_present"))
+        for row in rows
+    ):
+        exclusions.add("ORGANIC_OR_BIOFERTILIZER_FITTING_NOT_APPROVED")
+    return tuple(sorted(exclusions))
+
+
+def _row_fit_exclusion_reasons(
+    record: Mapping[str, Any],
+    *,
+    primary_only: bool,
+) -> tuple[str, ...]:
+    reasons: set[str] = set()
+    series_uid = record.get("response_series_uid")
+    if (
+        record.get("series_status") != "resolved"
+        or not isinstance(series_uid, str)
+        or not series_uid
+    ):
+        reasons.add("RESPONSE_SERIES_NOT_RESOLVED")
+    tier = record.get("series_eligibility_tier") or record.get("eligibility_tier")
+    if tier not in {"A", "B"}:
+        reasons.add("RESPONSE_SERIES_NOT_FIT_ELIGIBLE")
+    if primary_only and tier != "A":
+        reasons.add("RESPONSE_SERIES_OUTSIDE_PRIMARY_FIT_TIER")
+    role = record.get("treatment_fit_role")
+    if role != "curve_candidate":
+        reasons.add(
+            "COMPARISON_TREATMENT_EXCLUDED_FROM_FIT"
+            if role == "comparison_only"
+            else "TREATMENT_FIT_ROLE_NOT_VERIFIED"
+        )
+    treatment_class = str(record.get("treatment_text_class") or "")
+    if treatment_class == "FP":
+        reasons.add("FARMER_PRACTICE_COMPARISON_EXCLUDED_FROM_FIT")
+    if treatment_class == "unresolved":
+        reasons.add("TREATMENT_CLASS_UNRESOLVED")
+    if record.get("nutrient_control_class") == "absolute_control":
+        reasons.add("ABSOLUTE_CONTROL_RESERVED_FOR_SEPARATE_BASELINE")
+    treatment_review_status = record.get(
+        "treatment_classification_status",
+        record.get("treatment_class_review_status"),
+    )
+    if treatment_review_status in {"pending", "review_required", "unresolved"}:
+        reasons.add("TREATMENT_CLASS_REVIEW_REQUIRED")
+    return tuple(sorted(reasons))
+
+
+def _fit_exclusions(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    primary_only: bool,
+) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in records:
+        series_uid = record.get("response_series_uid")
+        if isinstance(series_uid, str) and series_uid:
+            grouped.setdefault(series_uid, []).append(record)
+    exclusions: dict[str, tuple[str, ...]] = {}
+    series_reasons_by_uid = {
+        series_uid: set(_series_fit_exclusion_reasons(rows))
+        for series_uid, rows in grouped.items()
+    }
+    for record in records:
+        record_uid = str(record.get("record_uid") or "")
+        if not record_uid:
+            continue
+        series_uid = record.get("response_series_uid")
+        series_reasons = (
+            series_reasons_by_uid.get(series_uid, set())
+            if isinstance(series_uid, str)
+            else set()
+        )
+        reasons = series_reasons | set(
+            _row_fit_exclusion_reasons(record, primary_only=primary_only)
+        )
+        if reasons:
+            exclusions[record_uid] = tuple(sorted(reasons))
+    return exclusions
+
+
+def _descriptive_candidate_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        row
+        for row in rows
+        if row.get("treatment_fit_role") == "curve_candidate"
+        and str(row.get("treatment_text_class") or "") not in {"FP", "unresolved"}
+        and row.get("nutrient_control_class") != "absolute_control"
+    )
+
+
+def _verified_baseline_yields(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    baseline_class: str,
+    zero_tolerance: float,
+) -> list[float]:
+    flag_name = {
+        "zero_n_with_pk": "is_zero_n_with_pk",
+        "absolute_control": "is_absolute_control",
+    }[baseline_class]
+    return [
+        yield_value
+        for row in rows
+        if row.get("nutrient_control_class") == baseline_class
+        and row.get(flag_name) is True
+        and row.get("treatment_classification_status") == "resolved"
+        and row.get("treatment_class_normalization_status") == "mapped_reviewed"
+        and isinstance(row.get("treatment_class_review_id"), str)
+        and bool(str(row.get("treatment_class_review_id")).strip())
+        and (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
+        and abs(n_rate) <= zero_tolerance
+        and (yield_value := finite_number(row.get("yield_t_ha"))) is not None
+    ]
+
+
+def _baseline_metrics(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    response_maximum: float,
+    zero_tolerance: float,
+    enabled: bool,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    result: dict[str, Any] = {
+        "baseline_response_status": (
+            "separate_verified_classes"
+            if enabled
+            else "disabled_without_separate_verified_class_policy"
+        ),
+        "yield_at_zero_n_t_ha": None,
+        "yield_response_above_zero_n_t_ha": None,
+    }
+    reasons: set[str] = set()
+    for baseline_class, label in (
+        ("zero_n_with_pk", "zero_n_with_pk"),
+        ("absolute_control", "absolute_control"),
+    ):
+        yields = (
+            _verified_baseline_yields(
+                rows,
+                baseline_class=baseline_class,
+                zero_tolerance=zero_tolerance,
+            )
+            if enabled
+            else []
+        )
+        available = bool(yields)
+        result[f"{label}_baseline_status"] = (
+            "available"
+            if available
+            else "unavailable_no_verified_member"
+            if enabled
+            else "disabled"
+        )
+        result[f"yield_at_{label}_t_ha"] = (
+            float(statistics.fmean(yields)) if available else None
+        )
+        result[f"yield_response_above_{label}_t_ha"] = (
+            float(response_maximum - statistics.fmean(yields))
+            if available
+            else None
+        )
+        if enabled and not available:
+            reasons.add(f"{label.upper()}_BASELINE_UNAVAILABLE")
+    if not enabled:
+        reasons.add("SEPARATE_VERIFIED_BASELINE_POLICY_NOT_ENABLED")
+    return result, tuple(sorted(reasons))
+
+
+def _numeric_range(
+    attempts: Sequence[ModelAttempt],
+    field_name: str,
+) -> tuple[float, float] | None:
+    values = [
+        float(value)
+        for attempt in attempts
+        if (value := getattr(attempt, field_name)) is not None
+    ]
+    if len(values) != len(attempts) or not values:
+        return None
+    return min(values), max(values)
+
+
+def _common_numeric_value(
+    attempts: Sequence[ModelAttempt],
+    field_name: str,
+) -> float | None:
+    values = [getattr(attempt, field_name) for attempt in attempts]
+    if values and all(value == values[0] for value in values):
+        return float(values[0]) if values[0] is not None else None
+    return None
+
+
+def _reviewed_disagreement_tolerances(
+    policy: Mapping[str, Any],
+) -> Mapping[str, float] | None:
+    raw_policy = policy.get("material_disagreement_policy")
+    if not isinstance(raw_policy, Mapping) or raw_policy.get("review_status") != "approved":
+        return None
+    if not isinstance(raw_policy.get("policy_id"), str) or not str(raw_policy["policy_id"]).strip():
+        return None
+    raw_tolerances = raw_policy.get("tolerances")
+    required = {
+        "agronomic_optimum_n_kg_ha",
+        "plateau_onset_n_kg_ha",
+        "supported_max_yield_t_ha",
+    }
+    if not isinstance(raw_tolerances, Mapping) or set(raw_tolerances) != required:
+        return None
+    tolerances: dict[str, float] = {}
+    for name in sorted(required):
+        value = raw_tolerances[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (float, int))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            return None
+        tolerances[name] = float(value)
+    return tolerances
+
+
+def _disagreement_summary(
+    credible: Sequence[ModelAttempt],
+    *,
+    policy: Mapping[str, Any],
+) -> _DisagreementSummary:
+    numeric_fields = (
+        "agronomic_optimum_n_kg_ha",
+        "plateau_onset_n_kg_ha",
+        "predicted_max_yield_t_ha",
+        "predicted_observed_domain_peak_yield_t_ha",
+        "finite_maximum_yield_t_ha",
+        "fitted_asymptote_yield_t_ha",
+        "supported_max_yield_t_ha",
+    )
+    if not credible:
+        return _DisagreementSummary(
+            status="no_credible_candidate",
+            curve_shape_class="unavailable",
+            optimum_status="unavailable",
+            maximum_reference_basis="none",
+            maximum_proximity_status="unavailable",
+            materially_different=None,
+            values={name: None for name in numeric_fields},
+            ranges={name: None for name in numeric_fields},
+            reason_codes=("NO_CREDIBLE_MODEL_CANDIDATE",),
+        )
+    ranges = {name: _numeric_range(credible, name) for name in numeric_fields}
+    values = {name: _common_numeric_value(credible, name) for name in numeric_fields}
+    if len(credible) == 1:
+        attempt = credible[0]
+        return _DisagreementSummary(
+            status="single_credible_candidate",
+            curve_shape_class=str(attempt.curve_shape_class or "unavailable"),
+            optimum_status=attempt.optimum_status,
+            maximum_reference_basis=attempt.maximum_reference_basis,
+            maximum_proximity_status=attempt.maximum_proximity_status,
+            materially_different=False,
+            values=values,
+            ranges=ranges,
+            reason_codes=("ALL_CREDIBLE_MODELS_REPORTED_WITHOUT_SELECTION",),
+        )
+
+    shapes = {str(attempt.curve_shape_class or "unavailable") for attempt in credible}
+    stable_shape = len(shapes) == 1
+    conclusion_signatures = {
+        (
+            attempt.optimum_status,
+            attempt.maximum_reference_basis,
+            attempt.agronomic_optimum_n_kg_ha is not None,
+            attempt.plateau_onset_n_kg_ha is not None,
+            attempt.supported_max_yield_t_ha is not None,
+        )
+        for attempt in credible
+    }
+    reasons = {"ALL_CREDIBLE_MODELS_REPORTED_WITHOUT_SELECTION"}
+    tolerances = _reviewed_disagreement_tolerances(policy)
+    if len(conclusion_signatures) > 1 or not stable_shape:
+        materially_different: bool | None = True
+    else:
+        varying_fields = [
+            name
+            for name in (
+                "agronomic_optimum_n_kg_ha",
+                "plateau_onset_n_kg_ha",
+                "supported_max_yield_t_ha",
+            )
+            if ranges[name] is not None and ranges[name][0] != ranges[name][1]
+        ]
+        if not varying_fields:
+            materially_different = False
+        elif tolerances is None:
+            materially_different = None
+            reasons.add("REVIEWED_NUMERIC_DISAGREEMENT_RULE_UNAVAILABLE")
+        else:
+            materially_different = any(
+                ranges[name] is not None
+                and ranges[name][1] - ranges[name][0] > tolerances[name]
+                for name in varying_fields
+            )
+    if not stable_shape:
+        reasons.add("CREDIBLE_MODEL_SHAPES_DIFFER")
+    if materially_different is True:
+        reasons.add("SINGLE_CONCLUSION_SUPPRESSED_FOR_MATERIAL_DISAGREEMENT")
+    elif materially_different is None:
+        reasons.add("SINGLE_CONCLUSION_SUPPRESSED_PENDING_REVIEWED_MATERIALITY_RULE")
+    exact_numeric_consensus = all(
+        ranges[name] is None or ranges[name][0] == ranges[name][1]
+        for name in (
+            "agronomic_optimum_n_kg_ha",
+            "plateau_onset_n_kg_ha",
+            "supported_max_yield_t_ha",
+        )
+    )
+    if materially_different is False:
+        status = "stable_credible_conclusions"
+        optimum_status = (
+            credible[0].optimum_status
+            if exact_numeric_consensus
+            else "CREDIBLE_MODEL_RANGE_REPORTED"
+        )
+        maximum_reference_basis = (
+            credible[0].maximum_reference_basis
+            if len({attempt.maximum_reference_basis for attempt in credible}) == 1
+            else "multiple_credible_bases"
+        )
+        maximum_proximity_status = (
+            credible[0].maximum_proximity_status
+            if exact_numeric_consensus
+            and len({attempt.maximum_proximity_status for attempt in credible}) == 1
+            else "CREDIBLE_MODEL_RANGE_REPORTED"
+        )
+    elif materially_different is True:
+        status = (
+            "mixed_shape_conclusions"
+            if not stable_shape
+            else "materially_different_credible_conclusions"
+        )
+        optimum_status = "SUPPRESSED_MODEL_DISAGREEMENT"
+        maximum_reference_basis = "none"
+        maximum_proximity_status = "MODEL_DISAGREEMENT"
+        values = {name: None for name in numeric_fields}
+    else:
+        status = "numeric_materiality_rule_unavailable"
+        optimum_status = "SUPPRESSED_MODEL_DISAGREEMENT"
+        maximum_reference_basis = "none"
+        maximum_proximity_status = "MODEL_DISAGREEMENT"
+        values = {name: None for name in numeric_fields}
+    return _DisagreementSummary(
+        status=status,
+        curve_shape_class=next(iter(shapes)) if stable_shape else "uncertain_or_mixed",
+        optimum_status=optimum_status,
+        maximum_reference_basis=maximum_reference_basis,
+        maximum_proximity_status=maximum_proximity_status,
+        materially_different=materially_different,
+        values=values,
+        ranges=ranges,
+        reason_codes=tuple(sorted(reasons)),
+    )
+
+
+def _economic_scenario_status(
+    policy: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    raw_table = policy.get("economic_scenario_table")
+    if not isinstance(raw_table, Mapping) or raw_table.get("review_status") != "approved":
+        return (
+            "disabled_no_approved_versioned_scenario_table",
+            (),
+            ("APPROVED_ECONOMIC_SCENARIO_TABLE_UNAVAILABLE",),
+        )
+    table_id = raw_table.get("table_id")
+    version = raw_table.get("version")
+    rows = raw_table.get("scenarios")
+    required = {
+        "scenario_id",
+        "grain_price",
+        "grain_price_unit",
+        "n_cost",
+        "n_cost_unit",
+        "currency",
+        "reference_period",
+        "price_basis",
+        "tax_subsidy_application_cost_basis",
+        "decision_rule",
+    }
+    if (
+        not isinstance(table_id, str)
+        or not table_id.strip()
+        or not isinstance(version, str)
+        or not version.strip()
+        or not isinstance(rows, (list, tuple))
+        or not rows
+        or any(not isinstance(row, Mapping) or set(row) != required for row in rows)
+    ):
+        return (
+            "disabled_invalid_scenario_table",
+            (),
+            ("APPROVED_ECONOMIC_SCENARIO_TABLE_INVALID",),
+        )
+    scenario_ids = tuple(str(row["scenario_id"]) for row in rows)
+    if (
+        any(not scenario_id for scenario_id in scenario_ids)
+        or len(scenario_ids) != len(set(scenario_ids))
+        or any(
+            isinstance(row["grain_price"], bool)
+            or not isinstance(row["grain_price"], (float, int))
+            or not math.isfinite(float(row["grain_price"]))
+            or float(row["grain_price"]) <= 0.0
+            or isinstance(row["n_cost"], bool)
+            or not isinstance(row["n_cost"], (float, int))
+            or not math.isfinite(float(row["n_cost"]))
+            or float(row["n_cost"]) < 0.0
+            or any(
+                not isinstance(row[key], str) or not str(row[key]).strip()
+                for key in required - {"scenario_id", "grain_price", "n_cost"}
+            )
+            for row in rows
+        )
+        or any(
+            row["decision_rule"] != ECONOMIC_DECISION_RULE
+            or row["grain_price_unit"] not in ECONOMIC_GRAIN_PRICE_TO_PER_TONNE
+            or row["n_cost_unit"] != ECONOMIC_N_COST_UNIT
+            for row in rows
+        )
+    ):
+        return (
+            "disabled_invalid_scenario_table",
+            (),
+            ("APPROVED_ECONOMIC_SCENARIO_TABLE_INVALID",),
+        )
+    return (
+        "available_by_scenario_and_credible_model",
+        scenario_ids,
+        (),
+    )
+
+
+def _economic_optimum_rows(
+    credible_attempts: Sequence[ModelAttempt],
+    *,
+    policy: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    status, _, _ = _economic_scenario_status(policy)
+    if status != "available_by_scenario_and_credible_model":
+        return ()
+    raw_table = policy["economic_scenario_table"]
+    scenarios = raw_table["scenarios"]
+    rows: list[dict[str, Any]] = []
+    for attempt in sorted(
+        credible_attempts,
+        key=lambda item: (item.response_series_uid, item.model_name, item.model_attempt_uid),
+    ):
+        for scenario in sorted(scenarios, key=lambda item: str(item["scenario_id"])):
+            grain_price_factor = ECONOMIC_GRAIN_PRICE_TO_PER_TONNE[
+                str(scenario["grain_price_unit"])
+            ]
+            grain_price = float(scenario["grain_price"])
+            n_cost = float(scenario["n_cost"])
+            evaluated = tuple(
+                {
+                    "n_rate_kg_ha": float(prediction["n_rate_kg_ha"]),
+                    "predicted_yield_t_ha": float(
+                        prediction["predicted_yield_t_ha"]
+                    ),
+                    "net_return_per_ha": (
+                        float(prediction["predicted_yield_t_ha"])
+                        * grain_price_factor
+                        * grain_price
+                        - float(prediction["n_rate_kg_ha"]) * n_cost
+                    ),
+                }
+                for prediction in attempt.predictions
+            )
+            if not evaluated:
+                continue
+            maximum_net_return = max(row["net_return_per_ha"] for row in evaluated)
+            tolerance = max(abs(maximum_net_return), 1.0) * 1e-12
+            optimum = min(
+                (
+                    row
+                    for row in evaluated
+                    if abs(row["net_return_per_ha"] - maximum_net_return)
+                    <= tolerance
+                ),
+                key=lambda row: row["n_rate_kg_ha"],
+            )
+            scenario_payload = dict(scenario)
+            scenario_sha256 = stable_json_sha256(scenario_payload)
+            row_identity = {
+                "decision_rule": ECONOMIC_DECISION_RULE,
+                "model_attempt_uid": attempt.model_attempt_uid,
+                "scenario_sha256": scenario_sha256,
+                "table_id": raw_table["table_id"],
+                "table_version": raw_table["version"],
+            }
+            rows.append(
+                {
+                    "economic_optimum_uid": stable_identifier(
+                        "economic_optimum",
+                        row_identity,
+                    ),
+                    "response_series_uid": attempt.response_series_uid,
+                    "model_attempt_uid": attempt.model_attempt_uid,
+                    "model_name": attempt.model_name,
+                    "model_input_snapshot_sha256": attempt.input_snapshot_sha256,
+                    "model_policy_sha256": attempt.model_policy_sha256,
+                    "economic_policy_id": raw_table["policy_id"],
+                    "economic_table_id": raw_table["table_id"],
+                    "economic_table_version": raw_table["version"],
+                    "scenario_id": scenario["scenario_id"],
+                    "scenario_sha256": scenario_sha256,
+                    "decision_rule": ECONOMIC_DECISION_RULE,
+                    "currency": scenario["currency"],
+                    "reference_period": scenario["reference_period"],
+                    "price_basis": scenario["price_basis"],
+                    "tax_subsidy_application_cost_basis": scenario[
+                        "tax_subsidy_application_cost_basis"
+                    ],
+                    "grain_price": grain_price,
+                    "grain_price_unit": scenario["grain_price_unit"],
+                    "n_cost": n_cost,
+                    "n_cost_unit": scenario["n_cost_unit"],
+                    "economic_optimum_n_kg_ha": optimum["n_rate_kg_ha"],
+                    "predicted_yield_t_ha": optimum["predicted_yield_t_ha"],
+                    "net_return_per_ha": optimum["net_return_per_ha"],
+                    "observed_n_min_kg_ha": attempt.observed_n_min_kg_ha,
+                    "observed_n_max_kg_ha": attempt.observed_n_max_kg_ha,
+                    "tie_rule": "lowest_n_rate",
+                    "status": "computed_observed_domain",
+                    "reason_codes": (),
+                }
+            )
+    return tuple(rows)
+
+
+def _curve_row(
+    fit_rows: Sequence[Mapping[str, Any]],
+    evidence_rows: Sequence[Mapping[str, Any]],
+    representative: ModelAttempt,
     *,
     zero_tolerance: float,
     baseline_metrics_enabled: bool,
