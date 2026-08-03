@@ -261,6 +261,265 @@ def _policy_bounds(policy: Mapping[str, Any]) -> tuple[float, float, float, floa
     return minimum_yield, maximum_yield, minimum_n, maximum_n, residual_df, tolerance
 
 
+def _restricted_fit_models(policy: Mapping[str, Any]) -> frozenset[str] | None:
+    raw = policy.get("restricted_fit_models")
+    if not isinstance(raw, (list, tuple, set, frozenset)) or isinstance(raw, (str, bytes)):
+        return None
+    names = tuple(str(value) for value in raw)
+    if not names or len(names) != len(set(names)) or set(names) - set(MODEL_ORDER):
+        return None
+    if set(names) == set(MODEL_ORDER):
+        return None
+    return frozenset(names)
+
+
+def _model_level_gate_reason(
+    model_name: str,
+    distinct_level_count: int,
+    policy: Mapping[str, Any],
+) -> str | None:
+    if distinct_level_count < _MINIMUM_FITTED_LEVEL_COUNT:
+        return "DESCRIPTIVE_LEVEL_SUPPORT_ONLY"
+    if distinct_level_count >= _BROAD_ROSTER_LEVEL_COUNT:
+        return None
+    restricted_models = _restricted_fit_models(policy)
+    if restricted_models is None:
+        return "REVIEWED_RESTRICTED_FIT_ROSTER_UNAVAILABLE"
+    if model_name not in restricted_models:
+        return "MODEL_OUTSIDE_RESTRICTED_FIT_ROSTER"
+    return None
+
+
+def _reviewed_model_gate(
+    model_name: str,
+    policy: Mapping[str, Any],
+) -> tuple[_ReviewedModelGate | None, str | None]:
+    raw_policy = policy.get("model_gate_policy")
+    if not isinstance(raw_policy, Mapping):
+        return None, "REVIEWED_MODEL_GATE_POLICY_UNAVAILABLE"
+    policy_id = raw_policy.get("policy_id")
+    if not isinstance(policy_id, str) or not policy_id.strip():
+        return None, "REVIEWED_MODEL_GATE_POLICY_UNAVAILABLE"
+    if raw_policy.get("review_status") != "approved":
+        return None, "MODEL_GATE_POLICY_NOT_APPROVED"
+    raw_models = raw_policy.get("models")
+    if not isinstance(raw_models, Mapping):
+        return None, "REVIEWED_MODEL_GATE_POLICY_UNAVAILABLE"
+    raw_model = raw_models.get(model_name)
+    if not isinstance(raw_model, Mapping):
+        return None, "MODEL_SPECIFIC_GATE_UNAVAILABLE"
+    if raw_model.get("initialization_strategy") != _MODEL_INITIALIZATION_STRATEGIES[model_name]:
+        return None, "REVIEWED_INITIALIZATION_STRATEGY_UNAVAILABLE"
+    allow_boundary = raw_model.get("allow_boundary_parameters")
+    if not isinstance(allow_boundary, bool):
+        return None, "REVIEWED_BOUNDARY_PARAMETER_RULE_UNAVAILABLE"
+    raw_shapes = raw_model.get("reportable_shape_classes")
+    if (
+        not isinstance(raw_shapes, (list, tuple, set, frozenset))
+        or isinstance(raw_shapes, (str, bytes))
+        or not raw_shapes
+    ):
+        return None, "REVIEWED_SHAPE_PLAUSIBILITY_RULE_UNAVAILABLE"
+    shape_classes = frozenset(str(value) for value in raw_shapes if str(value))
+    if len(shape_classes) != len(raw_shapes):
+        return None, "REVIEWED_SHAPE_PLAUSIBILITY_RULE_UNAVAILABLE"
+    numeric_controls: dict[str, float] = {}
+    for field in (
+        "optimizer_tolerance",
+        "parameter_boundary_relative_tolerance",
+        "optimum_boundary_tolerance_n_kg_ha",
+        "flat_response_tolerance_t_ha",
+    ):
+        value = raw_model.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            return None, "REVIEWED_MODEL_TOLERANCE_UNAVAILABLE"
+        numeric_controls[field] = float(value)
+    optimizer_max_iterations = raw_model.get("optimizer_max_iterations")
+    if (
+        isinstance(optimizer_max_iterations, bool)
+        or not isinstance(optimizer_max_iterations, int)
+        or optimizer_max_iterations <= 0
+    ):
+        return None, "REVIEWED_MODEL_ITERATION_LIMIT_UNAVAILABLE"
+    raw_bounds = raw_model.get("parameter_bounds")
+    if not isinstance(raw_bounds, Mapping):
+        return None, "MODEL_SPECIFIC_PARAMETER_BOUNDS_UNAVAILABLE"
+    names = _MODEL_PARAMETER_NAMES[model_name]
+    if set(raw_bounds) != set(names):
+        return None, "MODEL_SPECIFIC_PARAMETER_BOUNDS_UNAVAILABLE"
+    lower: list[float] = []
+    upper: list[float] = []
+    for name in names:
+        interval = raw_bounds[name]
+        if (
+            not isinstance(interval, (list, tuple))
+            or len(interval) != 2
+            or isinstance(interval[0], bool)
+            or isinstance(interval[1], bool)
+            or not isinstance(interval[0], (float, int))
+            or not isinstance(interval[1], (float, int))
+        ):
+            return None, "MODEL_SPECIFIC_PARAMETER_BOUNDS_UNAVAILABLE"
+        low = float(interval[0])
+        high = float(interval[1])
+        if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+            return None, "MODEL_SPECIFIC_PARAMETER_BOUNDS_INVALID"
+        lower.append(low)
+        upper.append(high)
+    return (
+        _ReviewedModelGate(
+            policy_id=policy_id.strip(),
+            lower_bounds=np.asarray(lower, dtype=float),
+            upper_bounds=np.asarray(upper, dtype=float),
+            allow_boundary_parameters=allow_boundary,
+            reportable_shape_classes=shape_classes,
+            optimizer_tolerance=numeric_controls["optimizer_tolerance"],
+            optimizer_max_iterations=optimizer_max_iterations,
+            parameter_boundary_relative_tolerance=numeric_controls[
+                "parameter_boundary_relative_tolerance"
+            ],
+            optimum_boundary_tolerance_n_kg_ha=numeric_controls[
+                "optimum_boundary_tolerance_n_kg_ha"
+            ],
+            flat_response_tolerance_t_ha=numeric_controls[
+                "flat_response_tolerance_t_ha"
+            ],
+        ),
+        None,
+    )
+
+
+def _at_reviewed_parameter_boundary(
+    parameters: np.ndarray,
+    gate: _ReviewedModelGate,
+) -> bool:
+    scale = np.maximum(
+        np.maximum(np.abs(gate.lower_bounds), np.abs(gate.upper_bounds)),
+        1.0,
+    )
+    tolerance = gate.parameter_boundary_relative_tolerance
+    boundary_tolerance = np.maximum(scale * tolerance, tolerance)
+    return bool(
+        np.any(np.abs(parameters - gate.lower_bounds) <= boundary_tolerance)
+        or np.any(np.abs(parameters - gate.upper_bounds) <= boundary_tolerance)
+    )
+
+
+def _uncertainty_gate(
+    policy: Mapping[str, Any],
+    observation_evidence: Sequence[Mapping[str, Any]],
+) -> tuple[str, str | None, tuple[str, ...], tuple[str, ...]]:
+    if policy.get("allow_uncertainty") is not True:
+        return "suppressed_by_policy", None, (), ("UNCERTAINTY_DISABLED",)
+    raw_policy = policy.get("uncertainty_policy")
+    if not isinstance(raw_policy, Mapping) or raw_policy.get("review_status") != "approved":
+        return (
+            "suppressed_unreviewed_method",
+            None,
+            (),
+            ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+        )
+    policy_id = raw_policy.get("policy_id")
+    method = raw_policy.get("method")
+    method_contract = raw_policy.get("method_contract")
+    required_basis = raw_policy.get("evidence_basis")
+    if (
+        not isinstance(policy_id, str)
+        or not policy_id.strip()
+        or not isinstance(method, str)
+        or not method.strip()
+        or not isinstance(method_contract, Mapping)
+        or not isinstance(required_basis, (list, tuple, set, frozenset))
+        or isinstance(required_basis, (str, bytes))
+        or not required_basis
+    ):
+        return (
+            "suppressed_unreviewed_method",
+            None,
+            (),
+            ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+        )
+    expected_contract = UNCERTAINTY_METHOD_SPECS.get(method)
+    method_required_basis = UNCERTAINTY_METHOD_REQUIRED_EVIDENCE.get(method)
+    if (
+        expected_contract is None
+        or method_required_basis is None
+        or dict(method_contract) != dict(expected_contract)
+    ):
+        return (
+            "suppressed_unreviewed_method",
+            method,
+            (),
+            ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+        )
+    supported_basis = {
+        "reported_standard_error",
+        "verified_mean_independence",
+        "verified_true_replication",
+    }
+    requested_basis = tuple(sorted({str(value) for value in required_basis}))
+    if not set(requested_basis).issubset(supported_basis):
+        return (
+            "suppressed_unreviewed_method",
+            method,
+            (),
+            ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+        )
+    if (
+        method not in UNCERTAINTY_METHOD_CONFIDENCE_LEVELS
+        or not set(method_required_basis).issubset(requested_basis)
+    ):
+        return (
+            "suppressed_unreviewed_method",
+            method,
+            (),
+            ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+        )
+    available: set[str] = set()
+    if observation_evidence and all(
+        isinstance(row.get("yield_se_t_ha"), (float, int))
+        and not isinstance(row.get("yield_se_t_ha"), bool)
+        and math.isfinite(float(row["yield_se_t_ha"]))
+        and float(row["yield_se_t_ha"]) >= 0.0
+        and row.get("yield_se_status") == "verified"
+        and row.get("experimental_unit_status") == "verified"
+        for row in observation_evidence
+    ):
+        available.add("reported_standard_error")
+    if observation_evidence and all(
+        row.get("mean_independence_status") == "verified"
+        for row in observation_evidence
+    ):
+        available.add("verified_mean_independence")
+    if observation_evidence and all(
+        isinstance(row.get("replicate_count"), int)
+        and not isinstance(row.get("replicate_count"), bool)
+        and int(row["replicate_count"]) >= 2
+        and row.get("replication_status") == "verified"
+        and row.get("experimental_unit_status") == "verified"
+        for row in observation_evidence
+    ):
+        available.add("verified_true_replication")
+    if not set(requested_basis).issubset(available):
+        return (
+            "suppressed_unsupported_evidence",
+            method,
+            tuple(sorted(available)),
+            ("UNCERTAINTY_EVIDENCE_BASIS_UNSUPPORTED",),
+        )
+    return (
+        "eligible_for_reviewed_method",
+        method,
+        requested_basis,
+        (),
+    )
+
+
 def _linear(x: np.ndarray, parameters: np.ndarray) -> np.ndarray:
     intercept, slope = parameters
     return intercept + slope * x
