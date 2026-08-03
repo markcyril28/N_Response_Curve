@@ -3,10 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hmac
 import hashlib
-import hashlib
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
-from typing import Any, Mapping
 
 from .ingest import IngestedSource, IngestionResult, RawRow
 from .schema import (
@@ -117,7 +115,6 @@ def _controlled_pseudonym(value: str, *, salt: bytes) -> str:
         raise ValueError("Restricted-data pseudonym salt must contain at least 16 bytes")
     digest = hmac.new(salt, value.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
     return f"subject_{digest}"
-
 
 
 def _header_positions(source: IngestedSource, header: str) -> tuple[int, ...]:
@@ -587,7 +584,6 @@ def _curate_source(
 ) -> list[dict[str, Any]]:
     raw_config = config.raw
     schema = raw_config["schema"]
-    schema_fields: Mapping[str, Mapping[str, Any]] = schema["fields"]
     missing_values = raw_config["missing_values"]
     effective_map = source_map or _legacy_source_map(source, config)
     _validate_reviewed_source_map(source, effective_map)
@@ -760,8 +756,6 @@ def _curate_source(
                     restricted_policy=restricted_policy,
                 )
             )
-        )
-        records.append(record)
         previous_source_row_number = raw_row.source_row_number
     return records
 
