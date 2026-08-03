@@ -479,6 +479,14 @@ def validate_config(
     mode = run["mode"]
     if mode not in RUN_MODES:
         raise ConfigError(f"[run].mode must be one of {sorted(RUN_MODES)}, got {mode!r}")
+    if mode == "full" and analysis_policy_manifest is None:
+        raise ConfigError(
+            "full mode requires a hash-bound standalone analysis policy manifest"
+        )
+    if mode == "full" and source_data_policy_manifest is None:
+        raise ConfigError(
+            "full mode requires a hash-bound standalone source-data policy manifest"
+        )
     _require_bool(run, "overwrite", where="[run]")
     _require_int(run, "random_seed", where="[run]")
     _require_bool(run, "fail_fast", where="[run]")
@@ -1098,6 +1106,11 @@ def validate_config(
         analysis_families=tuple(analysis_families),
         interaction_orders=interaction_orders,
         engine_assignments=MappingProxyType(dict(assignments)),
+        analysis_policy_manifest=analysis_policy_manifest,
+        analysis_policy_manifest_sha256=analysis_policy_manifest_sha256,
+        source_data_policy_manifest=source_data_policy_manifest,
+        source_data_policy_manifest_sha256=source_data_policy_manifest_sha256,
+        source_data_policy_secret_env=source_data_policy_secret_env,
         run_mode=mode,
     )
 
