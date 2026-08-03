@@ -51,10 +51,27 @@ class DatasetVersion:
     record_uids: tuple[str, ...]
     reason_codes: tuple[str, ...]
     membership_sha256: str
+    authority_status: str = "authoritative"
+    authority_reason_codes: tuple[str, ...] = ()
+    membership_diagnostics: tuple[DatasetMembershipDiagnostic, ...] = ()
 
 
-def _membership_hash(version_id: str, status: str, record_uids: Sequence[str], reason_codes: Sequence[str]) -> str:
+def _membership_hash(
+    version_id: str,
+    status: str,
+    record_uids: Sequence[str],
+    reason_codes: Sequence[str],
+    *,
+    authority_status: str,
+    authority_reason_codes: Sequence[str],
+    membership_diagnostics: Sequence[DatasetMembershipDiagnostic],
+) -> str:
     payload = {
+        "authority_reason_codes": list(authority_reason_codes),
+        "authority_status": authority_status,
+        "membership_diagnostics": [
+            asdict(diagnostic) for diagnostic in membership_diagnostics
+        ],
         "reason_codes": list(reason_codes),
         "record_uids": list(record_uids),
         "status": status,
