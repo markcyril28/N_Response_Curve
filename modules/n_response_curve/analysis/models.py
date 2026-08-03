@@ -624,21 +624,14 @@ def _fit_parameters(
 
     if model_name == "linear_plateau":
         initial_slope = max((y[-1] - y[0]) / x_span, safe_y_span / (1000.0 * x_span))
-        maximum_slope = max(safe_y_span * 10.0 / x_span, initial_slope * 10.0)
         initial = np.asarray([y_min, initial_slope, float(np.median(x))], dtype=float)
-        lower = np.asarray([minimum_yield, 0.0, interior_lower], dtype=float)
-        upper = np.asarray([maximum_yield, maximum_slope, interior_upper], dtype=float)
     elif model_name == "quadratic_plateau":
         initial_gain = max(y_max - y_min, safe_y_span / 1000.0)
         initial = np.asarray([y_min, initial_gain, float(np.median(x))], dtype=float)
-        lower = np.asarray([minimum_yield, 0.0, interior_lower], dtype=float)
-        upper = np.asarray([maximum_yield, safe_y_span, interior_upper], dtype=float)
     elif model_name == "mitscherlich":
         asymptote = min(maximum_yield, y_max + max(y_max - y_min, safe_y_span / 100.0))
         amplitude = max(asymptote - y_min, safe_y_span / 1000.0)
         initial = np.asarray([asymptote, amplitude, 1.0 / x_span], dtype=float)
-        lower = np.asarray([minimum_yield, 0.0, 1e-12], dtype=float)
-        upper = np.asarray([maximum_yield, safe_y_span, 10.0 / x_span], dtype=float)
     else:
         return None, ("UNKNOWN_MODEL",)
 
