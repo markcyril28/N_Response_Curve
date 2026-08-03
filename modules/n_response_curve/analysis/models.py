@@ -80,6 +80,7 @@ class ModelAttempt:
     model_name: str
     input_snapshot_sha256: str
     model_policy_sha256: str
+    model_gate_policy_id: str | None
     status: str
     reason_codes: tuple[str, ...]
     n_observations: int
