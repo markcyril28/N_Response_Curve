@@ -697,13 +697,17 @@ def _curve_row(
     *,
     zero_tolerance: float,
     baseline_metrics_enabled: bool,
+    policy: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    supported_tiers = {str(row.get("series_eligibility_tier") or row.get("eligibility_tier") or "") for row in rows}
+    supported_tiers = {
+        str(row.get("series_eligibility_tier") or row.get("eligibility_tier") or "")
+        for row in evidence_rows
+    }
     if not supported_tiers.intersection({"A", "B"}):
         return None
     complete = [
         (n_rate, yield_value)
-        for row in rows
+        for row in fit_rows
         if (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
         and (yield_value := finite_number(row.get("yield_t_ha"))) is not None
     ]
@@ -711,22 +715,21 @@ def _curve_row(
         return None
     n_rates = [pair[0] for pair in complete]
     yields = [pair[1] for pair in complete]
-    zero_yields = [yield_value for n_rate, yield_value in complete if abs(n_rate) <= zero_tolerance]
-    series_uid = selected.response_series_uid
-    source_name = _one_value(rows, "source_name")
+    series_uid = representative.response_series_uid
+    source_name = _one_value(evidence_rows, "source_name")
     if source_name is None:
         return None
     selected_record = model_attempt_record(selected)
     observed_max = float(max(yields))
-    supported_max = selected.supported_max_yield_t_ha
+    supported_max = representative.supported_max_yield_t_ha
     attainment = (
         observed_max / supported_max
         if supported_max is not None and supported_max > 0.0
         else None
     )
     finite_gap = (
-        selected.finite_maximum_yield_t_ha - observed_max
-        if selected.finite_maximum_yield_t_ha is not None
+        representative.finite_maximum_yield_t_ha - observed_max
+        if representative.finite_maximum_yield_t_ha is not None
         else None
     )
     supported_gap = (
@@ -734,83 +737,81 @@ def _curve_row(
         if supported_max is not None
         else None
     )
+    distinct_level_count = len(set(n_rates))
     evidence_strength = (
-        "three_level_linear_only"
-        if len(set(n_rates)) == 3 and selected.model_name == "linear"
-        else "four_plus_level_curve"
+        "four_level_restricted_fit"
+        if distinct_level_count == 4
+        else "five_plus_level_broad_roster"
     )
+    baseline_fields, baseline_reasons = _baseline_metrics(
+        evidence_rows,
+        response_maximum=observed_max,
+        zero_tolerance=zero_tolerance,
+        enabled=baseline_metrics_enabled,
+    )
+    economic_status, economic_scenario_ids, economic_reasons = _economic_scenario_status(policy)
     return {
         "response_series_uid": series_uid,
-        "selected_model_attempt_uid": selected.model_attempt_uid,
-        "selected_model_name": selected.model_name,
-        "selected_model_status": selected.status,
-        "record_uids": tuple(str(row["record_uid"]) for row in rows),
+        "selected_model_attempt_uid": None,
+        "selected_model_name": None,
+        "selected_model_status": "not_selected",
+        "record_uids": tuple(str(row["record_uid"]) for row in fit_rows),
+        "all_evidence_record_uids": tuple(str(row["record_uid"]) for row in evidence_rows),
         "source_name": source_name,
-        "study_uid": _study_uid(rows, source_name),
-        "trial_id": _one_value(rows, "trial_id"),
-        "experiment_type": _one_value(rows, "experiment_type"),
-        "experimental_design": _one_value(rows, "experimental_design"),
-        "water_regime_normalized": _one_value(rows, "water_regime_normalized"),
-        "season_normalized": _one_value(rows, "season_normalized"),
-        "region": _one_value(rows, "region"),
-        "province": _one_value(rows, "province"),
-        "rice_variety": _one_value(rows, "rice_variety"),
-        "planting_year": _one_value(rows, "planting_year"),
-        "treatment_text_class": _one_value(rows, "treatment_text_class"),
-        "n_split": _one_value(rows, "n_split"),
-        "organic_fertilizer_present": any(bool(row.get("organic_fertilizer_present")) for row in rows),
-        "biofertilizer_present": any(bool(row.get("biofertilizer_present")) for row in rows),
-        "series_distinct_n_level_count": len(set(n_rates)),
-        "series_has_zero_n": bool(zero_yields),
-        "series_has_high_n": any(bool(row.get("is_high_n")) for row in rows),
-        "series_p_constant": rows[0].get("series_p_constant"),
-        "series_k_constant": rows[0].get("series_k_constant"),
-        "p_rate_kg_p2o5_ha": finite_number(rows[0].get("p_rate_kg_p2o5_ha")),
-        "k_rate_kg_k2o_ha": finite_number(rows[0].get("k_rate_kg_k2o_ha")),
+        "study_uid": _study_uid(evidence_rows, source_name),
+        "trial_id": _one_value(evidence_rows, "trial_id"),
+        "experiment_type": _one_value(evidence_rows, "experiment_type"),
+        "experimental_design": _one_value(evidence_rows, "experimental_design"),
+        "water_regime_normalized": _one_value(evidence_rows, "water_regime_normalized"),
+        "season_normalized": _one_value(evidence_rows, "season_normalized"),
+        "region": _one_value(evidence_rows, "region"),
+        "province": _one_value(evidence_rows, "province"),
+        "rice_variety": _one_value(evidence_rows, "rice_variety"),
+        "planting_year": _one_value(evidence_rows, "planting_year"),
+        "treatment_text_class": _one_value(evidence_rows, "treatment_text_class"),
+        "n_split": _one_value(evidence_rows, "n_split"),
+        "organic_fertilizer_present": any(
+            bool(row.get("organic_fertilizer_present")) for row in evidence_rows
+        ),
+        "biofertilizer_present": any(
+            bool(row.get("biofertilizer_present")) for row in evidence_rows
+        ),
+        "series_distinct_n_level_count": distinct_level_count,
+        "series_has_zero_n": any(abs(n_rate) <= zero_tolerance for n_rate in n_rates),
+        "series_has_high_n": any(bool(row.get("is_high_n")) for row in evidence_rows),
+        "series_p_constant": evidence_rows[0].get("series_p_constant"),
+        "series_k_constant": evidence_rows[0].get("series_k_constant"),
+        "p_rate_kg_p2o5_ha": finite_number(evidence_rows[0].get("p_rate_kg_p2o5_ha")),
+        "k_rate_kg_k2o_ha": finite_number(evidence_rows[0].get("k_rate_kg_k2o_ha")),
         "series_observed_n_min_kg_ha": float(min(n_rates)),
         "series_observed_n_max_kg_ha": float(max(n_rates)),
-        "curve_shape_class": selected.curve_shape_class,
-        "optimum_status": selected.optimum_status,
-        "agronomic_optimum_n_kg_ha": selected.agronomic_optimum_n_kg_ha,
-        "plateau_onset_n_kg_ha": selected.plateau_onset_n_kg_ha,
-        "predicted_max_yield_t_ha": selected.predicted_max_yield_t_ha,
-        "predicted_observed_domain_peak_yield_t_ha": selected.predicted_observed_domain_peak_yield_t_ha,
-        "finite_maximum_yield_t_ha": selected.finite_maximum_yield_t_ha,
-        "fitted_asymptote_yield_t_ha": selected.fitted_asymptote_yield_t_ha,
-        "supported_max_yield_t_ha": selected.supported_max_yield_t_ha,
-        "maximum_reference_basis": selected.maximum_reference_basis,
-        "maximum_proximity_status": selected.maximum_proximity_status,
+        "curve_shape_class": representative.curve_shape_class,
+        "optimum_status": representative.optimum_status,
+        "agronomic_optimum_n_kg_ha": representative.agronomic_optimum_n_kg_ha,
+        "plateau_onset_n_kg_ha": representative.plateau_onset_n_kg_ha,
+        "predicted_max_yield_t_ha": representative.predicted_max_yield_t_ha,
+        "predicted_observed_domain_peak_yield_t_ha": representative.predicted_observed_domain_peak_yield_t_ha,
+        "finite_maximum_yield_t_ha": representative.finite_maximum_yield_t_ha,
+        "fitted_asymptote_yield_t_ha": representative.fitted_asymptote_yield_t_ha,
+        "supported_max_yield_t_ha": representative.supported_max_yield_t_ha,
+        "maximum_reference_basis": representative.maximum_reference_basis,
+        "maximum_proximity_status": representative.maximum_proximity_status,
         "observed_max_yield_t_ha": observed_max,
         "observed_max_gap_to_finite_maximum_t_ha": finite_gap,
         "observed_max_gap_to_supported_maximum_t_ha": supported_gap,
         "observed_max_attainment_fraction": attainment,
         "evidence_strength": evidence_strength,
-        "baseline_response_status": (
-            "available"
-            if baseline_metrics_enabled and zero_yields
-            else "unavailable_no_numeric_zero_n"
-            if baseline_metrics_enabled
-            else "disabled_pending_ELG_10"
-        ),
-        "yield_at_zero_n_t_ha": (
-            float(statistics.fmean(zero_yields))
-            if baseline_metrics_enabled and zero_yields
-            else None
-        ),
-        "yield_response_above_zero_n_t_ha": (
-            float(max(yields) - statistics.fmean(zero_yields))
-            if baseline_metrics_enabled and zero_yields
-            else None
-        ),
+        **baseline_fields,
+        "economic_optimum_status": economic_status,
+        "economic_optimum_n_kg_ha": None,
+        "economic_scenario_ids": economic_scenario_ids,
+        "uncertainty_status": representative.uncertainty_status,
+        "uncertainty_method": representative.uncertainty_method,
         "recommendation_yield_gap_t_ha": None,
         "target_yield_gap_t_ha": None,
         "target_yield_status": "not_configured",
-        "model_attempt_record": selected_record,
-        "reason_codes": (
-            ()
-            if baseline_metrics_enabled
-            else ("BASELINE_RESPONSE_METRICS_DISABLED_PENDING_ELG_10",)
-        ),
+        "model_attempt_record": None,
+        "reason_codes": tuple(sorted(set(baseline_reasons) | set(economic_reasons))),
     }
 
 
