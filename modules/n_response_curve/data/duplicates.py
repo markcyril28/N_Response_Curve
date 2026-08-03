@@ -441,7 +441,7 @@ def _initialize_duplicate_statuses(
     for record in records:
         record["duplicate_relationships"] = ()
         record["duplicate_groups"] = ()
-        record["duplicate_status"] = "unique"
+        record["duplicate_status"] = "not_assessed" if rules is None else "unique"
         record["duplicate_of_record_uid"] = None
 
     by_exact_signature: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = {}
