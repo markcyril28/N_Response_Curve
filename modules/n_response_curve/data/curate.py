@@ -144,7 +144,446 @@ def _optional_field(record: Mapping[str, Any], name: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _curate_source(source: IngestedSource, config: Any) -> list[dict[str, Any]]:
+def _validate_reviewed_source_map(
+    source: IngestedSource,
+    source_map: ReviewedSourceMap,
+) -> None:
+    if not isinstance(source_map, ReviewedSourceMap):
+        raise ValueError("Reviewed source map must use the expected source-map type")
+    if source_map.source_name != source.source_name:
+        raise ValueError("Reviewed source map is bound to a different source")
+    for label, value in (
+        ("map version", source_map.map_version),
+        ("review evidence", source_map.review_id),
+        ("workbook/CSV basis", source_map.workbook_csv_basis),
+    ):
+        if not value.strip():
+            raise ValueError(f"Reviewed source map {label} must be nonempty")
+    if source_map.source_sha256 != source.source_sha256:
+        raise ValueError("Reviewed source map is not bound to the ingested source checksum")
+    if source_map.encoding != source.source_encoding:
+        raise ValueError("Reviewed source map encoding differs from the ingested source encoding")
+    if source_map.workbook_csv_basis != source.workbook_csv_basis:
+        raise ValueError(
+            "Reviewed source map workbook/CSV basis differs from the ingested source basis"
+        )
+    positions = tuple(disposition.position for disposition in source_map.dispositions)
+    expected_positions = tuple(range(1, len(source.columns) + 1))
+    if len(positions) != len(set(positions)) or tuple(sorted(positions)) != expected_positions:
+        raise ValueError("Reviewed source map must disposition every physical column exactly once")
+    by_position = {item.position: item for item in source_map.dispositions}
+    for disposition in source_map.dispositions:
+        if disposition.role not in _COLUMN_ROLES:
+            raise ValueError(
+                f"Physical column {disposition.position} has an unknown disposition role"
+            )
+        if disposition.role == "canonical" and not disposition.canonical_field:
+            raise ValueError(
+                f"Canonical physical column {disposition.position} lacks a canonical field"
+            )
+        if disposition.role in {"descriptive", "held", "restricted"} and not disposition.variable_family:
+            raise ValueError(
+                f"Physical column {disposition.position} lacks a variable-family disposition"
+            )
+    mapped_positions: dict[int, str] = {}
+    for canonical_name, position in source_map.fields.items():
+        if not canonical_name.strip() or position not in by_position:
+            raise ValueError("Reviewed source map contains an invalid canonical field mapping")
+        prior = mapped_positions.setdefault(position, canonical_name)
+        if prior != canonical_name:
+            raise ValueError("Reviewed source map maps one position to multiple canonical fields")
+        disposition = by_position[position]
+        if (
+            disposition.role not in {"canonical", "restricted"}
+            or disposition.canonical_field != canonical_name
+        ):
+            raise ValueError(
+                f"Canonical mapping {canonical_name!r} disagrees with its column disposition"
+            )
+    for position, expected_header in source_map.expected_headers.items():
+        if position not in by_position:
+            raise ValueError("Reviewed source map expected header is outside the physical shape")
+        if source.columns[position - 1].header != expected_header:
+            raise ValueError(
+                f"Reviewed source map header mismatch at physical position {position}"
+            )
+    arm_ids: set[str] = set()
+    for arm in source_map.arms:
+        if not arm.arm_id.strip() or arm.arm_id in arm_ids:
+            raise ValueError("Reviewed source arm identifiers must be nonempty and unique")
+        arm_ids.add(arm.arm_id)
+        if not arm.role.strip():
+            raise ValueError("Reviewed source arms require an analytical role")
+        for canonical_name, position in arm.field_positions.items():
+            if not canonical_name.strip() or position not in by_position:
+                raise ValueError("Reviewed source arm mapping is outside the physical shape")
+        if set(arm.field_positions).intersection(arm.constants):
+            raise ValueError("A source-arm field cannot be both positional and constant")
+
+
+def validate_reviewed_curation_controls(
+    ingestion: IngestionResult,
+    *,
+    source_maps: Mapping[str, ReviewedSourceMap],
+    category_lookups: Mapping[str, ReviewedLookupTable],
+    required_lookup_fields: Iterable[str] = REQUIRED_REVIEWED_LOOKUP_FIELDS,
+) -> None:
+    """Require complete reviewed source and normalization controls for an ingestion."""
+
+    source_names = tuple(source.source_name for source in ingestion.sources)
+    if len(source_names) != len(set(source_names)):
+        raise ValueError("Ingested source names must be unique")
+    expected_sources = set(source_names)
+    observed_sources = set(source_maps)
+    missing_sources = expected_sources - observed_sources
+    unexpected_sources = observed_sources - expected_sources
+    if missing_sources or unexpected_sources:
+        missing = ", ".join(sorted(missing_sources)) or "none"
+        unexpected = ", ".join(sorted(unexpected_sources)) or "none"
+        raise ValueError(
+            "Reviewed source-map coverage must exactly match ingested sources; "
+            f"missing={missing}; unexpected={unexpected}"
+        )
+
+    normalized_required: list[str] = []
+    for field in required_lookup_fields:
+        if not isinstance(field, str) or not field.strip():
+            raise ValueError("Required reviewed lookup fields must be nonempty strings")
+        normalized_required.append(field.strip())
+    if len(normalized_required) != len(set(normalized_required)):
+        raise ValueError("Required reviewed lookup fields must be unique")
+
+    missing_lookups = set(normalized_required) - set(category_lookups)
+    if missing_lookups:
+        raise ValueError(
+            "Required reviewed category lookup(s) are missing: "
+            + ", ".join(sorted(missing_lookups))
+        )
+    for field, lookup in category_lookups.items():
+        if not isinstance(field, str) or not field.strip():
+            raise ValueError("Reviewed category lookup field names must be nonempty")
+        validate_reviewed_lookup_table(lookup)
+
+    treatment_lookup = category_lookups.get("treatment_class")
+    if "treatment_class" in normalized_required:
+        if treatment_lookup is None:
+            raise ValueError("Required reviewed treatment lookup is missing")
+        treatment_classes = set(treatment_lookup.aliases)
+        unknown_treatment_classes = (
+            treatment_classes - _KNOWN_TREATMENT_LOOKUP_CLASSES
+        )
+        if unknown_treatment_classes:
+            raise ValueError(
+                "Reviewed treatment lookup contains unsupported canonical class(es): "
+                + ", ".join(sorted(unknown_treatment_classes))
+            )
+        missing_treatment_classes = (
+            _REQUIRED_TREATMENT_LOOKUP_CLASSES - treatment_classes
+        )
+        if missing_treatment_classes:
+            raise ValueError(
+                "Reviewed treatment lookup is missing required canonical class(es): "
+                + ", ".join(sorted(missing_treatment_classes))
+            )
+
+    for source in ingestion.sources:
+        _validate_reviewed_source_map(source, source_maps[source.source_name])
+
+
+def _legacy_source_map(source: IngestedSource, config: Any) -> ReviewedSourceMap:
+    schema = config.raw["schema"]
+    schema_fields: Mapping[str, Mapping[str, Any]] = schema["fields"]
+    mapped = {name: int(field["position"]) for name, field in schema_fields.items()}
+    dispositions = tuple(
+        PhysicalColumnDisposition(
+            position=column.position,
+            role="canonical" if column.position in mapped.values() else "held",
+            canonical_field=next(
+                (name for name, position in mapped.items() if position == column.position),
+                None,
+            ),
+            variable_family=(
+                None if column.position in mapped.values() else "unreviewed_unmapped"
+            ),
+        )
+        for column in source.columns
+    )
+    return ReviewedSourceMap(
+        source_name=source.source_name,
+        map_version=source.schema_map_version or "legacy-unversioned",
+        review_id="review-required",
+        source_sha256=source.source_sha256,
+        encoding=source.source_encoding,
+        workbook_csv_basis=source.workbook_csv_basis,
+        fields=MappingProxyType(mapped),
+        expected_headers=MappingProxyType(
+            {
+                int(field["position"]): str(field["header"])
+                for field in schema_fields.values()
+            }
+        ),
+        dispositions=dispositions,
+        fill_down_headers=tuple(config.fill_down_fields),
+    )
+
+
+def _source_arms(source_map: ReviewedSourceMap) -> tuple[SourceArmMap, ...]:
+    if source_map.arms:
+        return source_map.arms
+    return (
+        SourceArmMap(
+            arm_id="source_row",
+            role="canonical_source_row",
+            field_positions=MappingProxyType({}),
+            constants=MappingProxyType({}),
+        ),
+    )
+
+
+def _reviewed_or_configured_category(
+    record: Mapping[str, Any],
+    *,
+    field: str,
+    configured_mapping: Mapping[str, list[str] | tuple[str, ...]],
+    lookup: ReviewedLookupTable | None,
+) -> tuple[str, str, str | None, str | None]:
+    raw_value = _optional_field(record, field)
+    if lookup is None:
+        return (
+            normalize_category(raw_value, configured_mapping),
+            "review_required_unversioned",
+            None,
+            None,
+        )
+    normalized = normalize_category_with_evidence(raw_value, lookup)
+    return (
+        normalized.canonical_value or "unresolved",
+        normalized.status,
+        normalized.map_version,
+        normalized.review_id,
+    )
+
+
+def _finalize_canonical_record(
+    record: dict[str, Any],
+    *,
+    source: IngestedSource,
+    config: Any,
+    schema: Mapping[str, Any],
+    missing_values: Mapping[str, Any],
+    category_lookups: Mapping[str, ReviewedLookupTable],
+    restricted_policy: RestrictedDataPolicy | None,
+) -> dict[str, Any]:
+    n_parse = parse_numeric(_optional_field(record, "inorganic_n_rate"), missing_values)
+    p_parse = parse_numeric(_optional_field(record, "inorganic_p_rate"), missing_values)
+    k_parse = parse_numeric(_optional_field(record, "inorganic_k_rate"), missing_values)
+    recommended_n_parse = parse_numeric(
+        _optional_field(record, "recommended_n_rate"),
+        missing_values,
+    )
+    yield_se_parse = parse_numeric(
+        _optional_field(record, "yield_se_t_ha"),
+        missing_values,
+    )
+    yield_normalization = normalize_yield(
+        _optional_field(record, "yield_kg_ha"),
+        _optional_field(record, "yield_t_ha"),
+        missing_values,
+    )
+    configured_units = schema.get("units", {})
+    configured_n_unit = str(configured_units.get("n_rate", CANONICAL_N_RATE_UNIT))
+    configured_yield_unit = str(
+        configured_units.get("yield_curve", CANONICAL_YIELD_UNIT)
+    )
+    row_country_raw = _optional_field(record, "country_code") or _optional_field(
+        record,
+        "country",
+    )
+    if row_country_raw.strip():
+        scope_country_code = normalize_country_code(row_country_raw)
+        scope_country_evidence = "row"
+    else:
+        scope_country_code = normalize_country_code(source.source_country_code)
+        scope_country_evidence = "source"
+    scope_countries = set(getattr(config, "scope_countries", ("PH",)))
+    if scope_country_code is None:
+        scope_status = "unresolved"
+    elif scope_country_code in scope_countries:
+        scope_status = "in_scope"
+    else:
+        scope_status = "out_of_scope"
+
+    water_value, water_status, water_map_version, water_review_id = (
+        _reviewed_or_configured_category(
+            record,
+            field="water_regime",
+            configured_mapping=schema["normalization"]["water_regime"],
+            lookup=category_lookups.get("water_regime"),
+        )
+    )
+    season_value, season_status, season_map_version, season_review_id = (
+        _reviewed_or_configured_category(
+            record,
+            field="season",
+            configured_mapping=schema["normalization"]["season"],
+            lookup=category_lookups.get("season"),
+        )
+    )
+    representation_reasons = list(yield_normalization.review_reasons)
+    if canonical_unit(configured_n_unit, "n_rate") is None:
+        representation_reasons.append("N_RATE_UNIT_UNSUPPORTED")
+    if canonical_unit(configured_yield_unit, "yield") is None:
+        representation_reasons.append("YIELD_UNIT_UNSUPPORTED")
+    if record.get("workbook_csv_basis") == "parallel_workbook_csv_unresolved":
+        representation_reasons.append("WORKBOOK_CSV_BASIS_UNRESOLVED")
+    basis_raw = _optional_field(record, "yield_basis")
+    moisture_basis_raw = _optional_field(record, "yield_moisture_basis")
+    if (basis_raw or moisture_basis_raw) and yield_normalization.yield_t_ha is not None:
+        representation_reasons.append("YIELD_BASIS_REVIEW_REQUIRED")
+
+    study_id = _optional_field(record, "study_id")
+    trial_id = _optional_field(record, "trial_id")
+    site_id = _optional_field(record, "site_id") or _optional_field(record, "location")
+    record.update(
+        {
+            "study_uid": (
+                _stable_uid("study-v1", source.source_family, study_id)
+                if study_id.strip()
+                else None
+            ),
+            "trial_uid": (
+                _stable_uid("trial-v1", source.source_family, study_id, trial_id)
+                if study_id.strip() and trial_id.strip()
+                else None
+            ),
+            "site_uid": (
+                _stable_uid("site-v1", source.source_family, site_id)
+                if site_id.strip()
+                else None
+            ),
+            "n_rate_kg_ha": n_parse.value,
+            "n_rate_parse_status": n_parse.status,
+            "actual_n_rate_kg_ha": n_parse.value,
+            "recommended_n_rate_kg_ha": recommended_n_parse.value,
+            "recommended_n_rate_parse_status": recommended_n_parse.status,
+            "n_rate_configured_unit": configured_n_unit,
+            "n_rate_canonical_unit": CANONICAL_N_RATE_UNIT,
+            "n_rate_unit_status": (
+                "canonical" if canonical_unit(configured_n_unit, "n_rate") else "unsupported"
+            ),
+            "p_rate_kg_p2o5_ha": p_parse.value,
+            "p_rate_parse_status": p_parse.status,
+            "k_rate_kg_k2o_ha": k_parse.value,
+            "k_rate_parse_status": k_parse.status,
+            "yield_t_ha": yield_normalization.yield_t_ha,
+            "yield_se_t_ha": yield_se_parse.value,
+            "yield_se_parse_status": yield_se_parse.status,
+            "yield_se_status": (
+                record.get("yield_se_status")
+                if yield_se_parse.value is not None
+                else "unavailable"
+            ),
+            "yield_parse_status": yield_normalization.parse_status,
+            "yield_unit_status": yield_normalization.unit_status,
+            "yield_source_unit": yield_normalization.source_unit,
+            "yield_unit_conversion": yield_normalization.conversion,
+            "yield_configured_unit": configured_yield_unit,
+            "yield_canonical_unit": CANONICAL_YIELD_UNIT,
+            "yield_basis_raw": basis_raw or None,
+            "yield_moisture_basis_raw": moisture_basis_raw or None,
+            "representation_review_status": (
+                "review_required" if representation_reasons else "resolved"
+            ),
+            "representation_review_reasons": tuple(sorted(set(representation_reasons))),
+            "scope_country_code": scope_country_code,
+            "scope_country_evidence": scope_country_evidence,
+            "scope_status": scope_status,
+            "experiment_priority_status": classify_experiment_priority(
+                _optional_field(record, "experiment_type"),
+                _optional_field(record, "experimental_design"),
+            ),
+            "water_regime_normalized": water_value,
+            "water_regime_normalization_status": water_status,
+            "water_regime_map_version": water_map_version,
+            "water_regime_review_id": water_review_id,
+            "season_normalized": season_value,
+            "season_normalization_status": season_status,
+            "season_map_version": season_map_version,
+            "season_review_id": season_review_id,
+        }
+    )
+    record.update(
+        classify_treatment(
+            treatment_raw=_optional_field(record, "treatment"),
+            n_rate=n_parse.value,
+            p_rate=p_parse.value,
+            k_rate=k_parse.value,
+            organic_raw=_optional_field(record, "organic_fertilizer"),
+            bio_raw=_optional_field(record, "biofertilizer"),
+            treatment_mapping=(
+                category_lookups["treatment_class"].aliases
+                if "treatment_class" in category_lookups
+                else schema["normalization"]["treatment_class"]
+            ),
+            missing_values=missing_values,
+            high_n_threshold=config.raw["eligibility"]["high_n_review_threshold_kg_ha"],
+        )
+    )
+    treatment_lookup = category_lookups.get("treatment_class")
+    record["treatment_class_map_version"] = (
+        treatment_lookup.map_version if treatment_lookup is not None else None
+    )
+    record["treatment_class_review_id"] = (
+        treatment_lookup.review_id if treatment_lookup is not None else None
+    )
+    for field, lookup in category_lookups.items():
+        if field in {"water_regime", "season", "treatment_class"}:
+            continue
+        normalized = normalize_category_with_evidence(
+            _optional_field(record, field),
+            lookup,
+        )
+        record[f"{field}_normalized"] = normalized.canonical_value or "unresolved"
+        record[f"{field}_normalization_status"] = normalized.status
+        record[f"{field}_map_version"] = normalized.map_version
+        record[f"{field}_review_id"] = normalized.review_id
+
+    if source.data_classification != "restricted":
+        record["restricted_release_status"] = "not_restricted"
+        record["controlled_subject_uid"] = None
+    elif restricted_policy is None:
+        record["restricted_release_status"] = "blocked_controls_missing"
+        record["controlled_subject_uid"] = None
+    else:
+        for label, review_id in (
+            ("access review", restricted_policy.access_review_id),
+            ("automated disclosure review", restricted_policy.automated_disclosure_review_id),
+            ("human disclosure review", restricted_policy.human_disclosure_review_id),
+        ):
+            if not review_id.strip():
+                raise ValueError(f"Restricted-data {label} evidence must be nonempty")
+        identifier = "\x1f".join(
+            _optional_field(record, field)
+            for field in restricted_policy.identifier_fields
+            if _optional_field(record, field).strip()
+        )
+        record["controlled_subject_uid"] = (
+            _controlled_pseudonym(identifier, salt=restricted_policy.pseudonym_salt)
+            if identifier
+            else None
+        )
+        record["restricted_release_status"] = "eligible_for_reviewed_public_projection"
+    return record
+
+
+def _curate_source(
+    source: IngestedSource,
+    config: Any,
+    *,
+    source_map: ReviewedSourceMap | None,
+    category_lookups: Mapping[str, ReviewedLookupTable],
+    restricted_policy: RestrictedDataPolicy | None,
+) -> list[dict[str, Any]]:
     raw_config = config.raw
     schema = raw_config["schema"]
     schema_fields: Mapping[str, Mapping[str, Any]] = schema["fields"]
