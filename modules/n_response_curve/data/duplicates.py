@@ -20,21 +20,83 @@ _MISSING_CONTEXT_VALUES = {"", "na", "n/a", "not stated", "none", "unresolved"}
 _MIXED_CONTEXT_SEPARATOR = re.compile(r"[,;/]|\b(?:and|or)\b", re.IGNORECASE)
 _DUPLICATE_STATUS_PRIORITY = {
     "exact_duplicate_noncanonical": 0,
-    "probable_cross_source_duplicate": 1,
-    "exact_duplicate_canonical": 2,
-    "unique": 3,
+    "probable_duplicate_noncanonical": 1,
+    "probable_duplicate_review": 2,
+    "exact_duplicate_canonical": 3,
+    "probable_duplicate_canonical": 4,
+    "unique": 5,
+    "not_assessed": 6,
+}
+_REPEAT_CLASSIFICATIONS = {
+    "exchangeable_replicates",
+    "management_variant",
+    "duplicate",
+    "unequal_experimental_units",
 }
 
 
 @dataclass(frozen=True)
+class DuplicateRuleSet:
+    """Versioned deterministic exact keys and bounded probable-match rules."""
+
+    version: str
+    review_id: str
+    exact_key_fields: tuple[str, ...]
+    probable_key_fields: tuple[str, ...]
+    probable_numeric_tolerances: Mapping[str, float]
+    casefold_fields: tuple[str, ...] = ()
+    probable_cross_source_only: bool = True
+
+
+@dataclass(frozen=True)
+class DuplicateAdjudication:
+    """Human disposition for one probable duplicate group."""
+
+    duplicate_group_uid: str
+    rules_version: str
+    disposition: str
+    canonical_record_uid: str | None
+    reviewer: str
+    reviewed_on: str
+    rationale: str
+
+
+@dataclass(frozen=True)
+class RepeatAdjudication:
+    """Human classification of all records repeated at one N level."""
+
+    record_uids: tuple[str, ...]
+    classification: str
+    reviewer: str
+    reviewed_on: str
+    rationale: str
+    review_id: str
+
+
+@dataclass(frozen=True)
 class SeriesResolution:
-    """One reviewable series/duplicate ledger row for every canonical source record."""
+    """Reviewable source-row ledger plus any approved repeat aggregates."""
 
     records: tuple[dict[str, Any], ...]
+    aggregate_records: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def analysis_records(self) -> tuple[dict[str, Any], ...]:
+        source_rows = tuple(
+            record
+            for record in self.records
+            if record.get("analytical_record_status") == "included"
+        )
+        return source_rows + self.aggregate_records
 
 
 def _stable_identifier(prefix: str, parts: Iterable[object]) -> str:
-    encoded = json.dumps(list(parts), ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    encoded = json.dumps(
+        list(parts),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
     return f"{prefix}_{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 
