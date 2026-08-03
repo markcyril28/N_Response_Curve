@@ -53,6 +53,22 @@ _MODEL_COMPLEXITY = {
     "quadratic_plateau": 3,
     "mitscherlich": 3,
 }
+_MINIMUM_FITTED_LEVEL_COUNT = 4
+_BROAD_ROSTER_LEVEL_COUNT = 5
+
+
+@dataclass(frozen=True)
+class _ReviewedModelGate:
+    policy_id: str
+    lower_bounds: np.ndarray
+    upper_bounds: np.ndarray
+    allow_boundary_parameters: bool
+    reportable_shape_classes: frozenset[str]
+    optimizer_tolerance: float
+    optimizer_max_iterations: int
+    parameter_boundary_relative_tolerance: float
+    optimum_boundary_tolerance_n_kg_ha: float
+    flat_response_tolerance_t_ha: float
 
 
 @dataclass(frozen=True)
