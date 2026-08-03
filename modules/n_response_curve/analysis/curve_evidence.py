@@ -1022,17 +1022,12 @@ def curve_fit_record_uids(
 ) -> tuple[str, ...]:
     """Return rows permitted in a curve fit without discarding evidence rows."""
 
+    copied_records = tuple(dict(record) for record in records)
+    exclusions = _fit_exclusions(copied_records, primary_only=primary_only)
     return tuple(
         str(record["record_uid"])
-        for record in records
-        if record.get("treatment_fit_role", "curve_candidate") != "comparison_only"
-        and (
-            not primary_only
-            or (
-                record.get("series_status") == "resolved"
-                and (record.get("series_eligibility_tier") or record.get("eligibility_tier")) == "A"
-            )
-        )
+        for record in copied_records
+        if str(record.get("record_uid") or "") not in exclusions
     )
 
 
