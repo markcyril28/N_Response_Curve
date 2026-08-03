@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+from statistics import NormalDist
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -10,6 +11,11 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from ..data.provenance import stable_identifier, stable_json_sha256
+from .reviewed_methods import (
+    UNCERTAINTY_METHOD_CONFIDENCE_LEVELS,
+    UNCERTAINTY_METHOD_REQUIRED_EVIDENCE,
+    UNCERTAINTY_METHOD_SPECS,
+)
 
 
 MODEL_ORDER = (
@@ -25,6 +31,20 @@ _MODEL_PARAMETER_COUNTS = {
     "linear_plateau": 3,
     "quadratic_plateau": 3,
     "mitscherlich": 3,
+}
+_MODEL_PARAMETER_NAMES = {
+    "linear": ("intercept", "slope"),
+    "quadratic": ("intercept", "slope", "curvature"),
+    "linear_plateau": ("intercept", "slope", "plateau_onset"),
+    "quadratic_plateau": ("baseline", "gain", "plateau_onset"),
+    "mitscherlich": ("asymptote", "amplitude", "rate"),
+}
+_MODEL_INITIALIZATION_STRATEGIES = {
+    "linear": "ordinary_least_squares",
+    "quadratic": "ordinary_least_squares",
+    "linear_plateau": "deterministic_data_anchored",
+    "quadratic_plateau": "deterministic_data_anchored",
+    "mitscherlich": "deterministic_data_anchored",
 }
 _MODEL_COMPLEXITY = {
     "linear": 1,
