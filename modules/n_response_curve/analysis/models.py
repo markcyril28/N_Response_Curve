@@ -900,14 +900,14 @@ def _optimum_summary(
     observed_n_rates: np.ndarray,
     observed_min: float,
     observed_max: float,
-    tolerance: float,
+    optimum_boundary_tolerance_n_kg_ha: float,
+    flat_response_tolerance_t_ha: float,
     parameter_rank_full: bool,
 ) -> _OptimumSummary:
     predicted_values = [float(row["predicted_yield_t_ha"]) for row in predictions]
     observed_domain_peak = max(predicted_values)
-    boundary_tolerance = max((observed_max - observed_min) * 1e-6, tolerance)
-    response_scale = max(max(abs(value) for value in predicted_values), 1.0)
-    response_tolerance = max(math.sqrt(tolerance) * response_scale, 1.0e-8)
+    boundary_tolerance = optimum_boundary_tolerance_n_kg_ha
+    response_tolerance = flat_response_tolerance_t_ha
     span = observed_max - observed_min
 
     def summary(
@@ -938,7 +938,14 @@ def _optimum_summary(
 
     if model_name == "linear":
         slope = parameters["slope"]
-        shape = "increasing_linear" if slope > tolerance else "decreasing_linear" if slope < -tolerance else "flat_linear"
+        slope_tolerance = response_tolerance / max(span, 1.0)
+        shape = (
+            "increasing_linear"
+            if slope > slope_tolerance
+            else "decreasing_linear"
+            if slope < -slope_tolerance
+            else "flat_linear"
+        )
         return summary(
             "NO_FINITE_OPTIMUM_LINEAR",
             None,
@@ -1085,6 +1092,7 @@ def fit_candidate_model(
     yields: Sequence[float | int],
     *,
     record_uids: Sequence[str] | None = None,
+    observation_evidence: Sequence[Mapping[str, Any]] | None = None,
     model_name: str,
     policy: Mapping[str, Any],
 ) -> ModelAttempt:
@@ -1096,11 +1104,32 @@ def fit_candidate_model(
         raise ValueError("response_series_uid must be a nonempty string")
     if record_uids is not None and len(record_uids) != len(n_rates):
         raise ValueError("record_uids must align one-to-one with N-rate observations")
+    if observation_evidence is not None and len(observation_evidence) != len(n_rates):
+        raise ValueError("observation_evidence must align one-to-one with N-rate observations")
     if len(n_rates) == len(yields):
         identity_uids: Sequence[str | None] = record_uids if record_uids is not None else (None,) * len(n_rates)
+        identity_evidence: Sequence[Mapping[str, Any]] = (
+            observation_evidence
+            if observation_evidence is not None
+            else ({},) * len(n_rates)
+        )
         observations: object = tuple(
             sorted(
-                zip(identity_uids, n_rates, yields),
+                (
+                    (
+                        record_uid,
+                        n_rate,
+                        yield_value,
+                        dict(evidence),
+                    )
+                    for record_uid, n_rate, yield_value, evidence in zip(
+                        identity_uids,
+                        n_rates,
+                        yields,
+                        identity_evidence,
+                        strict=True,
+                    )
+                ),
                 key=lambda row: json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str),
             )
         )
@@ -1133,6 +1162,10 @@ def fit_candidate_model(
         minimum_yield, maximum_yield, minimum_n, maximum_n, minimum_residual_df, tolerance = _policy_bounds(policy)
     except ValueError:
         raise
+    uncertainty_status, uncertainty_method, uncertainty_basis, uncertainty_reasons = _uncertainty_gate(
+        policy,
+        tuple(observation_evidence or ()),
+    )
     if observed_min < minimum_n - tolerance or observed_max > maximum_n + tolerance:
         return _attempt(
             response_series_uid=response_series_uid,
@@ -1145,17 +1178,49 @@ def fit_candidate_model(
             observed_n_min_kg_ha=observed_min,
             observed_n_max_kg_ha=observed_max,
         )
-    if distinct_levels < _minimum_distinct_levels(model_name):
+    if policy.get("no_extrapolation") is not True:
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
             identity_payload=identity_payload,
             status="unsupported",
-            reason_codes=("INSUFFICIENT_DISTINCT_N_LEVELS",),
+            reason_codes=("OBSERVED_DOMAIN_RESTRICTION_REQUIRED",),
             n_observations=n_observations,
             distinct_n_level_count=distinct_levels,
             observed_n_min_kg_ha=observed_min,
             observed_n_max_kg_ha=observed_max,
+        )
+    level_gate_reason = _model_level_gate_reason(model_name, distinct_levels, policy)
+    if level_gate_reason is not None:
+        return _attempt(
+            response_series_uid=response_series_uid,
+            model_name=model_name,
+            identity_payload=identity_payload,
+            status="unsupported",
+            reason_codes=(level_gate_reason,),
+            n_observations=n_observations,
+            distinct_n_level_count=distinct_levels,
+            observed_n_min_kg_ha=observed_min,
+            observed_n_max_kg_ha=observed_max,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
+        )
+    model_gate, model_gate_reason = _reviewed_model_gate(model_name, policy)
+    if model_gate is None:
+        return _attempt(
+            response_series_uid=response_series_uid,
+            model_name=model_name,
+            identity_payload=identity_payload,
+            status="unsupported",
+            reason_codes=(model_gate_reason or "REVIEWED_MODEL_GATE_POLICY_UNAVAILABLE",),
+            n_observations=n_observations,
+            distinct_n_level_count=distinct_levels,
+            observed_n_min_kg_ha=observed_min,
+            observed_n_max_kg_ha=observed_max,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
         )
     parameter_count = _MODEL_PARAMETER_COUNTS[model_name]
     residual_df = n_observations - parameter_count
@@ -1192,7 +1257,8 @@ def fit_candidate_model(
         y,
         minimum_yield=minimum_yield,
         maximum_yield=maximum_yield,
-        tolerance=tolerance,
+        tolerance=model_gate.optimizer_tolerance,
+        gate=model_gate,
     )
     if parameters is None:
         return _attempt(
@@ -1206,6 +1272,10 @@ def fit_candidate_model(
             observed_n_min_kg_ha=observed_min,
             observed_n_max_kg_ha=observed_max,
             residual_df=residual_df,
+            model_gate_policy_id=model_gate.policy_id,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
         )
     parameter_map = _parameter_mapping(model_name, parameters)
     predicted_observed = evaluate_model(model_name, x, parameter_map)
@@ -1222,6 +1292,10 @@ def fit_candidate_model(
             observed_n_max_kg_ha=observed_max,
             residual_df=residual_df,
             parameters=parameter_map,
+            model_gate_policy_id=model_gate.policy_id,
+            uncertainty_status=uncertainty_status,
+            uncertainty_method=uncertainty_method,
+            uncertainty_evidence_basis=uncertainty_basis,
         )
     predictions = _predictions(
         model_name,
