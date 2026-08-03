@@ -26,6 +26,23 @@ KNOWN_DATASET_VERSIONS = (
 
 
 @dataclass(frozen=True)
+class DatasetMembershipDiagnostic:
+    """One series-level membership decision for a filtered dataset view."""
+
+    response_series_uid: str
+    status: str
+    required_classes: tuple[str, ...]
+    verified_classes: tuple[str, ...]
+    missing_classes: tuple[str, ...]
+    ineligible_required_classes: tuple[str, ...]
+    ineligible_optional_classes: tuple[str, ...]
+    optional_classes_present: tuple[str, ...]
+    reason_codes: tuple[str, ...]
+    comparison_set_uid: str | None = None
+    response_series_uids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class DatasetVersion:
     """A deterministic, non-mutating membership view over canonical record IDs."""
 
