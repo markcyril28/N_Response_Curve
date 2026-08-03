@@ -816,21 +816,25 @@ def _curve_row(
 
 
 def _all_credible_curve_row(
-    rows: Sequence[Mapping[str, Any]],
+    fit_rows: Sequence[Mapping[str, Any]],
+    evidence_rows: Sequence[Mapping[str, Any]],
     credible: Sequence[ModelAttempt],
     *,
     zero_tolerance: float,
     baseline_metrics_enabled: bool,
+    policy: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Build one series row without ranking credible candidates against each other."""
 
     if not credible:
         return None
     row = _curve_row(
-        rows,
+        fit_rows,
+        evidence_rows,
         credible[0],
         zero_tolerance=zero_tolerance,
         baseline_metrics_enabled=baseline_metrics_enabled,
+        policy=policy,
     )
     if row is None:
         return None
