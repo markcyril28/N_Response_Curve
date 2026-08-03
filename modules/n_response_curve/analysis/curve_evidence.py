@@ -111,7 +111,20 @@ def _study_uid(rows: Sequence[Mapping[str, Any]], source_name: str) -> str | Non
     return f"study_{hashlib.sha256(payload).hexdigest()[:24]}"
 
 
-def _curve_row(
+def _record_reason_codes(record: Mapping[str, Any]) -> set[str]:
+    reasons: set[str] = set()
+    for key in (
+        "eligibility_reason_codes",
+        "series_eligibility_reason_codes",
+        "series_reason_codes",
+    ):
+        raw = record.get(key, ())
+        if isinstance(raw, (list, tuple, set, frozenset)):
+            reasons.update(str(value) for value in raw)
+    return reasons
+
+
+def _series_fit_exclusion_reasons(
     rows: Sequence[Mapping[str, Any]],
     selected: ModelAttempt,
     *,
