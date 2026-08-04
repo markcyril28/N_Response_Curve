@@ -206,7 +206,7 @@ def stable_json_sha256(payload: object) -> str:
     """Return the SHA-256 digest of the repository's canonical JSON encoding."""
 
     encoded = json.dumps(
-        payload,
+        _canonical_json_value(payload),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
