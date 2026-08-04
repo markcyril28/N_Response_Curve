@@ -396,6 +396,7 @@ __all__ = [
     "IngestionResult",
     "RawColumn",
     "RawRow",
+    "SourceAdapterSpec",
     "SUPPORTED_SHAPE_ADAPTERS",
     "ingest_configured_sources",
     "ingest_csv",
