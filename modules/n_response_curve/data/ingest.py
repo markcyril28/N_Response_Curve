@@ -72,6 +72,14 @@ class IngestedSource:
     shape_adapter_version: str = "direct-csv-v1"
     schema_map_path: Path | None = None
     schema_map_sha256: str | None = None
+    schema_map_version: str | None = None
+    source_encoding: str = "utf-8-sig"
+    text_decoding_lineage: str = "decoded_from_registered_bytes"
+    data_classification: str = "internal"
+    workbook_csv_basis: str = "csv_registered_artifact"
+    restricted_access_status: str = "not_restricted"
+    source_revision_status: str = "registered_checksum"
+    source_revision_comparison_sha256: str | None = None
 
 
 @dataclass(frozen=True)
