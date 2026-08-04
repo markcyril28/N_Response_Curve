@@ -120,6 +120,13 @@ def ingest_csv(
     shape_adapter_version: str = "direct-csv-v1",
     schema_map_path: str | Path | None = None,
     schema_map_sha256: str | None = None,
+    schema_map_version: str | None = None,
+    encoding: str = "utf-8-sig",
+    data_classification: str = "internal",
+    workbook_csv_basis: str = "csv_registered_artifact",
+    checksum_revision_approval: ChecksumRevisionApproval | Mapping[str, object] | None = None,
+    checksum_revision_artifact_path: str | None = None,
+    designated_reviewers: Iterable[str] = (),
 ) -> IngestedSource:
     """Read one CSV by physical position and fail before accepting shape drift.
 
