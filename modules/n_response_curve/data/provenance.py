@@ -1000,9 +1000,25 @@ def plan_literature_verification_round(
 
 
 __all__ = [
+    "ChecksumRevisionApproval",
+    "ChecksumRevisionComparison",
+    "CsvStructure",
+    "SourceScopeApproval",
+    "VerificationResult",
+    "VerificationRound",
+    "VerificationSamplingPolicy",
     "SourceIntegrityReport",
+    "SourceActivation",
+    "build_source_scope_snapshot",
+    "compare_checksum_revision",
+    "inspect_csv_structure",
+    "parse_checksum_revision_approval",
+    "plan_literature_verification_round",
     "sha256_file",
     "stable_identifier",
     "stable_json_sha256",
+    "validate_checksum_revision_approval",
+    "validate_source_activation",
+    "validate_source_scope_approval",
     "verify_source_integrity",
 ]
