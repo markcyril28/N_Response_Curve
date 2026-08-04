@@ -54,6 +54,117 @@ class SourceIntegrityReport:
     checked_files: int
     failed_files: tuple[str, ...]
     artifact_sha256: Mapping[str, str]
+    artifact_metadata: Mapping[str, Mapping[str, str]]
+    duplicate_byte_groups: tuple[tuple[str, ...], ...]
+    unverified_relationships: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CsvStructure:
+    """Read-only structural evidence used when a registered CSV changes."""
+
+    path: Path
+    sha256: str
+    byte_count: int
+    encoding: str
+    physical_column_count: int
+    logical_row_count: int
+    nonblank_data_row_count: int
+    header_sha256: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "sha256": self.sha256,
+            "byte_count": self.byte_count,
+            "encoding": self.encoding,
+            "physical_column_count": self.physical_column_count,
+            "logical_row_count": self.logical_row_count,
+            "nonblank_data_row_count": self.nonblank_data_row_count,
+            "header_sha256": self.header_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class ChecksumRevisionComparison:
+    """Automated old/new structural comparison; this is not human approval."""
+
+    prior: CsvStructure
+    candidate: CsvStructure
+    changed_fields: tuple[str, ...]
+    comparison_sha256: str
+
+
+@dataclass(frozen=True)
+class ChecksumRevisionApproval:
+    """Artifact-specific designated-reviewer evidence for a checksum revision."""
+
+    artifact_path: str
+    reviewer: str
+    reviewed_on: str
+    rationale: str
+    old_sha256: str
+    new_sha256: str
+    manifest_revision: str
+    structural_comparison_sha256: str
+    prior_registered_path: Path
+
+
+@dataclass(frozen=True)
+class SourceScopeApproval:
+    """Human approval bound to one exact authoritative source-scope snapshot."""
+
+    reviewer: str
+    reviewed_on: str
+    rationale: str
+    snapshot_sha256: str
+    scope_revision: str
+
+
+@dataclass(frozen=True)
+class SourceActivation:
+    """Sources admitted by one exact approved scope and prerequisite set."""
+
+    snapshot_sha256: str
+    scope_revision: str
+    activated_sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VerificationSamplingPolicy:
+    """Reviewed risk-stratified sequential verification design."""
+
+    version: str
+    review_id: str
+    stratum_fields: tuple[str, ...]
+    risk_field: str
+    initial_sample_per_stratum: int
+    escalation_sample_per_stratum: int
+    discrepancy_thresholds: Mapping[str, int]
+    maximum_rounds: int
+    seed: str
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    """Completed check for one literature record."""
+
+    record_uid: str
+    round_number: int
+    severity: str
+    reviewer: str
+    reviewed_on: str
+    evidence: str
+
+
+@dataclass(frozen=True)
+class VerificationRound:
+    """Next deterministic sample or a terminal verification state."""
+
+    round_number: int
+    status: str
+    selected_record_uids: tuple[str, ...]
+    escalated_strata: tuple[tuple[str, ...], ...]
+    limitation_reasons: tuple[str, ...]
 
 
 def sha256_file(path: str | Path) -> str:
