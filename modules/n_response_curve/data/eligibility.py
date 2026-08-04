@@ -133,6 +133,8 @@ def _tier_and_reasons(
     policy: Mapping[str, Any],
 ) -> tuple[str, tuple[str, ...]]:
     reasons: set[str] = set(record.get("series_reason_codes", ()))
+    unresolved_review_controls = _unresolved_review_controls(record)
+    reasons.update(unresolved_review_controls)
     series_status = record.get("series_status")
     duplicate_status = record.get("duplicate_status", "unique")
     raw_duplicate_relationships = record.get("duplicate_relationships", ())
@@ -178,7 +180,12 @@ def _tier_and_reasons(
         "N_RATE_OUT_OF_RANGE",
         "YIELD_OUT_OF_RANGE",
     }
-    if hard_blockers.intersection(reasons) or n_rate is None or yield_value is None:
+    if (
+        hard_blockers.intersection(reasons)
+        or unresolved_review_controls
+        or n_rate is None
+        or yield_value is None
+    ):
         return "D", tuple(sorted(reasons))
 
     assert metrics is not None
