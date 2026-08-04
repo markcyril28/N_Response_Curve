@@ -510,6 +510,492 @@ def verify_source_integrity(
         checked_files=len(checked_paths),
         failed_files=tuple(sorted(failed)),
         artifact_sha256=MappingProxyType(dict(sorted(manifest_artifacts.items()))),
+        artifact_metadata=MappingProxyType(dict(sorted(manifest_metadata.items()))),
+        duplicate_byte_groups=duplicate_byte_groups,
+        unverified_relationships=tuple(sorted(unverified_relationships)),
+    )
+
+
+def inspect_csv_structure(path: str | Path, *, encoding: str) -> CsvStructure:
+    """Collect comparison evidence using the artifact's registered encoding."""
+
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise ConfigError(f"CSV structure comparison source does not exist: {source}")
+    digest_before = sha256_file(source)
+    try:
+        with source.open("r", encoding=encoding, newline="") as handle:
+            reader = csv.reader(handle, strict=True)
+            try:
+                header = next(reader)
+            except StopIteration as exc:
+                raise ConfigError(f"CSV structure comparison source is empty: {source}") from exc
+            logical_rows = 1
+            nonblank_rows = 0
+            for row in reader:
+                logical_rows += 1
+                if row and any(cell != "" for cell in row):
+                    nonblank_rows += 1
+    except (UnicodeError, LookupError) as exc:
+        raise ConfigError(
+            f"CSV structure comparison failed under registered encoding {encoding!r}: {source}"
+        ) from exc
+    except csv.Error as exc:
+        raise ConfigError(f"Malformed CSV during structural comparison: {source}: {exc}") from exc
+    if sha256_file(source) != digest_before:
+        raise ConfigError(f"Source bytes changed during structural comparison: {source}")
+    return CsvStructure(
+        path=source,
+        sha256=digest_before,
+        byte_count=source.stat().st_size,
+        encoding=encoding,
+        physical_column_count=len(header),
+        logical_row_count=logical_rows,
+        nonblank_data_row_count=nonblank_rows,
+        header_sha256=stable_json_sha256(header),
+    )
+
+
+def compare_checksum_revision(
+    prior_registered_path: str | Path,
+    candidate_path: str | Path,
+    *,
+    prior_encoding: str,
+    candidate_encoding: str,
+) -> ChecksumRevisionComparison:
+    """Create automated comparison evidence without accepting the changed artifact."""
+
+    prior = inspect_csv_structure(prior_registered_path, encoding=prior_encoding)
+    candidate = inspect_csv_structure(candidate_path, encoding=candidate_encoding)
+    comparable_fields = (
+        "byte_count",
+        "encoding",
+        "physical_column_count",
+        "logical_row_count",
+        "nonblank_data_row_count",
+        "header_sha256",
+    )
+    changed = tuple(
+        field
+        for field in comparable_fields
+        if getattr(prior, field) != getattr(candidate, field)
+    )
+    payload = {
+        "prior": prior.as_dict(),
+        "candidate": candidate.as_dict(),
+        "changed_fields": changed,
+    }
+    return ChecksumRevisionComparison(
+        prior=prior,
+        candidate=candidate,
+        changed_fields=changed,
+        comparison_sha256=stable_json_sha256(payload),
+    )
+
+
+def parse_checksum_revision_approval(payload: Mapping[str, object]) -> ChecksumRevisionApproval:
+    """Parse, but do not invent, an artifact-specific checksum acceptance record."""
+
+    required = {
+        "artifact_path",
+        "reviewer",
+        "reviewed_on",
+        "rationale",
+        "old_sha256",
+        "new_sha256",
+        "manifest_revision",
+        "structural_comparison_sha256",
+        "prior_registered_path",
+    }
+    missing = required - set(payload)
+    if missing:
+        raise ConfigError(
+            "Checksum revision approval is missing field(s): " + ", ".join(sorted(missing))
+        )
+    old_sha256 = _nonempty_text(payload["old_sha256"], where="checksum approval old_sha256").lower()
+    new_sha256 = _nonempty_text(payload["new_sha256"], where="checksum approval new_sha256").lower()
+    comparison_sha256 = _nonempty_text(
+        payload["structural_comparison_sha256"],
+        where="checksum approval structural_comparison_sha256",
+    ).lower()
+    for label, digest in (
+        ("old_sha256", old_sha256),
+        ("new_sha256", new_sha256),
+        ("structural_comparison_sha256", comparison_sha256),
+    ):
+        if _SHA256_RE.fullmatch(digest) is None:
+            raise ConfigError(f"checksum approval {label} is not a SHA-256 digest")
+    return ChecksumRevisionApproval(
+        artifact_path=_nonempty_text(payload["artifact_path"], where="checksum approval artifact_path"),
+        reviewer=_nonempty_text(payload["reviewer"], where="checksum approval reviewer"),
+        reviewed_on=_iso_date(payload["reviewed_on"], where="checksum approval reviewed_on"),
+        rationale=_nonempty_text(payload["rationale"], where="checksum approval rationale"),
+        old_sha256=old_sha256,
+        new_sha256=new_sha256,
+        manifest_revision=_nonempty_text(
+            payload["manifest_revision"],
+            where="checksum approval manifest_revision",
+        ),
+        structural_comparison_sha256=comparison_sha256,
+        prior_registered_path=Path(
+            _nonempty_text(
+                payload["prior_registered_path"],
+                where="checksum approval prior_registered_path",
+            )
+        ).resolve(),
+    )
+
+
+def validate_checksum_revision_approval(
+    approval: ChecksumRevisionApproval | Mapping[str, object],
+    *,
+    candidate_path: str | Path,
+    expected_old_sha256: str,
+    artifact_path: str,
+    prior_encoding: str,
+    candidate_encoding: str,
+    designated_reviewers: Iterable[str],
+) -> ChecksumRevisionComparison:
+    """Accept only exact, reviewer-bound evidence for one changed artifact."""
+
+    parsed = (
+        approval
+        if isinstance(approval, ChecksumRevisionApproval)
+        else parse_checksum_revision_approval(approval)
+    )
+    reviewers = {str(reviewer).strip() for reviewer in designated_reviewers if str(reviewer).strip()}
+    if not reviewers or parsed.reviewer not in reviewers:
+        raise ConfigError("Checksum revision approval reviewer is not a designated reviewer")
+    candidate = Path(candidate_path).resolve()
+    actual_new_sha256 = sha256_file(candidate)
+    expected_old = expected_old_sha256.lower()
+    if (
+        parsed.artifact_path != artifact_path
+        or parsed.old_sha256 != expected_old
+        or parsed.new_sha256 != actual_new_sha256
+    ):
+        raise ConfigError("Checksum revision approval is not bound to the exact old/new artifact")
+    if not parsed.prior_registered_path.is_file():
+        raise ConfigError("Checksum revision approval does not preserve an accessible prior artifact")
+    if sha256_file(parsed.prior_registered_path) != expected_old:
+        raise ConfigError("Preserved prior artifact does not match the registered old checksum")
+    comparison = compare_checksum_revision(
+        parsed.prior_registered_path,
+        candidate,
+        prior_encoding=prior_encoding,
+        candidate_encoding=candidate_encoding,
+    )
+    if comparison.comparison_sha256 != parsed.structural_comparison_sha256:
+        raise ConfigError("Checksum revision approval does not match the automated structural comparison")
+    return comparison
+
+
+def build_source_scope_snapshot(
+    *,
+    source_entries: Mapping[str, Mapping[str, Any]],
+    enabled_sources: Iterable[str],
+    integrity_report: SourceIntegrityReport,
+    cutoff: str,
+    scanned_roots: Iterable[str],
+) -> Mapping[str, object]:
+    """Build a deterministic, versionable scope candidate without asserting approval."""
+
+    enabled = tuple(sorted(str(name) for name in enabled_sources))
+    unknown = set(enabled) - set(source_entries)
+    if unknown:
+        raise ConfigError("Source scope references unknown source(s): " + ", ".join(sorted(unknown)))
+    sources: list[dict[str, object]] = []
+    for name in enabled:
+        entry = source_entries[name]
+        sources.append(
+            {
+                "source_name": name,
+                "source_type": entry.get("source_type"),
+                "source_family": entry.get("source_family"),
+                "availability": entry.get("availability"),
+                "confirmation_status": entry.get("confirmation_status"),
+                "shape_adapter_version": entry.get("shape_adapter_version"),
+                "encoding": entry.get("encoding"),
+                "data_classification": entry.get("data_classification"),
+                "data_path": entry.get("data_path"),
+                "schema_map": entry.get("schema_map"),
+                "manifest_artifact_path": entry.get("manifest_artifact_path"),
+                "schema_map_status": entry.get("schema_map_status"),
+                "duplicate_review_status": entry.get("duplicate_review_status"),
+                "restricted_controls_status": entry.get("restricted_controls_status"),
+            }
+        )
+    payload: dict[str, object] = {
+        "snapshot_format": "source-scope-v1",
+        "cutoff": _nonempty_text(cutoff, where="source scope cutoff"),
+        "scanned_roots": tuple(sorted(_nonempty_text(root, where="scanned root") for root in scanned_roots)),
+        "sources": tuple(sources),
+        "manifest_artifact_count": integrity_report.checked_files,
+        "manifest_artifact_sha256": dict(integrity_report.artifact_sha256),
+        "duplicate_byte_groups": integrity_report.duplicate_byte_groups,
+    }
+    payload["snapshot_sha256"] = stable_json_sha256(payload)
+    return MappingProxyType(payload)
+
+
+def validate_source_scope_approval(
+    snapshot: Mapping[str, object],
+    approval: SourceScopeApproval | Mapping[str, object],
+    *,
+    designated_reviewers: Iterable[str],
+) -> SourceScopeApproval:
+    """Validate explicit approval for the exact source-scope snapshot."""
+
+    if isinstance(approval, SourceScopeApproval):
+        parsed = approval
+    else:
+        parsed = SourceScopeApproval(
+            reviewer=_nonempty_text(approval.get("reviewer"), where="source scope reviewer"),
+            reviewed_on=_iso_date(approval.get("reviewed_on"), where="source scope reviewed_on"),
+            rationale=_nonempty_text(approval.get("rationale"), where="source scope rationale"),
+            snapshot_sha256=_nonempty_text(
+                approval.get("snapshot_sha256"),
+                where="source scope snapshot_sha256",
+            ).lower(),
+            scope_revision=_nonempty_text(
+                approval.get("scope_revision"),
+                where="source scope revision",
+            ),
+        )
+    reviewers = {str(reviewer).strip() for reviewer in designated_reviewers if str(reviewer).strip()}
+    if parsed.reviewer not in reviewers:
+        raise ConfigError("Source-scope approval reviewer is not a designated reviewer")
+    expected = snapshot.get("snapshot_sha256")
+    if not isinstance(expected, str) or parsed.snapshot_sha256 != expected:
+        raise ConfigError("Source-scope approval is not bound to the exact snapshot")
+    return parsed
+
+
+def validate_source_activation(
+    snapshot: Mapping[str, object],
+    approval: SourceScopeApproval | Mapping[str, object],
+    *,
+    integrity_report: SourceIntegrityReport,
+    designated_reviewers: Iterable[str],
+) -> SourceActivation:
+    """Admit no source until every source-bound prerequisite is evidenced."""
+
+    parsed = validate_source_scope_approval(
+        snapshot,
+        approval,
+        designated_reviewers=designated_reviewers,
+    )
+    snapshot_sources = snapshot.get("sources")
+    if not isinstance(snapshot_sources, (list, tuple)):
+        raise ConfigError("Source-scope snapshot does not contain a source registry")
+    activated: list[str] = []
+    for item in snapshot_sources:
+        if not isinstance(item, Mapping):
+            raise ConfigError("Source-scope snapshot source entries must be mappings")
+        source_name = _nonempty_text(
+            item.get("source_name"),
+            where="source-scope source name",
+        )
+        if item.get("availability") != "available":
+            raise ConfigError(f"Source is not available for activation: {source_name}")
+        if item.get("confirmation_status") != "verified":
+            raise ConfigError(f"Source identity is not verified for activation: {source_name}")
+        adapter = item.get("shape_adapter_version")
+        if not isinstance(adapter, str) or not adapter.strip() or adapter == "unassigned":
+            raise ConfigError(f"Source adapter is not assigned for activation: {source_name}")
+        if item.get("schema_map_status") != "reviewed":
+            raise ConfigError(f"Source schema map is not reviewed for activation: {source_name}")
+        if item.get("duplicate_review_status") != "passed":
+            raise ConfigError(f"Source duplicate review has not passed: {source_name}")
+        if (
+            item.get("data_classification") == "restricted"
+            and item.get("restricted_controls_status") != "passed"
+        ):
+            raise ConfigError(f"Restricted-data controls have not passed: {source_name}")
+        artifact_path = _nonempty_text(
+            item.get("manifest_artifact_path"),
+            where=f"source {source_name} manifest artifact path",
+        )
+        if (
+            artifact_path not in integrity_report.artifact_sha256
+            or artifact_path in integrity_report.failed_files
+            or artifact_path in integrity_report.unverified_relationships
+        ):
+            raise ConfigError(
+                f"Source artifact relationship and checksum are not fully verified: {source_name}"
+            )
+        activated.append(source_name)
+    if not activated:
+        raise ConfigError("Approved source scope activates no sources")
+    return SourceActivation(
+        snapshot_sha256=str(snapshot["snapshot_sha256"]),
+        scope_revision=parsed.scope_revision,
+        activated_sources=tuple(sorted(activated)),
+    )
+
+
+def _verification_stratum(
+    record: Mapping[str, object],
+    policy: VerificationSamplingPolicy,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    for field in (*policy.stratum_fields, policy.risk_field):
+        value = record.get(field)
+        text = str(value).strip() if value is not None else ""
+        values.append(text or "unresolved")
+    return tuple(values)
+
+
+def _validate_verification_policy(policy: VerificationSamplingPolicy) -> None:
+    _nonempty_text(policy.version, where="verification policy version")
+    _nonempty_text(policy.review_id, where="verification policy review evidence")
+    _nonempty_text(policy.risk_field, where="verification risk field")
+    _nonempty_text(policy.seed, where="verification sampling seed")
+    if not policy.stratum_fields or len(policy.stratum_fields) != len(
+        set(policy.stratum_fields)
+    ):
+        raise ConfigError("Verification strata must be explicitly nonempty and unique")
+    if policy.risk_field in policy.stratum_fields:
+        raise ConfigError("Verification risk field must be separate from stratum fields")
+    if policy.initial_sample_per_stratum < 1 or policy.escalation_sample_per_stratum < 1:
+        raise ConfigError("Verification sample sizes must be positive")
+    if policy.maximum_rounds < 1:
+        raise ConfigError("Verification maximum rounds must be positive")
+    if not policy.discrepancy_thresholds:
+        raise ConfigError("Verification discrepancy thresholds must be predeclared")
+    for severity, threshold in policy.discrepancy_thresholds.items():
+        _nonempty_text(severity, where="verification discrepancy severity")
+        if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1:
+            raise ConfigError("Verification discrepancy thresholds must be positive integers")
+
+
+def plan_literature_verification_round(
+    records: Iterable[Mapping[str, object]],
+    *,
+    policy: VerificationSamplingPolicy,
+    completed_results: Iterable[VerificationResult] = (),
+    designated_reviewers: Iterable[str] = (),
+) -> VerificationRound:
+    """Plan or stop a deterministic risk-stratified sequential verification."""
+
+    _validate_verification_policy(policy)
+    rows = [dict(record) for record in records]
+    record_uids = [str(record.get("record_uid", "")).strip() for record in rows]
+    if not all(record_uids) or len(record_uids) != len(set(record_uids)):
+        raise ConfigError("Literature verification records require unique nonempty identifiers")
+    by_uid = dict(zip(record_uids, rows, strict=True))
+    by_stratum: dict[tuple[str, ...], list[str]] = {}
+    for uid, record in by_uid.items():
+        by_stratum.setdefault(_verification_stratum(record, policy), []).append(uid)
+    for stratum, members in by_stratum.items():
+        members.sort(
+            key=lambda uid: stable_json_sha256(
+                (policy.seed, policy.version, stratum, uid)
+            )
+        )
+
+    reviewer_set = {
+        str(reviewer).strip()
+        for reviewer in designated_reviewers
+        if str(reviewer).strip()
+    }
+    results: dict[str, VerificationResult] = {}
+    for result in completed_results:
+        if result.record_uid not in by_uid:
+            raise ConfigError("Verification result references a record outside the inventory")
+        if result.record_uid in results:
+            raise ConfigError("Literature record has more than one verification result")
+        if result.round_number < 1 or result.round_number > policy.maximum_rounds:
+            raise ConfigError("Verification result round number is outside the policy")
+        if result.severity != "none" and result.severity not in policy.discrepancy_thresholds:
+            raise ConfigError("Verification result uses an undeclared discrepancy severity")
+        if result.reviewer not in reviewer_set:
+            raise ConfigError("Verification result reviewer is not designated")
+        _iso_date(result.reviewed_on, where="verification result reviewed_on")
+        _nonempty_text(result.evidence, where="verification result evidence")
+        results[result.record_uid] = result
+
+    if not results:
+        selected = tuple(
+            uid
+            for stratum in sorted(by_stratum)
+            for uid in by_stratum[stratum][: policy.initial_sample_per_stratum]
+        )
+        return VerificationRound(
+            round_number=1,
+            status="sample_required",
+            selected_record_uids=selected,
+            escalated_strata=(),
+            limitation_reasons=(),
+        )
+
+    highest_round = max(result.round_number for result in results.values())
+    incomplete: list[str] = []
+    for stratum, members in sorted(by_stratum.items()):
+        expected = min(len(members), policy.initial_sample_per_stratum)
+        checked = [uid for uid in members if uid in results]
+        if len(checked) < expected:
+            needed = expected - len(checked)
+            unchecked = [uid for uid in members if uid not in results]
+            incomplete.extend(unchecked[:needed])
+    if incomplete:
+        return VerificationRound(
+            round_number=highest_round,
+            status="sample_incomplete",
+            selected_record_uids=tuple(incomplete),
+            escalated_strata=(),
+            limitation_reasons=(),
+        )
+
+    triggered: list[tuple[str, ...]] = []
+    for stratum, members in sorted(by_stratum.items()):
+        stratum_results = [results[uid] for uid in members if uid in results]
+        if any(
+            sum(result.severity == severity for result in stratum_results) >= threshold
+            for severity, threshold in policy.discrepancy_thresholds.items()
+        ):
+            triggered.append(stratum)
+    if not triggered:
+        return VerificationRound(
+            round_number=highest_round,
+            status="pass",
+            selected_record_uids=(),
+            escalated_strata=(),
+            limitation_reasons=(),
+        )
+
+    if highest_round >= policy.maximum_rounds:
+        return VerificationRound(
+            round_number=highest_round,
+            status="explicit_limitation_required",
+            selected_record_uids=(),
+            escalated_strata=tuple(triggered),
+            limitation_reasons=("MAXIMUM_VERIFICATION_ROUNDS_REACHED",),
+        )
+    selected_next: list[str] = []
+    exhausted: list[tuple[str, ...]] = []
+    for stratum in triggered:
+        unchecked = [uid for uid in by_stratum[stratum] if uid not in results]
+        chosen = unchecked[: policy.escalation_sample_per_stratum]
+        selected_next.extend(chosen)
+        if not chosen:
+            exhausted.append(stratum)
+    if exhausted:
+        return VerificationRound(
+            round_number=highest_round,
+            status="explicit_limitation_required",
+            selected_record_uids=(),
+            escalated_strata=tuple(triggered),
+            limitation_reasons=tuple(
+                f"STRATUM_EXHAUSTED:{'|'.join(stratum)}" for stratum in exhausted
+            ),
+        )
+    return VerificationRound(
+        round_number=highest_round + 1,
+        status="escalated_sample_required",
+        selected_record_uids=tuple(selected_next),
+        escalated_strata=tuple(triggered),
+        limitation_reasons=(),
     )
 
 
