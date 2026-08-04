@@ -15,6 +15,36 @@ from .config import ConfigError
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MANIFEST_COLUMNS = (
+    "artifact_path",
+    "role",
+    "priority",
+    "source_locator",
+    "relationship",
+    "rows",
+    "columns",
+    "bytes",
+    "sha256",
+    "scope_reason",
+)
+_MANIFEST_ROLES = frozenset(
+    {
+        "source_workbook",
+        "core_trial_data",
+        "paired_management_trial_data",
+        "variety_lookup",
+        "annual_reports_sheet",
+        "annual_report_project_index",
+        "field_list",
+        "source_notes",
+        "duplicate_source_export",
+    }
+)
+_MANIFEST_PRIORITIES = frozenset(
+    {"primary", "supporting", "documentation", "provenance", "source_evidence"}
+)
+_CONTROL_ARTIFACT_NAMES = frozenset({"manifest.csv", "checksums.sha256"})
+_ROW_DECLARATION_RE = re.compile(r"^(?P<count>\d+) (?P<kind>data rows|physical rows|sheets)$")
 
 
 @dataclass(frozen=True)
