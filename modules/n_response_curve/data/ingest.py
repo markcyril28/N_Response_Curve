@@ -282,19 +282,44 @@ def _manifest_relative_path(config: ValidatedConfig, source_path: Path) -> str:
         ) from exc
 
 
-def ingest_configured_sources(config: ValidatedConfig) -> IngestionResult:
+def ingest_configured_sources(
+    config: ValidatedConfig,
+    *,
+    adapter_specs: Mapping[str, SourceAdapterSpec] | None = None,
+    checksum_revision_approvals: Mapping[
+        str, ChecksumRevisionApproval | Mapping[str, object]
+    ] | None = None,
+    designated_reviewers: Iterable[str] = (),
+) -> IngestionResult:
     """Verify the intake package and read every enabled source without writing it."""
 
+    configured_specs = dict(adapter_specs or {})
+    revision_approvals = dict(checksum_revision_approvals or {})
+    unexpected_revision_sources = set(revision_approvals) - set(config.enabled_sources)
+    if unexpected_revision_sources:
+        raise ConfigError(
+            "Checksum revision approval supplied for a disabled or unknown source: "
+            + ", ".join(sorted(unexpected_revision_sources))
+        )
     for source_name in config.enabled_sources:
         adapter = str(config.sources[source_name]["shape_adapter_version"])
-        if adapter not in SUPPORTED_SHAPE_ADAPTERS:
+        if adapter not in SUPPORTED_SHAPE_ADAPTERS and adapter not in configured_specs:
             raise ConfigError(
                 f"Enabled source {source_name!r} declares unsupported shape adapter {adapter!r}"
             )
+        if adapter in configured_specs and configured_specs[adapter].version != adapter:
+            raise ConfigError(
+                f"Adapter registry key {adapter!r} does not match its versioned specification"
+            )
 
+    provisional_revision_paths = tuple(
+        _manifest_relative_path(config, _configured_source_path(config, source_name))
+        for source_name in sorted(revision_approvals)
+    )
     integrity_report = verify_source_integrity(
         config.paths["source_manifest"],
         config.paths["source_checksums"],
+        provisional_revision_paths=provisional_revision_paths,
     )
     if integrity_report.failed_files:
         raise ConfigError(
@@ -303,8 +328,12 @@ def ingest_configured_sources(config: ValidatedConfig) -> IngestionResult:
         )
 
     schema = config.raw["schema"]
-    expected_columns = schema["expected_physical_columns"]
-    expected_headers = _expected_headers_from_config(config)
+    legacy_spec = SourceAdapterSpec(
+        version="core-trial-csv-v1",
+        expected_physical_columns=int(schema["expected_physical_columns"]),
+        expected_headers=_expected_headers_from_config(config),
+        map_version="config-schema-v1",
+    )
     sources: list[IngestedSource] = []
     for source_name in config.enabled_sources:
         source_path = _configured_source_path(config, source_name)
@@ -318,19 +347,45 @@ def ingest_configured_sources(config: ValidatedConfig) -> IngestionResult:
             raise ConfigError(
                 f"Enabled source is not registered in the manifest: {source_name} ({manifest_relative_path})"
             )
+        adapter_version = str(source_config["shape_adapter_version"])
+        if adapter_version in configured_specs:
+            adapter_spec = configured_specs[adapter_version]
+        elif adapter_version in {"core-trial-csv-v1", "fixture-csv-v1"}:
+            adapter_spec = SourceAdapterSpec(
+                version=adapter_version,
+                expected_physical_columns=legacy_spec.expected_physical_columns,
+                expected_headers=legacy_spec.expected_headers,
+                map_version=legacy_spec.map_version,
+            )
+        else:  # Defensive: the registry gate above should already have rejected this.
+            raise ConfigError(f"No physical-shape specification exists for adapter {adapter_version!r}")
+        schema_map_digest = sha256_file(schema_map_path)
+        if adapter_spec.expected_physical_columns < 1:
+            raise ConfigError(f"Adapter {adapter_version!r} declares an invalid physical shape")
         sources.append(
             ingest_csv(
                 source_path,
                 source_name=source_name,
-                expected_physical_columns=expected_columns,
-                expected_headers=expected_headers,
+                expected_physical_columns=adapter_spec.expected_physical_columns,
+                expected_headers=adapter_spec.expected_headers,
                 expected_sha256=expected_sha256,
                 source_type=str(source_config["source_type"]),
                 source_family=str(source_config["source_family"]),
                 source_country_code=str(source_config["country_code"]),
-                shape_adapter_version=str(source_config["shape_adapter_version"]),
+                shape_adapter_version=adapter_version,
                 schema_map_path=schema_map_path,
-                schema_map_sha256=sha256_file(schema_map_path),
+                schema_map_sha256=schema_map_digest,
+                schema_map_version=adapter_spec.map_version,
+                encoding=str(source_config["encoding"]),
+                data_classification=str(source_config["data_classification"]),
+                workbook_csv_basis=(
+                    "parallel_workbook_csv_unresolved"
+                    if source_config.get("workbook")
+                    else "csv_registered_artifact"
+                ),
+                checksum_revision_approval=revision_approvals.get(source_name),
+                checksum_revision_artifact_path=manifest_relative_path,
+                designated_reviewers=designated_reviewers,
             )
         )
     return IngestionResult(sources=tuple(sources), integrity_report=integrity_report)
