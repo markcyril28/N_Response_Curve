@@ -251,6 +251,17 @@ def ingest_csv(
         shape_adapter_version=shape_adapter_version,
         schema_map_path=Path(schema_map_path).resolve() if schema_map_path is not None else None,
         schema_map_sha256=schema_map_sha256,
+        schema_map_version=schema_map_version,
+        source_encoding=encoding,
+        data_classification=data_classification,
+        workbook_csv_basis=workbook_csv_basis,
+        restricted_access_status=(
+            "restricted_controls_required"
+            if data_classification == "restricted"
+            else "not_restricted"
+        ),
+        source_revision_status=source_revision_status,
+        source_revision_comparison_sha256=revision_comparison_sha256,
     )
 
 
