@@ -24,6 +24,16 @@ SUPPORTED_SHAPE_ADAPTERS = frozenset({"core-trial-csv-v1", "fixture-csv-v1"})
 
 
 @dataclass(frozen=True)
+class SourceAdapterSpec:
+    """Versioned physical-shape contract for exactly one source adapter."""
+
+    version: str
+    expected_physical_columns: int
+    expected_headers: Mapping[int, str]
+    map_version: str
+
+
+@dataclass(frozen=True)
 class RawColumn:
     """One physical input column, identified independently of its header text."""
 
