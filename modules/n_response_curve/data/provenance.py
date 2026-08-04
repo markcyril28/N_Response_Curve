@@ -389,6 +389,13 @@ def verify_source_integrity(
     manifest = Path(manifest_path).resolve()
     checksums = Path(checksums_path).resolve()
     source_root = manifest.parent
+    provisional_revisions: set[str] = set()
+    for raw_path in provisional_revision_paths:
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ConfigError("Provisional checksum-revision paths must be nonempty strings")
+        relative = raw_path.strip()
+        _resolve_artifact_path(source_root, relative, where="Provisional checksum revision")
+        provisional_revisions.add(relative)
     expected_from_checksums: dict[str, str] = {}
     checksum_paths: dict[str, Path] = {}
     failed: set[str] = set()
@@ -418,19 +425,28 @@ def verify_source_integrity(
 
     checked_paths: set[str] = set()
     manifest_artifacts: dict[str, str] = {}
+    manifest_metadata: dict[str, Mapping[str, str]] = {}
+    unverified_relationships: set[str] = set()
     with manifest.open("r", encoding="utf-8", newline="") as handle:
         rows = csv.DictReader(handle)
-        required_columns = {"artifact_path", "sha256"}
-        if not required_columns.issubset(rows.fieldnames or set()):
-            raise ConfigError("Source manifest must contain required columns: artifact_path, sha256")
+        if tuple(rows.fieldnames or ()) != _MANIFEST_COLUMNS:
+            raise ConfigError(
+                "Source manifest must contain the exact ten-column contract in order: "
+                + ", ".join(_MANIFEST_COLUMNS)
+            )
         for row_number, row in enumerate(rows, start=2):
             relative = (row.get("artifact_path") or "").strip()
             expected = (row.get("sha256") or "").strip().lower()
             if not relative or not _SHA256_RE.fullmatch(expected):
                 failed.add(f"manifest:{row_number}")
                 continue
+            if Path(relative).name.casefold() in _CONTROL_ARTIFACT_NAMES:
+                raise ConfigError(
+                    f"Manifest row {row_number} registers a control file as a source artifact: {relative}"
+                )
             if relative in checked_paths:
                 raise ConfigError(f"Duplicate manifest artifact_path on row {row_number}: {relative}")
+            _validate_manifest_vocabulary(row, row_number=row_number)
             path = _resolve_artifact_path(
                 source_root,
                 relative,
