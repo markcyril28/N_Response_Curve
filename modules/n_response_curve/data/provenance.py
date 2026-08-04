@@ -221,6 +221,21 @@ def stable_identifier(prefix: str, payload: object) -> str:
     return f"{prefix}_{stable_json_sha256(payload)[:24]}"
 
 
+def _nonempty_text(value: object, *, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{where} must be a nonempty string")
+    return value.strip()
+
+
+def _iso_date(value: object, *, where: str) -> str:
+    text = _nonempty_text(value, where=where)
+    try:
+        date.fromisoformat(text)
+    except ValueError as exc:
+        raise ConfigError(f"{where} must be an ISO date (YYYY-MM-DD)") from exc
+    return text
+
+
 def _resolve_artifact_path(source_root: Path, relative: str, *, where: str) -> Path:
     candidate = Path(relative)
     if candidate.is_absolute():
