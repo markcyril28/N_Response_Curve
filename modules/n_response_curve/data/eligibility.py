@@ -104,6 +104,29 @@ def _reason_for_parse_status(prefix: str, status: object) -> str:
     return f"{prefix}_{normalized}"
 
 
+def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
+    unresolved: list[str] = []
+    exact_controls = {
+        "representation_review_status": {"resolved"},
+        "schema_mapping_status": {"reviewed"},
+        "treatment_classification_status": {"resolved"},
+        "restricted_release_status": {
+            "not_restricted",
+            "eligible_for_reviewed_public_projection",
+        },
+    }
+    for field, allowed in exact_controls.items():
+        if field in record and str(record.get(field) or "") not in allowed:
+            unresolved.append(f"UNRESOLVED_REVIEW_CONTROL:{field}")
+    for field, value in record.items():
+        if not str(field).endswith("_normalization_status"):
+            continue
+        status = str(value or "").casefold()
+        if status.startswith(("unresolved", "review_required")) or status == "invalid_numeric":
+            unresolved.append(f"UNRESOLVED_REVIEW_CONTROL:{field}")
+    return tuple(sorted(set(unresolved)))
+
+
 def _tier_and_reasons(
     record: Mapping[str, Any],
     metrics: Mapping[str, Any] | None,
