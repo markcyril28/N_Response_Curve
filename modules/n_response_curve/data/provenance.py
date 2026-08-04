@@ -177,6 +177,31 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _canonical_json_value(value: object) -> object:
+    """Normalize immutable containers before canonical JSON serialization."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_json_value(nested)
+            for key, nested in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_canonical_json_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ),
+        )
+    return value
+
+
 def stable_json_sha256(payload: object) -> str:
     """Return the SHA-256 digest of the repository's canonical JSON encoding."""
 
