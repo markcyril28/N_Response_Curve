@@ -248,8 +248,143 @@ def _resolve_artifact_path(source_root: Path, relative: str, *, where: str) -> P
     return resolved
 
 
-def verify_source_integrity(manifest_path: str | Path, checksums_path: str | Path) -> SourceIntegrityReport:
-    """Verify that manifest and checksum ledger entries describe unchanged files."""
+def _resolve_source_locator(source_root: Path, locator: str, *, where: str) -> Path:
+    """Resolve only the file component of a workbook/sheet or cell-range locator."""
+
+    file_component = locator.split("#", maxsplit=1)[0]
+    relative = Path(file_component)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ConfigError(f"{where} artifact path is outside the intake roots: {locator}")
+    within_manifest_root = (source_root / relative).resolve()
+    if within_manifest_root.exists():
+        return within_manifest_root
+    return (source_root.parent / relative).resolve()
+
+
+def _decode_csv_bytes(path: Path) -> tuple[str, str]:
+    payload = path.read_bytes()
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return payload.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    raise ConfigError(f"Manifest CSV artifact cannot be decoded as registered workflow text: {path}")
+
+
+def _csv_dimensions(path: Path) -> tuple[int, int, int]:
+    text, _ = _decode_csv_bytes(path)
+    try:
+        rows = list(csv.reader(text.splitlines(), strict=True))
+    except csv.Error as exc:
+        raise ConfigError(f"Malformed registered CSV artifact {path}: {exc}") from exc
+    if not rows:
+        return 0, 0, 0
+    columns = len(rows[0])
+    nonblank_data_rows = sum(
+        1
+        for row in rows[1:]
+        if row and any(cell != "" for cell in row)
+    )
+    return columns, len(text.splitlines()), nonblank_data_rows
+
+
+def _xlsx_sheet_count(path: Path) -> int:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            workbook_xml = archive.read("xl/workbook.xml")
+    except (KeyError, zipfile.BadZipFile, OSError) as exc:
+        raise ConfigError(f"Registered workbook is not a readable XLSX package: {path}") from exc
+    return len(re.findall(rb"<sheet\b", workbook_xml))
+
+
+def _validate_manifest_dimensions(path: Path, row: Mapping[str, str], *, row_number: int) -> None:
+    try:
+        declared_bytes = int((row.get("bytes") or "").strip())
+    except ValueError as exc:
+        raise ConfigError(f"Manifest row {row_number} has an invalid bytes declaration") from exc
+    if declared_bytes < 0:
+        raise ConfigError(f"Manifest row {row_number} has a negative bytes declaration")
+    if path.is_file() and path.stat().st_size != declared_bytes:
+        raise ConfigError(
+            f"Manifest row {row_number} byte count differs from the registered artifact: {path}"
+        )
+
+    row_declaration = (row.get("rows") or "").strip()
+    match = _ROW_DECLARATION_RE.fullmatch(row_declaration)
+    if match is None:
+        raise ConfigError(
+            f"Manifest row {row_number} rows declaration must be '<count> data rows', "
+            "'<count> physical rows', or '<count> sheets'"
+        )
+    declared_count = int(match.group("count"))
+    declared_kind = match.group("kind")
+
+    columns_text = (row.get("columns") or "").strip()
+    if columns_text:
+        try:
+            declared_columns = int(columns_text)
+        except ValueError as exc:
+            raise ConfigError(f"Manifest row {row_number} has an invalid columns declaration") from exc
+        if declared_columns < 1:
+            raise ConfigError(f"Manifest row {row_number} columns must be positive when present")
+    else:
+        declared_columns = None
+
+    suffix = path.suffix.casefold()
+    if suffix == ".csv":
+        observed_columns, physical_rows, nonblank_data_rows = _csv_dimensions(path)
+        if declared_columns is not None and observed_columns != declared_columns:
+            raise ConfigError(
+                f"Manifest row {row_number} physical column count differs from the artifact: {path}"
+            )
+        observed_rows = (
+            nonblank_data_rows if declared_kind == "data rows" else physical_rows
+        )
+        if declared_kind == "sheets" or observed_rows != declared_count:
+            raise ConfigError(
+                f"Manifest row {row_number} row declaration differs from the artifact: {path}"
+            )
+    elif suffix == ".xlsx":
+        if declared_columns is not None:
+            raise ConfigError(f"Manifest row {row_number} workbook columns must be blank")
+        if declared_kind != "sheets" or _xlsx_sheet_count(path) != declared_count:
+            raise ConfigError(
+                f"Manifest row {row_number} sheet declaration differs from the workbook: {path}"
+            )
+    else:
+        raise ConfigError(f"Manifest row {row_number} uses an unsupported artifact format: {path}")
+
+
+def _validate_manifest_vocabulary(row: Mapping[str, str], *, row_number: int) -> None:
+    role = (row.get("role") or "").strip()
+    priority = (row.get("priority") or "").strip()
+    relationship = (row.get("relationship") or "").strip()
+    if role not in _MANIFEST_ROLES:
+        raise ConfigError(f"Manifest row {row_number} has an unregistered role: {role!r}")
+    if priority not in _MANIFEST_PRIORITIES:
+        raise ConfigError(f"Manifest row {row_number} has an unregistered priority: {priority!r}")
+    relationship_head = relationship.partition(":")[0].partition(";")[0].strip()
+    if relationship_head not in {"exact_copy", "faithful_cell_value_export", "derived"}:
+        raise ConfigError(
+            f"Manifest row {row_number} has an unregistered relationship: {relationship!r}"
+        )
+    _nonempty_text(row.get("source_locator"), where=f"Manifest row {row_number} source_locator")
+    _nonempty_text(row.get("scope_reason"), where=f"Manifest row {row_number} scope_reason")
+
+
+def verify_source_integrity(
+    manifest_path: str | Path,
+    checksums_path: str | Path,
+    *,
+    provisional_revision_paths: Iterable[str] = (),
+) -> SourceIntegrityReport:
+    """Verify intake bytes, deferring only explicitly approved revision candidates.
+
+    A provisional path remains bound to the old manifest digest in the returned
+    report.  Its replacement bytes must subsequently pass
+    :func:`validate_checksum_revision_approval`; this parameter only prevents
+    the old ledger from making that artifact-specific validation unreachable.
+    """
 
     manifest = Path(manifest_path).resolve()
     checksums = Path(checksums_path).resolve()
