@@ -3,10 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 import csv
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
-from .config import ConfigError, ValidatedConfig
-from .provenance import SourceIntegrityReport, sha256_file, verify_source_integrity
+from .config import (
+    ConfigError,
+    KNOWN_DATA_CLASSIFICATIONS,
+    KNOWN_SOURCE_ENCODINGS,
+    ValidatedConfig,
+)
+from .provenance import (
+    ChecksumRevisionApproval,
+    SourceIntegrityReport,
+    sha256_file,
+    validate_checksum_revision_approval,
+    verify_source_integrity,
+)
 
 
 SUPPORTED_SHAPE_ADAPTERS = frozenset({"core-trial-csv-v1", "fixture-csv-v1"})
