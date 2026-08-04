@@ -130,77 +130,100 @@ def ingest_csv(
 ) -> IngestedSource:
     """Read one CSV by physical position and fail before accepting shape drift.
 
-    ``utf-8-sig`` removes only a Unicode byte-order mark at the beginning of the
-    stream. It does not change the stored source bytes, and keeps the first
-    configured header comparable to its logical source name.
+    Decoding uses only ``encoding``. A Unicode byte-order mark is removed only
+    when the registered codec specifies that behavior. Stored bytes are never
+    rewritten.
     """
 
     if not source_name.strip():
         raise ConfigError("Source name must be nonempty")
     if expected_physical_columns < 1:
         raise ConfigError("Expected physical column count must be at least one")
+    if encoding not in KNOWN_SOURCE_ENCODINGS:
+        raise ConfigError(f"Source encoding is not supported: {encoding!r}")
+    if data_classification not in KNOWN_DATA_CLASSIFICATIONS:
+        raise ConfigError(f"Source data classification is not supported: {data_classification!r}")
 
     path = Path(source_path).resolve()
     if not path.is_file():
         raise ConfigError(f"Source CSV does not exist: {path}")
     digest_before = sha256_file(path)
+    revision_comparison_sha256: str | None = None
+    source_revision_status = "registered_checksum"
     if expected_sha256 is not None and digest_before != expected_sha256:
-        raise ConfigError(f"Source does not match its manifest-bound checksum: {path}")
+        if checksum_revision_approval is None or checksum_revision_artifact_path is None:
+            raise ConfigError(f"Source does not match its manifest-bound checksum: {path}")
+        comparison = validate_checksum_revision_approval(
+            checksum_revision_approval,
+            candidate_path=path,
+            expected_old_sha256=expected_sha256,
+            artifact_path=checksum_revision_artifact_path,
+            prior_encoding=encoding,
+            candidate_encoding=encoding,
+            designated_reviewers=designated_reviewers,
+        )
+        revision_comparison_sha256 = comparison.comparison_sha256
+        source_revision_status = "reviewed_revision_pending_manifest_update"
 
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.reader(handle, strict=True)
-        try:
-            header = next(reader)
-        except StopIteration as exc:
-            raise ConfigError(f"Source CSV is empty: {path}") from exc
-        except csv.Error as exc:
-            raise ConfigError(f"Malformed CSV header in {path}: {exc}") from exc
-        if len(header) != expected_physical_columns:
-            raise ConfigError(
-                f"Source header physical column count is {len(header)}, expected {expected_physical_columns}: {path}"
-            )
-        for position, expected_header in (expected_headers or {}).items():
-            if not isinstance(position, int) or position < 1 or position > len(header):
-                raise ConfigError(f"Configured header position is outside source shape: {position}")
-            actual_header = header[position - 1]
-            if actual_header != expected_header:
-                raise ConfigError(
-                    f"Source header mismatch at physical position {position}: expected {expected_header!r}, got {actual_header!r}"
-                )
-
-        rows: list[RawRow] = []
-        blank_rows: list[RawRow] = []
-        source_row_number = 2
-        while True:
-            physical_line_start = reader.line_num + 1
+    try:
+        with path.open("r", encoding=encoding, newline="") as handle:
+            reader = csv.reader(handle, strict=True)
             try:
-                raw_row = next(reader)
-            except StopIteration:
-                break
+                header = next(reader)
+            except StopIteration as exc:
+                raise ConfigError(f"Source CSV is empty: {path}") from exc
             except csv.Error as exc:
+                raise ConfigError(f"Malformed CSV header in {path}: {exc}") from exc
+            if len(header) != expected_physical_columns:
                 raise ConfigError(
-                    f"Malformed CSV near physical line {physical_line_start} in {path}: {exc}"
-                ) from exc
-            physical_line_end = reader.line_num
-            raw = tuple(raw_row)
-            row = RawRow(
-                source_name=source_name,
-                source_path=path,
-                source_sha256=digest_before,
-                source_row_number=source_row_number,
-                source_physical_line_start=physical_line_start,
-                source_physical_line_end=physical_line_end,
-                raw_cells=raw,
-            )
-            if _is_wholly_blank(raw_row):
-                blank_rows.append(row)
-            elif len(raw_row) != expected_physical_columns:
-                raise ConfigError(
-                    f"Source row {source_row_number} physical column count is {len(raw_row)}, expected {expected_physical_columns}: {path}"
+                    f"Source header physical column count is {len(header)}, expected {expected_physical_columns}: {path}"
                 )
-            else:
-                rows.append(row)
-            source_row_number += 1
+            for position, expected_header in (expected_headers or {}).items():
+                if not isinstance(position, int) or position < 1 or position > len(header):
+                    raise ConfigError(f"Configured header position is outside source shape: {position}")
+                actual_header = header[position - 1]
+                if actual_header != expected_header:
+                    raise ConfigError(
+                        f"Source header mismatch at physical position {position}: expected {expected_header!r}, got {actual_header!r}"
+                    )
+
+            rows: list[RawRow] = []
+            blank_rows: list[RawRow] = []
+            source_row_number = 2
+            while True:
+                physical_line_start = reader.line_num + 1
+                try:
+                    raw_row = next(reader)
+                except StopIteration:
+                    break
+                except csv.Error as exc:
+                    raise ConfigError(
+                        f"Malformed CSV near physical line {physical_line_start} in {path}: {exc}"
+                    ) from exc
+                physical_line_end = reader.line_num
+                raw = tuple(raw_row)
+                row = RawRow(
+                    source_name=source_name,
+                    source_path=path,
+                    source_sha256=digest_before,
+                    source_row_number=source_row_number,
+                    source_physical_line_start=physical_line_start,
+                    source_physical_line_end=physical_line_end,
+                    raw_cells=raw,
+                )
+                if _is_wholly_blank(raw_row):
+                    blank_rows.append(row)
+                elif len(raw_row) != expected_physical_columns:
+                    raise ConfigError(
+                        f"Source row {source_row_number} physical column count is {len(raw_row)}, expected {expected_physical_columns}: {path}"
+                    )
+                else:
+                    rows.append(row)
+                source_row_number += 1
+    except (UnicodeDecodeError, LookupError) as exc:
+        raise ConfigError(
+            f"Source cannot be decoded using its registered encoding {encoding!r}: {path}"
+        ) from exc
 
     digest_after = sha256_file(path)
     if digest_after != digest_before:
