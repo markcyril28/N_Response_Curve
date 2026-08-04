@@ -454,10 +454,29 @@ def verify_source_integrity(
             )
             checked_paths.add(relative)
             manifest_artifacts[relative] = expected
-            if not path.is_file() or sha256_file(path) != expected:
+            manifest_metadata[relative] = MappingProxyType(
+                {column: (row.get(column) or "").strip() for column in _MANIFEST_COLUMNS}
+            )
+            if relative not in provisional_revisions and (
+                not path.is_file() or sha256_file(path) != expected
+            ):
                 failed.add(relative)
+            if path.is_file() and relative not in provisional_revisions:
+                _validate_manifest_dimensions(path, row, row_number=row_number)
             if expected_from_checksums.get(relative) != expected:
                 failed.add(relative)
+
+            locator = _resolve_source_locator(
+                source_root,
+                (row.get("source_locator") or "").strip(),
+                where=f"Manifest row {row_number} source_locator",
+            )
+            relationship = (row.get("relationship") or "").strip()
+            if relationship.startswith("exact_copy") and relative not in provisional_revisions:
+                if not locator.is_file():
+                    unverified_relationships.add(relative)
+                elif sha256_file(locator) != expected:
+                    failed.add(relative)
     if not checked_paths:
         raise ConfigError(f"Source manifest contains no valid artifact entries: {manifest}")
 
@@ -466,8 +485,26 @@ def verify_source_integrity(
             failed.add(relative)
             continue
         path = checksum_paths[relative]
-        if not path.is_file() or sha256_file(path) != expected:
+        if relative not in provisional_revisions and (
+            not path.is_file() or sha256_file(path) != expected
+        ):
             failed.add(relative)
+
+    unknown_revisions = provisional_revisions - checked_paths
+    if unknown_revisions:
+        raise ConfigError(
+            "Provisional checksum revision is not registered in the manifest: "
+            + ", ".join(sorted(unknown_revisions))
+        )
+
+    by_sha256: dict[str, list[str]] = {}
+    for relative, expected in manifest_artifacts.items():
+        by_sha256.setdefault(expected, []).append(relative)
+    duplicate_byte_groups = tuple(
+        tuple(sorted(paths))
+        for _, paths in sorted(by_sha256.items())
+        if len(paths) > 1
+    )
 
     return SourceIntegrityReport(
         checked_files=len(checked_paths),
