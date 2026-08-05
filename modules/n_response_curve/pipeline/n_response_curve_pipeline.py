@@ -64,7 +64,38 @@ def _load_analysis_policy(
         raise ConfigError(f"Analysis policy validation failed: {exc}") from exc
 
 
-def run_phase_two(config: ValidatedConfig) -> PhaseTwoResult:
+def _load_source_data_policy(
+    config: ValidatedConfig,
+) -> SourceDataPolicyBundle | None:
+    if config.source_data_policy_manifest is None:
+        return None
+    if config.source_data_policy_manifest_sha256 is None:
+        raise ConfigError("Source-data policy manifest hash is unavailable")
+    secret_env = config.source_data_policy_secret_env
+    if secret_env is None:
+        raise ConfigError("Source-data policy pseudonym-secret reference is unavailable")
+    secret = os.environ.get(secret_env)
+    if secret is None:
+        raise ConfigError(
+            "Source-data policy pseudonym secret is unavailable in the configured "
+            "environment variable"
+        )
+    try:
+        return load_source_data_policy_manifest(
+            config.source_data_policy_manifest,
+            expected_sha256=config.source_data_policy_manifest_sha256,
+            project_root=config.project_root,
+            secrets={secret_env: secret.encode("utf-8")},
+        )
+    except SourceDataPolicyError as exc:
+        raise ConfigError(f"Source-data policy validation failed: {exc}") from exc
+
+
+def run_phase_two(
+    config: ValidatedConfig,
+    *,
+    source_data_policy: SourceDataPolicyBundle | None = None,
+) -> PhaseTwoResult:
     """Execute the non-writing Phase 2 source-to-analysis-ready data gate."""
 
     ingestion = ingest_configured_sources(config)
