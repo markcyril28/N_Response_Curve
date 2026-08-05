@@ -142,6 +142,18 @@ def classify_missing(value: str | None, missing_values: Mapping[str, Any]) -> st
     return "present"
 
 
+def classify_raw_state(value: str | None, missing_values: Mapping[str, Any]) -> str:
+    """Distinguish numeric zero from missing states without changing parse behavior."""
+
+    missing_state = classify_missing(value, missing_values)
+    if missing_state != "present":
+        return missing_state
+    parsed = parse_numeric(value, missing_values)
+    if parsed.status == "parsed" and parsed.value == 0:
+        return "reported_zero"
+    return "present"
+
+
 def parse_numeric(value: str | None, missing_values: Mapping[str, Any]) -> NumericParse:
     """Parse locale-light numeric cells while preserving an explicit parse status."""
 
