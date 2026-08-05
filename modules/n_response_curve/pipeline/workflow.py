@@ -1699,6 +1699,30 @@ def _qc_summary_tables(phase_two: Any) -> tuple[tuple[dict[str, Any], ...], tupl
     return series_rows, source_rows
 
 
+def _public_release_rows(
+    phase_two: Any,
+    rows: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Project restricted rows through the reviewed disclosure policy before release."""
+
+    materialized = tuple(dict(row) for row in rows)
+    source_data_policy = getattr(phase_two, "source_data_policy", None)
+    if source_data_policy is None:
+        if any(row.get("data_classification") == "restricted" for row in materialized):
+            raise ReportingError(
+                "Restricted records cannot enter a release without a reviewed "
+                "source-data policy"
+            )
+        return materialized
+    try:
+        return project_public_records(
+            materialized,
+            policy=source_data_policy.restricted_policy,
+        )
+    except ValueError as exc:
+        raise ReportingError(f"Restricted-data public projection failed: {exc}") from exc
+
+
 def _table_artifacts(
     phase_two: Any,
     phase_three: PhaseThreeResult,
