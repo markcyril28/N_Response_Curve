@@ -52,6 +52,8 @@ class PhaseThreeResult:
     evidence: CurveEvidenceResult
     input_records: tuple[dict[str, Any], ...]
     test_subset: Mapping[str, Any] | None
+    model_policy: Mapping[str, Any]
+    model_policy_sha256: str
 
 
 @dataclass(frozen=True)
