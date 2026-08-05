@@ -319,7 +319,121 @@ def _assert_safe_target(target: Path, source_roots: Iterable[str | Path]) -> Non
             raise ReportingError(f"Refusing source target for release package: {target}")
 
 
-def _promote_stage(stage: Path, target: Path, *, overwrite: bool) -> None:
+def _replacement_timestamp(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ReportingError("Approved replacement record has an invalid approval timestamp")
+    normalized = value.strip()
+    try:
+        if "T" in normalized:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("timezone is required")
+        else:
+            date.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ReportingError(
+            "Approved replacement timestamp must be an ISO date or timezone-qualified datetime"
+        ) from exc
+    return normalized
+
+
+def _replacement_text(value: Any, *, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ReportingError(f"Approved replacement record has an invalid {field}")
+    return value.strip()
+
+
+def _target_path_sha256(target: Path) -> str:
+    return hashlib.sha256(str(target).encode("utf-8")).hexdigest()
+
+
+def _validate_replacement_record(
+    target: Path,
+    *,
+    manifest: Mapping[str, Any],
+    replacement_record: Mapping[str, Any] | None,
+) -> _ValidatedReplacement:
+    try:
+        prior = verify_release_package(target)
+    except ReportingError as exc:
+        raise ReportingError(
+            "Existing release target is not a verified package and cannot be replaced"
+        ) from exc
+    if not isinstance(replacement_record, Mapping):
+        raise ReportingError(
+            "Replacing an existing release requires an approved named-target replacement record"
+        )
+    record = dict(_json_value(replacement_record))
+    expected_fields = {
+        "record_id",
+        "status",
+        "target_name",
+        "target_path_sha256",
+        "replacement_run_id",
+        "prior_manifest_sha256",
+        "approved_by",
+        "approved_at",
+        "approval_source",
+        "reason",
+    }
+    if set(record) != expected_fields:
+        raise ReportingError("Approved replacement record fields do not match the required schema")
+    record_id = _replacement_text(record["record_id"], field="record identifier")
+    if _SAFE_RECORD_ID.fullmatch(record_id) is None:
+        raise ReportingError("Approved replacement record identifier is unsafe")
+    if record["status"] != "APPROVED":
+        raise ReportingError("Replacement record is not approved")
+    if record["target_name"] != target.name:
+        raise ReportingError("Approved replacement record names a different target")
+    if record["target_path_sha256"] != _target_path_sha256(target):
+        raise ReportingError("Approved replacement record is not bound to this target path")
+    replacement_run_id = manifest.get("run_id")
+    if not isinstance(replacement_run_id, str) or record["replacement_run_id"] != replacement_run_id:
+        raise ReportingError("Approved replacement record names a different replacement run")
+    prior_manifest_sha256 = sha256_file(prior.manifest_path)
+    if (
+        not isinstance(record["prior_manifest_sha256"], str)
+        or _SHA256.fullmatch(record["prior_manifest_sha256"]) is None
+        or record["prior_manifest_sha256"] != prior_manifest_sha256
+    ):
+        raise ReportingError("Approved replacement record does not match the prior manifest")
+    normalized_record = {
+        **record,
+        "record_id": record_id,
+        "approved_by": _replacement_text(record["approved_by"], field="approver"),
+        "approved_at": _replacement_timestamp(record["approved_at"]),
+        "approval_source": _replacement_text(
+            record["approval_source"],
+            field="approval source",
+        ),
+        "reason": _replacement_text(record["reason"], field="replacement reason"),
+    }
+    history_entry = (
+        target.parent
+        / ".release_history"
+        / target.name
+        / f"{prior_manifest_sha256[:16]}-{record_id}"
+    )
+    if history_entry.exists():
+        raise ReportingError("Approved replacement record has already been used")
+    return _ValidatedReplacement(
+        record=normalized_record,
+        history_entry=history_entry,
+        prior_manifest_sha256=prior_manifest_sha256,
+    )
+
+
+def _promote_stage(
+    stage: Path,
+    target: Path,
+    *,
+    overwrite: bool,
+    replacement: _ValidatedReplacement | None,
+) -> Path | None:
     if target.exists() and not overwrite:
         raise ReportingError(f"Release package collision at {target}; set overwrite explicitly to replace it")
     backup: Path | None = None
