@@ -97,6 +97,29 @@ class YieldNormalization:
     parse_status: str
     unit_status: str
     source_unit: str | None
+    conversion: str | None = None
+    review_required: bool = False
+    review_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CategoryNormalization:
+    """One raw category mapped only through a reviewed, versioned lookup."""
+
+    raw_value: str | None
+    canonical_value: str | None
+    status: str
+    map_version: str
+    review_id: str
+
+
+@dataclass(frozen=True)
+class ReviewedLookupTable:
+    """Explicit category aliases and review evidence."""
+
+    map_version: str
+    review_id: str
+    aliases: Mapping[str, tuple[str, ...] | list[str]]
 
 
 def _normalized_text(value: str | None) -> str:
