@@ -258,16 +258,26 @@ def prediction_rows(attempt: ModelAttempt) -> tuple[dict[str, Any], ...]:
 
     rows: list[dict[str, Any]] = []
     for prediction in _validated_predictions(attempt):
-        rows.append(
-            {
+        row = {
                 "response_series_uid": attempt.response_series_uid,
                 "model_attempt_uid": attempt.model_attempt_uid,
                 "model_name": attempt.model_name,
                 "model_status": attempt.status,
+                "uncertainty_status": attempt.uncertainty_status,
+                "uncertainty_method": attempt.uncertainty_method,
+                "uncertainty_evidence_basis": attempt.uncertainty_evidence_basis,
                 "n_rate_kg_ha": float(prediction["n_rate_kg_ha"]),
                 "predicted_yield_t_ha": float(prediction["predicted_yield_t_ha"]),
             }
-        )
+        for field in (
+            "confidence_lower_95pct_t_ha",
+            "confidence_upper_95pct_t_ha",
+            "fitted_mean_se_t_ha",
+            "confidence_level",
+        ):
+            if field in prediction:
+                row[field] = float(prediction[field])
+        rows.append(row)
     return tuple(rows)
 
 
