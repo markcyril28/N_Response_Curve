@@ -436,20 +436,32 @@ def _promote_stage(
 ) -> Path | None:
     if target.exists() and not overwrite:
         raise ReportingError(f"Release package collision at {target}; set overwrite explicitly to replace it")
-    backup: Path | None = None
+    if target.exists() and replacement is None:
+        raise ReportingError(
+            "Replacing an existing release requires an approved named-target replacement record"
+        )
+    archived_package: Path | None = None
+    history_entry: Path | None = None
     try:
         if target.exists():
-            backup = target.with_name(f".{target.name}.backup-{uuid4().hex}")
-            os.replace(target, backup)
+            assert replacement is not None
+            history_entry = replacement.history_entry
+            history_entry.mkdir(parents=True, exist_ok=False)
+            replacement_path = history_entry / "replacement_record.json"
+            _write_json(replacement_path, replacement.record)
+            archived_package = history_entry / "package"
+            os.replace(target, archived_package)
         os.replace(stage, target)
     except BaseException as exc:
         try:
-            if backup is not None and backup.exists():
+            if archived_package is not None and archived_package.exists():
                 if target.is_dir():
                     shutil.rmtree(target)
                 elif target.exists():
                     target.unlink()
-                os.replace(backup, target)
+                os.replace(archived_package, target)
+            if history_entry is not None and history_entry.exists():
+                shutil.rmtree(history_entry)
         except OSError as restore_error:
             raise ReportingError(
                 f"Unable to restore the previous release package after promotion failure: {restore_error}"
@@ -457,9 +469,7 @@ def _promote_stage(
         if isinstance(exc, OSError):
             raise ReportingError(f"Unable to atomically promote release package: {exc}") from exc
         raise
-    else:
-        if backup is not None and backup.exists():
-            shutil.rmtree(backup)
+    return archived_package
 
 
 def verify_release_package(target_path: str | Path) -> ReleasePackage:
