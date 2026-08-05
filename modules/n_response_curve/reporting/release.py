@@ -188,6 +188,130 @@ def _render_report(report_sections: Mapping[str, Iterable[str]]) -> str:
     return "\n".join(lines)
 
 
+def _pdf_text_lines(markdown_text: str) -> tuple[str, ...]:
+    lines: list[str] = []
+    for raw_line in markdown_text.splitlines():
+        normalized = (
+            raw_line.replace("\t", "    ")
+            .replace("\u2013", "-")
+            .replace("\u2014", "-")
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u00a0", " ")
+        )
+        encoded = normalized.encode("cp1252", errors="replace").decode("cp1252")
+        wrapped = textwrap.wrap(
+            encoded,
+            width=92,
+            replace_whitespace=False,
+            drop_whitespace=True,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+        lines.extend(wrapped or [""])
+    return tuple(lines or ("",))
+
+
+def _pdf_literal(value: str) -> bytes:
+    escaped = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    return escaped.encode("cp1252", errors="replace")
+
+
+def _render_deterministic_pdf(markdown_text: str) -> bytes:
+    """Render a small deterministic PDF using only the fixed core Helvetica font."""
+
+    text_lines = _pdf_text_lines(markdown_text)
+    pages = tuple(
+        text_lines[start : start + 52]
+        for start in range(0, len(text_lines), 52)
+    )
+    page_object_numbers = tuple(4 + index * 2 for index in range(len(pages)))
+    objects: dict[int, bytes] = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: (
+            b"<< /Type /Pages /Count "
+            + str(len(pages)).encode("ascii")
+            + b" /Kids ["
+            + b" ".join(f"{number} 0 R".encode("ascii") for number in page_object_numbers)
+            + b"] >>"
+        ),
+        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    }
+    for index, lines in enumerate(pages):
+        page_number = page_object_numbers[index]
+        content_number = page_number + 1
+        content_lines = [b"BT", b"/F1 10 Tf", b"50 750 Td", b"13 TL"]
+        for line in lines:
+            content_lines.append(b"(" + _pdf_literal(line) + b") Tj")
+            content_lines.append(b"T*")
+        content_lines.append(b"ET")
+        content = b"\n".join(content_lines) + b"\n"
+        objects[page_number] = (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 3 0 R >> >> /Contents "
+            + f"{content_number} 0 R".encode("ascii")
+            + b" >>"
+        )
+        objects[content_number] = (
+            b"<< /Length "
+            + str(len(content)).encode("ascii")
+            + b" >>\nstream\n"
+            + content
+            + b"endstream"
+        )
+
+    result = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = {0: 0}
+    for object_number in range(1, max(objects) + 1):
+        offsets[object_number] = len(result)
+        result.extend(f"{object_number} 0 obj\n".encode("ascii"))
+        result.extend(objects[object_number])
+        result.extend(b"\nendobj\n")
+    xref_offset = len(result)
+    result.extend(f"xref\n0 {max(objects) + 1}\n".encode("ascii"))
+    result.extend(b"0000000000 65535 f \n")
+    for object_number in range(1, max(objects) + 1):
+        result.extend(f"{offsets[object_number]:010d} 00000 n \n".encode("ascii"))
+    result.extend(
+        (
+            f"trailer\n<< /Size {max(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(result)
+
+
+def _validate_pdf(path: Path) -> None:
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise ReportingError("Rendered PDF report could not be read back") from exc
+    required_tokens = (
+        b"%PDF-1.4\n",
+        b"/Type /Catalog",
+        b"/Type /Pages",
+        b"/Type /Page",
+        b"/BaseFont /Helvetica",
+        b"xref\n",
+        b"startxref\n",
+        b"%%EOF\n",
+    )
+    if not payload.startswith(required_tokens[0]) or any(
+        token not in payload for token in required_tokens[1:]
+    ):
+        raise ReportingError("Rendered PDF report failed structural read-back validation")
+    if b"/CreationDate" in payload or b"/ModDate" in payload:
+        raise ReportingError("Rendered PDF report contains nondeterministic timestamp metadata")
+    try:
+        startxref = int(payload.rsplit(b"startxref\n", 1)[1].splitlines()[0])
+    except (IndexError, ValueError) as exc:
+        raise ReportingError("Rendered PDF report has an invalid cross-reference offset") from exc
+    if startxref < 1 or payload[startxref : startxref + 5] != b"xref\n":
+        raise ReportingError("Rendered PDF report cross-reference offset does not resolve")
+
+
 def _assert_safe_target(target: Path, source_roots: Iterable[str | Path]) -> None:
     for source_root in source_roots:
         normalized_source = Path(source_root).resolve()
