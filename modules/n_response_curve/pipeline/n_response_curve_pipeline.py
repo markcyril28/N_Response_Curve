@@ -215,6 +215,7 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
     print(f"blank_source_rows={len(phase_two.ingestion.blank_rows)}")
     print(f"resolved_response_series={resolved_series_count}")
     print(f"eligibility_rows={len(phase_two.eligibility.ledger)}")
+    print(f"analysis_eligibility_rows={len(phase_two.analysis_eligibility.ledger)}")
     print(f"tier_A={tier_counts['A']}")
     print(f"tier_B={tier_counts['B']}")
     print(f"tier_C={tier_counts['C']}")
@@ -227,6 +228,8 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
 def run(config_path: str | Path, *, project_root: str | Path) -> int:
     config = load_config(config_path, project_root=project_root, check_files=True, preflight_engines=True)
     analysis_policy = _load_analysis_policy(config)
+    source_data_policy = _load_source_data_policy(config)
+    model_policy = build_effective_model_policy(config, analysis_policy)
     policy_snapshot = validate_runtime_policy(config)
     run_id = f"n_response_{config.run_mode}_{config.raw['run']['random_seed']}"
     run_log = RunLogger(level=str(config.raw["logging"]["level"]), run_id=run_id)
@@ -242,15 +245,26 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     if analysis_policy is not None:
         run_log.info(
             "analysis_policy_validated",
+            manifest_sha256=config.analysis_policy_manifest_sha256,
             component_sha256=dict(analysis_policy.artifact_sha256),
         )
+    if source_data_policy is not None:
+        run_log.info(
+            "source_data_policy_validated",
+            manifest_sha256=source_data_policy.manifest_authority.sha256,
+            component_sha256=dict(source_data_policy.artifact_sha256),
+        )
     with run_log.stage("phase_2"):
-        phase_two = run_phase_two(config)
+        phase_two = run_phase_two(
+            config,
+            source_data_policy=source_data_policy,
+        )
         _enforce_phase_two_qc_gate(config, phase_two)
     run_log.debug(
         "phase_2_summary",
         canonical_rows=len(phase_two.curation.records),
         eligibility_rows=len(phase_two.eligibility.ledger),
+        analysis_eligibility_rows=len(phase_two.analysis_eligibility.ledger),
         critical_records=len(phase_two.qc.critical_record_uids),
         review_records=len(phase_two.qc.review_rows),
     )
@@ -264,7 +278,11 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         run_log.info("validation_completed", writes_outputs=False)
         return 0
     with run_log.stage("phase_3"):
-        phase_three = run_phase_three(config, phase_two)
+        phase_three = run_phase_three(
+            config,
+            phase_two,
+            model_policy=model_policy,
+        )
     run_log.debug(
         "phase_3_summary",
         model_attempts=len(phase_three.evidence.model_attempts),
@@ -275,7 +293,13 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         series_evidence_rows=len(phase_three.evidence.series_evidence_rows),
     )
     with run_log.stage("phase_4"):
-        phase_four = run_phase_four(config, phase_two, phase_three)
+        phase_four = run_phase_four(
+            config,
+            phase_two,
+            phase_three,
+            model_policy=model_policy,
+            analysis_policy=analysis_policy,
+        )
     run_log.debug(
         "phase_4_summary",
         concrete_candidates=len(phase_four.registry.candidates),
@@ -288,6 +312,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         phase_four,
         run_log=run_log,
         policy_snapshot=policy_snapshot,
+        analysis_policy=analysis_policy,
     )
     run_log.info(
         "run_completed",
@@ -301,6 +326,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     print(f"release_package={_relative(phase_five.package.target_path, config.project_root)}")
     print(f"canonical_rows={len(phase_two.curation.records)}")
     print(f"eligibility_rows={len(phase_two.eligibility.ledger)}")
+    print(f"analysis_eligibility_rows={len(phase_two.analysis_eligibility.ledger)}")
     print(f"curve_model_attempts={len(phase_three.evidence.model_attempts)}")
     print(f"curve_feature_rows={len(phase_three.evidence.curve_rows)}")
     print(f"series_evidence_rows={len(phase_three.evidence.series_evidence_rows)}")
