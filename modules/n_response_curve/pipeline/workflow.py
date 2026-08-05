@@ -208,19 +208,141 @@ def _git_inventory(project_root: Path) -> dict[str, Any]:
     }
 
 
-def _model_input_records(config: ValidatedConfig, ledger: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
+def _series_coverage_tokens(rows: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    tokens: set[str] = set()
+    for row in rows:
+        tier = str(
+            row.get("series_eligibility_tier")
+            or row.get("eligibility_tier")
+            or "unresolved"
+        ).strip()
+        tokens.add(f"eligibility_tier:{tier}")
+        treatment = str(
+            row.get("treatment_text_class")
+            or row.get("treatment_class")
+            or "unresolved"
+        ).strip()
+        tokens.add(f"treatment_class:{treatment}")
+        source_type = str(
+            row.get("source_type")
+            or row.get("source_family")
+            or row.get("source_name")
+            or "unresolved"
+        ).strip()
+        tokens.add(f"source_type:{source_type}")
+        reasons = tuple(row.get("series_eligibility_reason_codes") or ())
+        for reason in reasons:
+            if (
+                isinstance(reason, str)
+                and reason
+                and reason != "PRIMARY_ELIGIBLE"
+            ):
+                tokens.add(f"edge_case:{reason}")
+        if bool(row.get("is_high_n")):
+            tokens.add("edge_case:high_n")
+        if bool(row.get("organic_fertilizer_present")) or bool(row.get("biofertilizer_present")):
+            tokens.add("edge_case:organic_or_biofertilizer")
+        if row.get("same_n_status") == "repeated_measurement":
+            tokens.add("edge_case:repeated_n_level")
+    return frozenset(tokens)
+
+
+def _test_subset_selection(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    limit: int,
+    seed: int,
+) -> tuple[tuple[dict[str, Any], ...], dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in records:
+        series_uid = record.get("response_series_uid")
+        if (
+            record.get("series_status") == "resolved"
+            and isinstance(series_uid, str)
+            and series_uid
+        ):
+            grouped.setdefault(series_uid, []).append(record)
+    tokens_by_series = {
+        series_uid: _series_coverage_tokens(rows)
+        for series_uid, rows in grouped.items()
+    }
+    universe = frozenset(
+        token for tokens in tokens_by_series.values() for token in tokens
+    )
+
+    def seeded_rank(series_uid: str) -> str:
+        return hashlib.sha256(f"{seed}\0{series_uid}".encode("utf-8")).hexdigest()
+
+    remaining = set(tokens_by_series)
+    selected: list[str] = []
+    covered: set[str] = set()
+    while remaining and len(selected) < limit:
+        chosen = min(
+            remaining,
+            key=lambda series_uid: (
+                -len(tokens_by_series[series_uid] - covered),
+                seeded_rank(series_uid),
+                series_uid,
+            ),
+        )
+        selected.append(chosen)
+        covered.update(tokens_by_series[chosen])
+        remaining.remove(chosen)
+    permitted = set(selected)
+    selected_records = tuple(
+        dict(record)
+        for record in records
+        if str(record.get("response_series_uid") or "") in permitted
+    )
+    coverage_counts = Counter(token.split(":", 1)[0] for token in covered)
+    snapshot = {
+        "algorithm": "deterministic_representative_greedy_coverage_v1",
+        "random_seed": seed,
+        "configured_series_limit": limit,
+        "available_resolved_series_count": len(grouped),
+        "selected_series_count": len(selected),
+        "selected_series_uids": selected,
+        "selected_series_uid_sha256": stable_json_sha256(selected),
+        "coverage_dimensions": dict(sorted(coverage_counts.items())),
+        "covered_tokens": sorted(covered),
+        "uncovered_tokens": sorted(universe - covered),
+    }
+    return selected_records, snapshot
+
+
+def _model_input_records(
+    config: ValidatedConfig,
+    ledger: Iterable[Mapping[str, Any]],
+) -> tuple[tuple[dict[str, Any], ...], Mapping[str, Any] | None]:
     records = tuple(dict(record) for record in ledger)
     if config.run_mode != "test":
-        return records
-    resolved_series = sorted(
-        {
-            str(record["response_series_uid"])
-            for record in records
-            if record.get("series_status") == "resolved" and record.get("response_series_uid")
-        }
+        return records, None
+    return _test_subset_selection(
+        records,
+        limit=int(config.raw["run"]["test_group_limit"]),
+        seed=int(config.raw["run"]["random_seed"]),
     )
-    permitted = set(resolved_series[: int(config.raw["run"]["test_group_limit"])])
-    return tuple(record for record in records if str(record.get("response_series_uid", "")) in permitted)
+
+
+def build_effective_model_policy(
+    config: ValidatedConfig,
+    analysis_policy: AnalysisPolicyBundle | None,
+) -> Mapping[str, Any]:
+    """Compose one immutable curve policy from runtime mechanics and reviewed controls."""
+
+    mechanics = config.raw["modeling"]
+    if not isinstance(mechanics, Mapping):
+        raise ConfigError("Validated model mechanics are unavailable")
+    if analysis_policy is None:
+        return mechanics
+    reviewed_controls = analysis_policy.curve_model_policy.effective_controls
+    overlap = set(mechanics).intersection(reviewed_controls)
+    if overlap:
+        raise ConfigError(
+            "Reviewed curve controls overlap runtime model mechanics: "
+            + ", ".join(sorted(overlap))
+        )
+    return MappingProxyType({**mechanics, **reviewed_controls})
 
 
 def run_phase_three(config: ValidatedConfig, phase_two: Any) -> PhaseThreeResult:
