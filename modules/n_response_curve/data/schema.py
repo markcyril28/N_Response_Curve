@@ -268,6 +268,77 @@ def normalize_category(value: str | None, mapping: Mapping[str, list[str] | tupl
     return "unresolved"
 
 
+def _reviewed_lookup_alias_owners(
+    lookup: ReviewedLookupTable,
+) -> dict[str, str]:
+    if not isinstance(lookup, ReviewedLookupTable):
+        raise ValueError("Reviewed category lookup must use the expected lookup type")
+    if not isinstance(lookup.map_version, str) or not lookup.map_version.strip():
+        raise ValueError("A category lookup requires a nonempty map version")
+    if not isinstance(lookup.review_id, str) or not lookup.review_id.strip():
+        raise ValueError("A category lookup requires nonempty review evidence")
+    if not isinstance(lookup.aliases, Mapping) or not lookup.aliases:
+        raise ValueError("A category lookup requires at least one canonical category")
+
+    owners: dict[str, str] = {}
+    for canonical, raw_values in lookup.aliases.items():
+        canonical_name = str(canonical).strip()
+        if not canonical_name:
+            raise ValueError("Category lookup canonical values must be nonempty")
+        if (
+            isinstance(raw_values, (str, bytes))
+            or not isinstance(raw_values, (list, tuple))
+            or not raw_values
+        ):
+            raise ValueError(
+                f"Category lookup aliases for {canonical_name!r} must be a nonempty sequence"
+            )
+        for raw in raw_values:
+            if not isinstance(raw, str):
+                raise ValueError("Category lookup aliases must be strings")
+            alias = _category_token(raw)
+            if not alias:
+                raise ValueError("Category lookup aliases must be nonempty")
+            owner = owners.setdefault(alias, canonical_name)
+            if owner != canonical_name:
+                raise ValueError(
+                    f"Category alias {raw!r} belongs to multiple canonical values"
+                )
+    return owners
+
+
+def validate_reviewed_lookup_table(lookup: ReviewedLookupTable) -> None:
+    """Validate all reviewed aliases even when no observed row exercises them."""
+
+    _reviewed_lookup_alias_owners(lookup)
+
+
+def normalize_category_with_evidence(
+    value: str | None,
+    lookup: ReviewedLookupTable,
+) -> CategoryNormalization:
+    """Apply a lookup only when its version and review evidence are explicit."""
+
+    owners = _reviewed_lookup_alias_owners(lookup)
+    normalized = _category_token(value)
+    if not normalized:
+        return CategoryNormalization(
+            raw_value=value,
+            canonical_value=None,
+            status="unresolved_missing",
+            map_version=lookup.map_version,
+            review_id=lookup.review_id,
+        )
+    canonical = owners.get(normalized)
+    return CategoryNormalization(
+        raw_value=value,
+        canonical_value=canonical,
+        status="mapped_reviewed" if canonical is not None else "unresolved_unmapped",
+        map_version=lookup.map_version,
+        review_id=lookup.review_id,
+    )
+
+
 def _text_treatment_class(treatment_raw: str | None, treatment_mapping: Mapping[str, list[str] | tuple[str, ...]]) -> str:
     normalized = _normalized_text(treatment_raw).casefold()
     if not normalized:
