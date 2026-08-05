@@ -1735,13 +1735,47 @@ def _table_artifacts(
     if integrity is None:
         raise ConfigError("Source-integrity report is required before a Phase 5 release")
     series_qc_rows, source_qc_rows = _qc_summary_tables(phase_two)
+    public_curated_rows = _public_release_rows(
+        phase_two,
+        phase_two.curation.records,
+    )
     return {
+        "curated_master": TableArtifact(rows=public_curated_rows),
+        "duplicate_adjudication_ledger": TableArtifact(
+            rows=tuple(
+                row
+                for row in public_curated_rows
+                if row.get("exact_duplicate_group_id")
+                or row.get("probable_duplicate_group_id")
+                or row.get("duplicate_status")
+            ),
+        ),
+        "series_identity_ledger": TableArtifact(
+            rows=tuple(
+                row
+                for row in public_curated_rows
+                if row.get("response_series_uid")
+                or row.get("series_resolution_status")
+            ),
+        ),
+        "restricted_release_ledger": TableArtifact(
+            rows=tuple(
+                row
+                for row in public_curated_rows
+                if row.get("restricted_release_status")
+                or row.get("public_projection_status")
+            ),
+        ),
         "analysis_candidates": TableArtifact(
             rows=tuple(asdict(candidate) for candidate in phase_four.registry.candidates),
             stable_key="candidate_id",
         ),
         "analysis_pruned_families": TableArtifact(rows=tuple(asdict(item) for item in phase_four.registry.pruned_families)),
         "curve_features": TableArtifact(rows=phase_three.evidence.curve_rows, stable_key="response_series_uid"),
+        "economic_optima": TableArtifact(
+            rows=phase_three.evidence.economic_optimum_rows,
+            stable_key="economic_optimum_uid",
+        ),
         "series_evidence": TableArtifact(rows=series_evidence_rows, stable_key="response_series_uid"),
         "descriptive_summaries": TableArtifact(
             rows=descriptive_summary_rows,
@@ -1796,11 +1830,29 @@ def _table_artifacts(
             ),
             stable_key="derived_prediction_uid",
         ),
+        "derived_economic_optima": TableArtifact(
+            rows=tuple(
+                row
+                for view in phase_four.derived_curve_views
+                for row in view.economic_optimum_rows
+            ),
+            stable_key="derived_economic_optimum_uid",
+        ),
         "dataset_versions": TableArtifact(
             rows=tuple(asdict(version) for version in phase_four.dataset_versions),
             stable_key="version_id",
         ),
-        "eligibility_ledger": TableArtifact(rows=phase_two.eligibility.ledger, stable_key="record_uid"),
+        "eligibility_ledger": TableArtifact(
+            rows=_public_release_rows(phase_two, phase_two.eligibility.ledger),
+            stable_key="record_uid",
+        ),
+        "analysis_eligibility_ledger": TableArtifact(
+            rows=_public_release_rows(
+                phase_two,
+                phase_two.analysis_eligibility.ledger,
+            ),
+            stable_key="record_uid",
+        ),
         "factor_catalog": TableArtifact(
             rows=tuple(asdict(entry) for entry in phase_four.factor_catalog),
             stable_key="factor_name",
