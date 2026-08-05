@@ -11,7 +11,6 @@ import shutil
 import tempfile
 import textwrap
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from uuid import uuid4
 
 import pandas as pd
 
