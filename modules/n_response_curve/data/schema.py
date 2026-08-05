@@ -185,9 +185,16 @@ def normalize_yield(
     yield_t_ha_raw: str | None,
     missing_values: Mapping[str, Any],
     *,
-    consistency_tolerance_t_ha: float = 0.01,
+    consistency_tolerance_t_ha: float | None = None,
+    tolerance_review_id: str | None = None,
 ) -> YieldNormalization:
-    """Prefer stated t/ha while retaining kg/ha conversion and conflict evidence."""
+    """Convert documented mass units and quarantine unresolved disagreements."""
+
+    if consistency_tolerance_t_ha is not None:
+        if consistency_tolerance_t_ha < 0:
+            raise ValueError("Yield consistency tolerance cannot be negative")
+        if not isinstance(tolerance_review_id, str) or not tolerance_review_id.strip():
+            raise ValueError("A yield consistency tolerance requires nonempty review evidence")
 
     kilogram = parse_numeric(yield_kg_ha_raw, missing_values)
     tonnes = parse_numeric(yield_t_ha_raw, missing_values)
@@ -195,15 +202,48 @@ def normalize_yield(
     tonnes_value = tonnes.value
     if kilogram_value is not None and tonnes_value is not None:
         kilogram_as_tonnes = kilogram_value / 1000.0
-        if abs(kilogram_as_tonnes - tonnes_value) <= consistency_tolerance_t_ha:
-            return YieldNormalization(tonnes_value, "parsed", "consistent", "both")
-        return YieldNormalization(None, "parsed", "conflict", "both")
+        difference = abs(kilogram_as_tonnes - tonnes_value)
+        consistent = (
+            difference == 0
+            if consistency_tolerance_t_ha is None
+            else difference <= consistency_tolerance_t_ha
+        )
+        if consistent:
+            return YieldNormalization(
+                tonnes_value,
+                "parsed",
+                "consistent",
+                "both",
+                conversion="kg_ha / 1000 == t_ha",
+            )
+        return YieldNormalization(
+            None,
+            "parsed",
+            "conflict",
+            "both",
+            conversion="kg_ha / 1000 compared with t_ha",
+            review_required=True,
+            review_reasons=("YIELD_REPRESENTATION_CONFLICT",),
+        )
     if kilogram_value is not None and tonnes.status in {"blank", "not_stated", "not_applicable"}:
-        return YieldNormalization(kilogram_value / 1000.0, "parsed", "kg_converted", "kg_ha")
+        return YieldNormalization(
+            kilogram_value / 1000.0,
+            "parsed",
+            "kg_converted",
+            "kg_ha",
+            conversion="kg_ha / 1000",
+        )
     if tonnes_value is not None and kilogram.status in {"blank", "not_stated", "not_applicable"}:
         return YieldNormalization(tonnes_value, "parsed", "t_provided", "t_ha")
     if kilogram_value is not None or tonnes_value is not None:
-        return YieldNormalization(None, "invalid_numeric", "conflict", "both")
+        return YieldNormalization(
+            None,
+            "invalid_numeric",
+            "conflict",
+            "both",
+            review_required=True,
+            review_reasons=("YIELD_REPRESENTATION_PARSE_CONFLICT",),
+        )
     return YieldNormalization(
         None,
         _combined_missing_status(kilogram.status, tonnes.status),
