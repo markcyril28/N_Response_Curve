@@ -22,6 +22,12 @@ _UNIT_ALIASES = {
         "tonnes ha-1": CANONICAL_YIELD_UNIT,
     },
 }
+_SENSITIVE_PATH_PATTERNS = (
+    re.compile(r"(?i)\bfile://[^\s\"']+"),
+    re.compile(r"(?i)(?<![\w])(?:[a-z]:[\\/])[^\s\"']+"),
+    re.compile(r"(?i)(?<![\w])/(?:mnt/[a-z]|home|users)/[^\s\"']+"),
+    re.compile(r"(?i)(?<![\w])~[/\\][^\s\"']+"),
+)
 
 
 def canonicalize_irri(value: str | None) -> str | None:
