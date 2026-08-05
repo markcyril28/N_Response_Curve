@@ -51,15 +51,37 @@ nrc_fit_model <- function(
     outcome_kind,
     model_kind,
     unsupported_message,
-    require_binary_glm = FALSE) {
+    require_binary_glm = FALSE,
+    weights = NULL) {
   warning_messages <- character()
   fitted <- tryCatch(
     withCallingHandlers(
       {
         if (identical(outcome_kind, "continuous") && identical(model_kind, "lm")) {
-          stats::lm(model_formula, data = data)
+          if (is.null(weights)) {
+            stats::lm(model_formula, data = data)
+          } else {
+            weighted_data <- data
+            weighted_data$.nrc_first_stage_weight <- weights
+            stats::lm(
+              model_formula,
+              data = weighted_data,
+              weights = .nrc_first_stage_weight
+            )
+          }
         } else if (identical(outcome_kind, "continuous") && identical(model_kind, "lmer")) {
-          lme4::lmer(model_formula, data = data, REML = FALSE)
+          if (is.null(weights)) {
+            lme4::lmer(model_formula, data = data, REML = FALSE)
+          } else {
+            weighted_data <- data
+            weighted_data$.nrc_first_stage_weight <- weights
+            lme4::lmer(
+              model_formula,
+              data = weighted_data,
+              REML = FALSE,
+              weights = .nrc_first_stage_weight
+            )
+          }
         } else if (identical(outcome_kind, "categorical") && identical(model_kind, "glm")) {
           outcome_name <- all.vars(model_formula)[[1L]]
           if (isTRUE(require_binary_glm) &&
@@ -116,13 +138,28 @@ nrc_run_mixed_models <- function(stage) {
   if (is.null(outcome_kind)) {
     outcome_kind <- "continuous"
   }
+  first_stage_weights <- NULL
+  first_stage <- specification$first_stage_uncertainty
+  if (!is.null(first_stage)) {
+    weight_column <- first_stage$weight_column
+    if (is.null(weight_column) || !weight_column %in% names(stage$data)) {
+      return(nrc_skip_result("FIRST_STAGE_WEIGHT_COLUMN_REQUIRED"))
+    }
+    first_stage_weights <- stage$data[[weight_column]]
+    if (!is.numeric(first_stage_weights) ||
+        any(!is.finite(first_stage_weights)) ||
+        any(first_stage_weights <= 0)) {
+      return(nrc_skip_result("FIRST_STAGE_WEIGHTS_INVALID"))
+    }
+  }
   fit <- nrc_fit_model(
     model_formula,
     stage$data,
     outcome_kind,
     model_kind,
     "Unsupported R model kind for the declared outcome type",
-    require_binary_glm = TRUE
+    require_binary_glm = TRUE,
+    weights = first_stage_weights
   )
   fitted <- fit$model
   warning_messages <- fit$warnings
