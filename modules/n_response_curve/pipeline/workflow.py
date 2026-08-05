@@ -1030,6 +1030,7 @@ def _terminal_status_stage_writer(
     phase_four: PhaseFourResult,
     r_statuses: list[dict[str, Any]],
     multiplicity_reconciliation: Mapping[str, Any],
+    terminal_state: dict[str, Any],
     manifest: dict[str, Any],
     report_sections: dict[str, list[str]],
 ):
@@ -1250,6 +1251,14 @@ def _terminal_status_stage_writer(
             "theoretical_candidate_count": phase_four.registry.theoretical_candidate_count,
             "reconciles": terminal_reconciles,
         }
+        terminal_state.clear()
+        terminal_state.update(
+            {
+                "rows": tuple(status_rows),
+                "status_counts": dict(sorted(status_counts.items())),
+                "reconciles": terminal_reconciles,
+            }
+        )
         status_path = stage_root / "analysis_terminal_statuses.json"
         status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return (status_path,)
