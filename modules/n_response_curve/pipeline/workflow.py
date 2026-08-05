@@ -2326,12 +2326,40 @@ def _descriptive_summary_manifest(rows: Sequence[Mapping[str, Any]]) -> dict[str
     }
 
 
-def _hypothesis_snapshot(config: ValidatedConfig) -> dict[str, Any]:
-    specifications = _redact(
-        tuple(config.raw.get("analysis_hypotheses", {}).get("specifications", ()))
-    )
+def _hypothesis_snapshot(
+    config: ValidatedConfig,
+    registry: AnalysisRegistry | None = None,
+) -> dict[str, Any]:
+    if registry is None:
+        specifications = _redact(
+            tuple(config.raw.get("analysis_hypotheses", {}).get("specifications", ()))
+        )
+        authority = "configuration_fallback"
+    else:
+        specifications = _redact(
+            tuple(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "specification_hash": candidate.specification_hash,
+                    "hypothesis_id": candidate.hypothesis_id,
+                    "dataset_version_id": candidate.dataset_version_id,
+                    "source_combination_id": candidate.source_combination_id,
+                    "analysis_family": candidate.analysis_family,
+                    "curve_outcome": candidate.curve_outcome,
+                    "factor_names": candidate.factor_names,
+                    "engine": candidate.engine,
+                    "status": candidate.status,
+                    "reason_codes": candidate.reason_codes,
+                    "prespecified_contrast": candidate.prespecified_contrast,
+                    "multiplicity_family_id": candidate.multiplicity_family_id,
+                }
+                for candidate in registry.candidates
+            )
+        )
+        authority = "effective_runtime_registry"
     return {
         "status": "bounded" if specifications else "not_authoritatively_specified",
+        "authority": authority,
         "specification_count": len(specifications),
         "specifications": specifications,
         "sha256": stable_json_sha256(specifications),
