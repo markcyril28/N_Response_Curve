@@ -2992,6 +2992,7 @@ __all__ = [
     "PhaseFiveResult",
     "PhaseFourResult",
     "PhaseThreeResult",
+    "build_effective_model_policy",
     "release_phases_three_to_five",
     "run_phase_four",
     "run_phase_three",
