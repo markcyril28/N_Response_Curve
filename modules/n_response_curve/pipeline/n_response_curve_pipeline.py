@@ -131,9 +131,18 @@ def run_phase_two(
         curation.records,
         series_identity_dimensions=config.series_identity_dimensions,
         n_level_tolerance_kg_ha=float(config.raw["eligibility"]["n_level_tolerance_kg_ha"]),
+        **(
+            dict(source_data_policy.resolution_kwargs)
+            if source_data_policy is not None
+            else {}
+        ),
     )
     eligibility = assign_eligibility(
         resolution.records,
+        policy=config.raw["eligibility"],
+    )
+    analysis_eligibility = assign_eligibility(
+        resolution.analysis_records,
         policy=config.raw["eligibility"],
     )
     qc = build_qc_report(
@@ -147,7 +156,9 @@ def run_phase_two(
         curation=curation,
         resolution=resolution,
         eligibility=eligibility,
+        analysis_eligibility=analysis_eligibility,
         qc=qc,
+        source_data_policy=source_data_policy,
     )
 
 
