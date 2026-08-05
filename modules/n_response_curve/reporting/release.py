@@ -572,6 +572,8 @@ def write_release_package(
     overwrite: bool,
     source_roots: Iterable[str | Path],
     stage_writers: Sequence[Callable[[Path], Iterable[str | Path]]] = (),
+    replacement_record: Mapping[str, Any] | None = None,
+    release_validator: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> ReleasePackage:
     """Stage, validate, checksum, and atomically promote one auditable run package."""
 
@@ -579,11 +581,27 @@ def write_release_package(
         raise ReportingError("Run manifest input must be a mapping")
     target = Path(target_path).resolve()
     _assert_safe_target(target, source_roots)
+    initial_manifest = dict(_json_value(manifest))
+    initial_profile = initial_manifest.get("output_profile")
+    if isinstance(initial_profile, Mapping) and (
+        "document_formats" in initial_profile
+        and tuple(initial_profile["document_formats"]) != ("md", "pdf")
+    ):
+        raise ReportingError("Run manifest advertises a prohibited report-document profile")
     formats = tuple(str(item).lower().lstrip(".") for item in output_formats)
     if not formats or set(formats) - SUPPORTED_TABLE_FORMATS or len(formats) != len(set(formats)):
         raise ReportingError("Output formats must be unique members of csv, parquet, xlsx")
     if target.exists() and not overwrite:
         raise ReportingError(f"Release package collision at {target}; set overwrite explicitly to replace it")
+    replacement = (
+        _validate_replacement_record(
+            target,
+            manifest=initial_manifest,
+            replacement_record=replacement_record,
+        )
+        if target.exists()
+        else None
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.stage-", dir=target.parent))
     try:
@@ -604,24 +622,84 @@ def write_release_package(
                 if not artifact_path.is_relative_to(stage) or not artifact_path.is_file():
                     raise ReportingError("Stage writer returned an artifact outside the staging package or not a file")
                 relative_path = artifact_path.relative_to(stage).as_posix()
+                if (
+                    relative_path in _RESERVED_PACKAGE_PATHS
+                    or artifact_path.suffix.casefold() in _FORBIDDEN_ARTIFACT_SUFFIXES
+                ):
+                    raise ReportingError(
+                        "Stage writer returned a reserved or prohibited package artifact"
+                    )
                 if relative_path in artifact_sha256:
                     raise ReportingError(f"Stage writer artifact collides with an existing package artifact: {relative_path}")
                 artifact_sha256[relative_path] = sha256_file(artifact_path)
+        if replacement is not None:
+            replacement_path = stage / "replacement_record.json"
+            _write_json(replacement_path, replacement.record)
+            artifact_sha256["replacement_record.json"] = sha256_file(
+                replacement_path
+            )
         staged_paths = {
             path.relative_to(stage).as_posix()
             for path in stage.rglob("*")
             if path.is_file()
         }
+        if any(
+            Path(relative).suffix.casefold() in _FORBIDDEN_ARTIFACT_SUFFIXES
+            for relative in staged_paths
+        ):
+            raise ReportingError("Staging package contains a prohibited document or figure artifact")
         if staged_paths != set(artifact_sha256):
             raise ReportingError("Stage artifact inventory does not account for every staged file")
         for relative_path, digest in artifact_sha256.items():
             if sha256_file(stage / relative_path) != digest:
                 raise ReportingError(f"Stage artifact changed after registration: {relative_path}")
+        if release_validator is not None:
+            if not callable(release_validator):
+                raise ReportingError("Release validator must be callable")
+            release_validator(manifest)
         report_path = stage / "report.md"
-        report_path.write_text(_render_report(report_sections), encoding="utf-8")
+        report_text = _render_report(report_sections)
+        report_path.write_text(report_text, encoding="utf-8")
         artifact_sha256[report_path.relative_to(stage).as_posix()] = sha256_file(report_path)
+        report_pdf_path = stage / "report.pdf"
+        report_pdf_path.write_bytes(_render_deterministic_pdf(report_text))
+        _validate_pdf(report_pdf_path)
+        artifact_sha256[report_pdf_path.relative_to(stage).as_posix()] = sha256_file(
+            report_pdf_path
+        )
         manifest_path = stage / "run_manifest.json"
         manifest_payload = dict(_json_value(manifest))
+        output_profile = manifest_payload.get("output_profile", {})
+        if not isinstance(output_profile, Mapping):
+            raise ReportingError("Run manifest output profile must be a mapping")
+        output_profile = dict(output_profile)
+        if (
+            "document_formats" in output_profile
+            and tuple(output_profile["document_formats"]) != ("md", "pdf")
+        ):
+            raise ReportingError("Run manifest advertises a prohibited report-document profile")
+        output_profile["document_formats"] = ["md", "pdf"]
+        manifest_payload["output_profile"] = output_profile
+        manifest_payload["documents"] = {
+            "markdown": {
+                "path": "report.md",
+                "sha256": artifact_sha256["report.md"],
+            },
+            "pdf": {
+                "path": "report.pdf",
+                "sha256": artifact_sha256["report.pdf"],
+            },
+        }
+        if replacement is not None:
+            manifest_payload["replacement"] = {
+                "record_path": "replacement_record.json",
+                "record_sha256": artifact_sha256["replacement_record.json"],
+                "prior_manifest_sha256": replacement.prior_manifest_sha256,
+                "preserved_prior_path": (
+                    replacement.history_entry.relative_to(target.parent)
+                    / "package"
+                ).as_posix(),
+            }
         manifest_payload["tables"] = table_metadata
         manifest_payload["artifact_sha256_before_manifest"] = dict(sorted(artifact_sha256.items()))
         _write_json(manifest_path, manifest_payload)
@@ -632,8 +710,22 @@ def write_release_package(
             encoding="utf-8",
         )
         verify_release_package(stage)
-        _promote_stage(stage, target, overwrite=overwrite)
-        return verify_release_package(target)
+        preserved_prior = _promote_stage(
+            stage,
+            target,
+            overwrite=overwrite,
+            replacement=replacement,
+        )
+        try:
+            package = verify_release_package(target)
+        except BaseException:
+            if preserved_prior is not None and preserved_prior.exists():
+                failed_replacement = preserved_prior.parent / "failed_replacement_package"
+                if target.exists():
+                    os.replace(target, failed_replacement)
+                os.replace(preserved_prior, target)
+            raise
+        return replace(package, preserved_prior_path=preserved_prior)
     except BaseException:
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
