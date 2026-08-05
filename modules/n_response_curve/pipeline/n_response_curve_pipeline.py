@@ -98,8 +98,35 @@ def run_phase_two(
 ) -> PhaseTwoResult:
     """Execute the non-writing Phase 2 source-to-analysis-ready data gate."""
 
-    ingestion = ingest_configured_sources(config)
-    curation = curate_ingestion(ingestion, config)
+    if source_data_policy is not None:
+        try:
+            validate_source_scope_activation(source_data_policy, config)
+        except SourceDataPolicyError as exc:
+            raise ConfigError(f"Source-scope activation failed: {exc}") from exc
+    if source_data_policy is not None:
+        ingestion = ingest_configured_sources(
+            config,
+            checksum_revision_approvals=(
+                source_data_policy.checksum_revision_approvals
+            ),
+            designated_reviewers=source_data_policy.designated_reviewers,
+        )
+    else:
+        ingestion = ingest_configured_sources(config)
+    if source_data_policy is not None:
+        try:
+            validate_source_data_policy_coverage(source_data_policy, ingestion)
+        except (SourceDataPolicyError, ValueError) as exc:
+            raise ConfigError(f"Source-data policy coverage failed: {exc}") from exc
+    curation = curate_ingestion(
+        ingestion,
+        config,
+        **(
+            dict(source_data_policy.curation_kwargs)
+            if source_data_policy is not None
+            else {}
+        ),
+    )
     resolution = resolve_response_series(
         curation.records,
         series_identity_dimensions=config.series_identity_dimensions,
