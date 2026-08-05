@@ -2482,6 +2482,128 @@ def _logged_stage_writer(
     return write_with_logging
 
 
+def _policy_stage_writer(
+    policy_snapshot: RuntimePolicySnapshot,
+    manifest: dict[str, Any],
+) -> Callable[[Path], tuple[Path, ...]]:
+    def write_policy_snapshot(stage_root: Path) -> tuple[Path, ...]:
+        source = policy_snapshot.artifact_path
+        if source is None:
+            return ()
+        destination = stage_root / "governance" / "approved_policy_snapshot.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        if sha256_file(destination) != policy_snapshot.artifact_sha256:
+            raise ReportingError("Archived policy snapshot does not match its validated source")
+        manifest["runtime_policy"]["archived_artifact_path"] = (
+            destination.relative_to(stage_root).as_posix()
+        )
+        return (destination,)
+
+    return write_policy_snapshot
+
+
+def _analysis_policy_stage_writer(
+    analysis_policy: AnalysisPolicyBundle | None,
+    manifest: dict[str, Any],
+) -> Callable[[Path], tuple[Path, ...]]:
+    def write_analysis_policy(stage_root: Path) -> tuple[Path, ...]:
+        if analysis_policy is None:
+            return ()
+        authorities = (
+            analysis_policy.support_authority,
+            analysis_policy.representation_authority,
+            analysis_policy.estimand_authority,
+            analysis_policy.hypothesis_authority,
+            analysis_policy.model_authority,
+        )
+        destinations: list[Path] = []
+        archived: dict[str, str] = {}
+        for authority in authorities:
+            destination = (
+                stage_root
+                / "governance"
+                / "analysis_policy"
+                / f"{authority.artifact_type}.json"
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(authority.path, destination)
+            if sha256_file(destination) != authority.sha256:
+                raise ReportingError(
+                    "Archived analysis-policy component does not match its validated source: "
+                    f"{authority.artifact_type}"
+                )
+            relative_path = destination.relative_to(stage_root).as_posix()
+            archived[authority.artifact_type] = relative_path
+            destinations.append(destination)
+        manifest["analysis_policy"]["archived_artifact_paths"] = dict(
+            sorted(archived.items())
+        )
+        return tuple(destinations)
+
+    return write_analysis_policy
+
+
+def _load_replacement_record(
+    config: ValidatedConfig,
+    target: Path,
+) -> Mapping[str, Any] | None:
+    path = (
+        config.paths["run_metadata_root"]
+        / "approvals"
+        / "replacement_records"
+        / f"{target.name}.json"
+    )
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ConfigError("Approved replacement record is unreadable or malformed") from exc
+    if not isinstance(payload, Mapping):
+        raise ConfigError("Approved replacement record must be a JSON object")
+    return dict(payload)
+
+
+def _strict_release_validator(
+    config: ValidatedConfig,
+) -> Callable[[Mapping[str, Any]], None]:
+    def validate_release(manifest: Mapping[str, Any]) -> None:
+        if config.run_mode != "full":
+            return
+        warnings = manifest.get("warnings", ())
+        if not isinstance(warnings, (tuple, list)) or any(
+            not isinstance(message, str) for message in warnings
+        ):
+            raise ReportingError("Runtime warning ledger is malformed")
+        if warnings:
+            raise ReportingError(
+                "Authoritative release is blocked because the completed runtime review contains warnings"
+            )
+        runtime_policy = manifest.get("runtime_policy")
+        run_identity_sha256 = manifest.get("run_identity_sha256")
+        policy_content_sha256 = (
+            runtime_policy.get("policy_content_sha256")
+            if isinstance(runtime_policy, Mapping)
+            else None
+        )
+        if (
+            not isinstance(run_identity_sha256, str)
+            or not isinstance(policy_content_sha256, str)
+            or not _review_gate_allows_reuse(
+                manifest,
+                run_identity_sha256=run_identity_sha256,
+                policy_content_sha256=policy_content_sha256,
+                mode="full",
+            )
+        ):
+            raise ReportingError(
+                "Authoritative release is blocked because its complete review gate is missing, incomplete, failed, or not bound to this run"
+            )
+
+    return validate_release
+
+
 def release_phases_three_to_five(
     config: ValidatedConfig,
     phase_two: Any,
