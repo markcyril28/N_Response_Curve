@@ -345,17 +345,43 @@ def build_effective_model_policy(
     return MappingProxyType({**mechanics, **reviewed_controls})
 
 
-def run_phase_three(config: ValidatedConfig, phase_two: Any) -> PhaseThreeResult:
+def run_phase_three(
+    config: ValidatedConfig,
+    phase_two: Any,
+    *,
+    model_policy: Mapping[str, Any] | None = None,
+) -> PhaseThreeResult:
     """Fit only configured curve candidates and preserve every attempt as evidence."""
 
-    input_records = _model_input_records(config, phase_two.eligibility.ledger)
+    effective_model_policy = (
+        model_policy
+        if model_policy is not None
+        else build_effective_model_policy(config, None)
+    )
+    model_policy_sha256 = stable_json_sha256(effective_model_policy)
+    input_records, test_subset = _model_input_records(
+        config,
+        phase_two.analysis_eligibility.ledger,
+    )
     evidence = build_curve_evidence(
         input_records,
         model_names=config.enabled_models,
-        policy=config.raw["modeling"],
+        policy=effective_model_policy,
         fit_record_uids=curve_fit_record_uids(input_records, primary_only=True),
     )
-    return PhaseThreeResult(evidence=evidence, input_records=input_records)
+    attempt_policy_hashes = {
+        attempt.model_policy_sha256
+        for attempt in getattr(evidence, "model_attempts", ())
+    }
+    if attempt_policy_hashes - {model_policy_sha256}:
+        raise ConfigError("Curve-model attempts do not share the effective policy hash")
+    return PhaseThreeResult(
+        evidence=evidence,
+        input_records=input_records,
+        test_subset=test_subset,
+        model_policy=effective_model_policy,
+        model_policy_sha256=model_policy_sha256,
+    )
 
 
 def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseThreeResult) -> PhaseFourResult:
