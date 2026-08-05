@@ -181,7 +181,7 @@ def _render_report(report_sections: Mapping[str, Iterable[str]]) -> str:
             "# Associational limitations",
             "",
             "- Results are associational and must not be interpreted as causal effects without approved design-specific assumptions.",
-            "- Unsupported, sparse, aliased, or decision-gated analyses remain explicit non-findings rather than negative evidence.",
+            "- Unsupported, sparse, aliased, or implementation-, support-, or artifact-gated analyses remain explicit non-findings rather than negative evidence.",
             "",
         )
     )
