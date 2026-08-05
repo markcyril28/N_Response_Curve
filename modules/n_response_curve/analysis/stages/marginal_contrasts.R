@@ -23,12 +23,27 @@ nrc_run_marginal_contrasts <- function(stage) {
 
   model_kind <- specification$model_kind
   outcome_kind <- specification$outcome_kind
+  first_stage_weights <- NULL
+  first_stage <- specification$first_stage_uncertainty
+  if (!is.null(first_stage)) {
+    weight_column <- first_stage$weight_column
+    if (is.null(weight_column) || !weight_column %in% names(stage$data)) {
+      return(nrc_skip_result("FIRST_STAGE_WEIGHT_COLUMN_REQUIRED"))
+    }
+    first_stage_weights <- stage$data[[weight_column]]
+    if (!is.numeric(first_stage_weights) ||
+        any(!is.finite(first_stage_weights)) ||
+        any(first_stage_weights <= 0)) {
+      return(nrc_skip_result("FIRST_STAGE_WEIGHTS_INVALID"))
+    }
+  }
   fit <- nrc_fit_model(
     model_formula,
     stage$data,
     outcome_kind,
     model_kind,
-    "Unsupported R model kind for marginal contrasts"
+    "Unsupported R model kind for marginal contrasts",
+    weights = first_stage_weights
   )
   fitted <- fit$model
   warning_messages <- fit$warnings
