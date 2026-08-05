@@ -373,7 +373,7 @@ def classify_treatment(
     high_n_threshold: float,
     zero_tolerance: float = 1e-8,
 ) -> dict[str, Any]:
-    """Keep textual treatment labels and nutrient-derived treatment facts independent."""
+    """Combine aliases and nutrient evidence while retaining every contradiction."""
 
     is_zero_n = n_rate is not None and abs(n_rate) <= zero_tolerance
     has_complete_pk = p_rate is not None and k_rate is not None
@@ -391,9 +391,42 @@ def classify_treatment(
         nutrient_control_class = "nonzero_n"
 
     treatment_text_class = _text_treatment_class(treatment_raw, treatment_mapping)
+    review_reasons: list[str] = []
+    if treatment_text_class == "unresolved":
+        review_reasons.append("UNKNOWN_TREATMENT_ALIAS")
+    if treatment_text_class == "absolute_control" and not is_absolute_control:
+        review_reasons.append("ABSOLUTE_CONTROL_NUMERIC_CONTRADICTION")
+    if treatment_text_class == "zero_n" and not is_zero_n:
+        review_reasons.append("ZERO_N_ALIAS_NUMERIC_CONTRADICTION")
+    if treatment_text_class in {"RCM", "FP", "NOPT_NPK"} and (
+        n_rate is None or is_zero_n
+    ):
+        review_reasons.append("NONZERO_TREATMENT_ALIAS_N_RATE_CONTRADICTION")
+    if is_zero_n and not has_complete_pk:
+        review_reasons.append("ZERO_N_PK_COMPOSITION_UNRESOLVED")
+    if n_rate is None:
+        review_reasons.append("N_RATE_UNRESOLVED")
+    if is_absolute_control:
+        canonical_treatment_class = "absolute_control"
+    elif is_zero_n_with_pk:
+        canonical_treatment_class = "zero_n"
+    else:
+        canonical_treatment_class = treatment_text_class
+    review_reasons = sorted(set(review_reasons))
     return {
         "treatment_text_class": treatment_text_class,
-        "treatment_fit_role": "comparison_only" if treatment_text_class == "FP" else "curve_candidate",
+        "canonical_treatment_class": canonical_treatment_class,
+        "treatment_classification_status": (
+            "review_required" if review_reasons else "resolved"
+        ),
+        "treatment_review_reasons": tuple(review_reasons),
+        "treatment_fit_role": (
+            "review"
+            if review_reasons
+            else "comparison_only"
+            if treatment_text_class == "FP"
+            else "curve_candidate"
+        ),
         "nutrient_control_class": nutrient_control_class,
         "is_zero_n": is_zero_n,
         "is_zero_n_with_pk": is_zero_n_with_pk,
@@ -404,18 +437,33 @@ def classify_treatment(
     }
 
 
+def sensitive_path_alias(value: str | None) -> str | None:
+    """Return a stable public-safe alias when a cell contains a local path."""
+
+    if value is None or not any(pattern.search(value) for pattern in _SENSITIVE_PATH_PATTERNS):
+        return None
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"restricted_path_{digest}"
+
+
 __all__ = [
     "CANONICAL_N_RATE_UNIT",
     "CANONICAL_YIELD_UNIT",
+    "CategoryNormalization",
     "NumericParse",
+    "ReviewedLookupTable",
     "YieldNormalization",
     "canonicalize_irri",
+    "classify_raw_state",
     "classify_missing",
     "canonical_unit",
     "classify_experiment_priority",
     "classify_treatment",
     "normalize_category",
+    "normalize_category_with_evidence",
     "normalize_country_code",
     "normalize_yield",
     "parse_numeric",
+    "sensitive_path_alias",
+    "validate_reviewed_lookup_table",
 ]
