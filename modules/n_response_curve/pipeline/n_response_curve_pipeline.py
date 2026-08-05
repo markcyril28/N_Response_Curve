@@ -42,7 +42,9 @@ class PhaseTwoResult:
     curation: CurationResult
     resolution: SeriesResolution
     eligibility: EligibilityResult
+    analysis_eligibility: EligibilityResult
     qc: QcReport
+    source_data_policy: SourceDataPolicyBundle | None = None
 
 
 def _load_analysis_policy(
