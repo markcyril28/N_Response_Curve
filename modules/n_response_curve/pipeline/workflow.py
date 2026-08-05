@@ -384,9 +384,23 @@ def run_phase_three(
     )
 
 
-def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseThreeResult) -> PhaseFourResult:
+def run_phase_four(
+    config: ValidatedConfig,
+    phase_two: Any,
+    phase_three: PhaseThreeResult,
+    *,
+    model_policy: Mapping[str, Any] | None = None,
+    analysis_policy: AnalysisPolicyBundle | None = None,
+) -> PhaseFourResult:
     """Build immutable analysis views, factor coverage, and an exhaustive dispatch ledger."""
 
+    effective_model_policy = (
+        model_policy if model_policy is not None else phase_three.model_policy
+    )
+    if stable_json_sha256(effective_model_policy) != phase_three.model_policy_sha256:
+        raise ConfigError(
+            "Primary and derived curve fits must share one effective model policy"
+        )
     versions = build_dataset_versions(
         phase_three.input_records,
         version_names=config.dataset_versions,
@@ -400,8 +414,13 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
         dataset_versions=versions,
         source_combinations=source_combinations,
         model_names=config.enabled_models,
-        policy=config.raw["modeling"],
+        policy=effective_model_policy,
     )
+    derived_policy_hashes = {
+        view.model_policy_sha256 for view in derived_curve_views
+    }
+    if derived_policy_hashes - {phase_three.model_policy_sha256}:
+        raise ConfigError("Derived curve views do not share the effective policy hash")
     curve_rows = tuple(row for view in derived_curve_views for row in view.curve_rows)
     factor_catalog = build_factor_catalog(
         phase_three.evidence.curve_rows,
@@ -419,8 +438,9 @@ def run_phase_four(config: ValidatedConfig, phase_two: Any, phase_three: PhaseTh
         interaction_orders=config.interaction_orders,
         support_policy=support_policy,
         source_families=config.enabled_sources,
-        hypothesis_specifications=tuple(
-            config.raw.get("analysis_hypotheses", {}).get("specifications", ())
+        hypothesis_specifications=effective_analysis_hypotheses(
+            config,
+            analysis_policy,
         ),
     )
     python_results = execute_python_candidates(
@@ -588,6 +608,7 @@ def _r_stage_writer(
                 )
                 continue
             contract_root = r_root / candidate.candidate_id
+            contract = None
             try:
                 contract = write_r_stage_contract(
                     contract_root,
@@ -643,7 +664,15 @@ def _r_stage_writer(
                 )
                 if result.status == "failed" and fail_fast:
                     raise ConfigError(f"R stage failed for {candidate.candidate_id}: return code {result.return_code}")
-                produced.extend(path for path in (contract.contract_path, contract.input_path, contract.output_path) if path.is_file())
+            finally:
+                if contract is not None:
+                    # Analysis inputs and their local contract may contain row-level
+                    # identifiers. Preserve their hashes in the status ledger but
+                    # never carry these execution-only files into a release package.
+                    contract.input_path.unlink(missing_ok=True)
+                    contract.contract_path.unlink(missing_ok=True)
+            if contract is not None and contract.output_path.is_file():
+                produced.append(contract.output_path)
         if active_candidates:
             status_path = r_root / "r_stage_statuses.json"
             status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -810,6 +839,11 @@ def _reconcile_multiplicity_families(
                         "candidate_id": candidate_id,
                         "hypothesis_id": candidate.hypothesis_id,
                         "result_id": result_id,
+                        "engine_result": (
+                            dict(raw_row)
+                            if isinstance(raw_row, Mapping)
+                            else None
+                        ),
                         "raw_p_value": raw_p_value,
                         "adjusted_p_value": None,
                         "method": family.method,
@@ -933,6 +967,62 @@ def _multiplicity_reconciliation_stage_writer(
         return (path,)
 
     return write_multiplicity_reconciliation
+
+
+def _claim_classification_stage_writer(
+    phase_four: PhaseFourResult,
+    multiplicity_reconciliation: Mapping[str, Any],
+    terminal_state: Mapping[str, Any],
+    claim_state: dict[str, Any],
+    manifest: dict[str, Any],
+    report_sections: dict[str, list[str]],
+):
+    def write_claim_classification(stage_root: Path) -> tuple[Path, ...]:
+        terminal_rows = terminal_state.get("rows", ())
+        terminal_by_candidate = {
+            str(row["candidate_id"]): row
+            for row in terminal_rows
+            if isinstance(row, Mapping)
+            and isinstance(row.get("candidate_id"), str)
+            and row.get("candidate_id")
+        }
+        try:
+            sensitivity_evidence = build_runtime_claim_evidence(
+                phase_four.registry,
+                multiplicity_reconciliation,
+            )
+            payload = classify_claim_evidence(
+                phase_four.registry,
+                multiplicity_reconciliation,
+                sensitivity_evidence_by_candidate=sensitivity_evidence,
+                terminal_statuses_by_candidate=terminal_by_candidate,
+            )
+        except ValueError as exc:
+            raise ReportingError(f"Claim-classification policy failed: {exc}") from exc
+        claim_state.clear()
+        claim_state.update(payload)
+        status_counts = payload["status_counts"]
+        manifest["claim_classification"] = {
+            "artifact_path": "claim_classification.json",
+            "status": payload["status"],
+            "candidate_count": payload["candidate_count"],
+            "status_counts": status_counts,
+        }
+        formatted_counts = ", ".join(
+            f"{key}={value}" for key, value in sorted(status_counts.items())
+        ) or "none"
+        report_sections["unsupported"].append(
+            "Positive-claim classification is restricted to noncausal supported "
+            f"associations after all gates pass ({formatted_counts})."
+        )
+        path = stage_root / "claim_classification.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return (path,)
+
+    return write_claim_classification
 
 
 def _terminal_status_stage_writer(
