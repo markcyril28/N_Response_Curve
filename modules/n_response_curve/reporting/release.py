@@ -478,8 +478,15 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
     target = Path(target_path).resolve()
     manifest_path = target / "run_manifest.json"
     report_path = target / "report.md"
+    report_pdf_path = target / "report.pdf"
     checksums_path = target / "CHECKSUMS.sha256"
-    if not target.is_dir() or not manifest_path.is_file() or not report_path.is_file() or not checksums_path.is_file():
+    if (
+        not target.is_dir()
+        or not manifest_path.is_file()
+        or not report_path.is_file()
+        or not report_pdf_path.is_file()
+        or not checksums_path.is_file()
+    ):
         raise ReportingError(f"Release package is incomplete: {target}")
     expected: dict[str, str] = {}
     for line in checksums_path.read_text(encoding="utf-8").splitlines():
@@ -504,6 +511,8 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
         for path in target.rglob("*")
         if path.is_file() and path != checksums_path
     }
+    if any(Path(relative).suffix.casefold() in _FORBIDDEN_ARTIFACT_SUFFIXES for relative in actual_paths):
+        raise ReportingError("Release package contains a prohibited document or figure artifact")
     if actual_paths != set(expected):
         raise ReportingError("Release checksum ledger does not cover the complete package")
     for relative, digest in expected.items():
@@ -516,10 +525,38 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
         raise ReportingError("Release run manifest is not valid JSON") from exc
     if not isinstance(payload, Mapping):
         raise ReportingError("Release run manifest must be a JSON object")
+    output_profile = payload.get("output_profile")
+    if (
+        not isinstance(output_profile, Mapping)
+        or tuple(output_profile.get("document_formats", ())) != ("md", "pdf")
+    ):
+        raise ReportingError("Release run manifest has an invalid report-document profile")
+    documents = payload.get("documents")
+    if not isinstance(documents, Mapping) or set(documents) != {"markdown", "pdf"}:
+        raise ReportingError("Release run manifest has an invalid report-document inventory")
+    expected_documents = {
+        "markdown": ("report.md", sha256_file(report_path)),
+        "pdf": ("report.pdf", sha256_file(report_pdf_path)),
+    }
+    for name, (relative_path, digest) in expected_documents.items():
+        item = documents[name]
+        if (
+            not isinstance(item, Mapping)
+            or item.get("path") != relative_path
+            or item.get("sha256") != digest
+            or expected.get(relative_path) != digest
+        ):
+            raise ReportingError("Release run manifest report-document metadata is invalid")
+    try:
+        report_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ReportingError("Markdown report failed UTF-8 read-back validation") from exc
+    _validate_pdf(report_pdf_path)
     return ReleasePackage(
         target_path=target,
         manifest_path=manifest_path,
         report_path=report_path,
+        report_pdf_path=report_pdf_path,
         checksums_path=checksums_path,
         artifact_sha256=dict(sorted(expected.items())),
     )
