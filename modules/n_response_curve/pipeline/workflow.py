@@ -1897,10 +1897,18 @@ def _table_artifacts(
 def _source_registry(
     config: ValidatedConfig,
     source_artifact_sha256: Mapping[str, str],
+    *,
+    source_scope: Mapping[str, object] | None = None,
+    source_scope_sha256: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     source_root = config.paths["source_manifest"].parent.resolve()
     registry: dict[str, dict[str, Any]] = {}
     for source_name, source in sorted(config.sources.items()):
+        scope_record = (
+            source_scope.get(source_name)
+            if source_scope is not None
+            else None
+        )
         source_path = (config.project_root / str(source["data_path"])).resolve()
         try:
             manifest_artifact_path = source_path.relative_to(source_root).as_posix()
@@ -1927,6 +1935,23 @@ def _source_registry(
             "confirmation_status": source["confirmation_status"],
             "shape_adapter_version": source["shape_adapter_version"],
             "enabled": source_name in config.enabled_sources,
+            "source_scope_activation_status": getattr(
+                scope_record,
+                "activation_status",
+                "not_reviewed",
+            ),
+            "source_scope_schema_harmonization_status": getattr(
+                scope_record,
+                "schema_harmonization_status",
+                "not_reviewed",
+            ),
+            "source_scope_unit_comparability_status": getattr(
+                scope_record,
+                "unit_comparability_status",
+                "not_reviewed",
+            ),
+            "source_scope_review_id": getattr(scope_record, "review_id", None),
+            "source_scope_sha256": source_scope_sha256,
             "manifest_artifact_path": manifest_artifact_path,
             "sha256": digest,
             "checksum_status": (
