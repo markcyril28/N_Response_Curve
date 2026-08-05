@@ -38,11 +38,26 @@ class ReleasePackage:
     target_path: Path
     manifest_path: Path
     report_path: Path
+    report_pdf_path: Path
     checksums_path: Path
     artifact_sha256: Mapping[str, str]
+    preserved_prior_path: Path | None = None
 
 
 _SAFE_TABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_SAFE_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_FORBIDDEN_ARTIFACT_SUFFIXES = frozenset({".htm", ".html", ".svg"})
+_RESERVED_PACKAGE_PATHS = frozenset(
+    {"CHECKSUMS.sha256", "report.md", "report.pdf", "run_manifest.json"}
+)
+
+
+@dataclass(frozen=True)
+class _ValidatedReplacement:
+    record: Mapping[str, Any]
+    history_entry: Path
+    prior_manifest_sha256: str
 
 
 def _json_value(value: Any) -> Any:
