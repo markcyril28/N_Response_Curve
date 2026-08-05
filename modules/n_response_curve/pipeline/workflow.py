@@ -1266,6 +1266,305 @@ def _terminal_status_stage_writer(
     return write_terminal_statuses
 
 
+_SERIES_EVIDENCE_STATUSES = frozenset(
+    {
+        "contrast_only",
+        "credible_model_reported",
+        "credible_model_set_reported",
+        "descriptive_only",
+        "unsupported",
+    }
+)
+
+
+def _collect_review_issues(
+    phase_two: Any,
+    phase_three: PhaseThreeResult | Any,
+    manifest: Mapping[str, Any],
+    terminal_state: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    issues: list[dict[str, Any]] = []
+
+    def normalized_reasons(raw: object, fallback: str) -> tuple[str, ...]:
+        if isinstance(raw, str):
+            values = (raw,) if raw.strip() else ()
+        elif isinstance(raw, (list, tuple, set, frozenset)):
+            values = tuple(str(value).strip() for value in raw if str(value).strip())
+        else:
+            values = ()
+        return tuple(sorted(set(values))) or (fallback,)
+
+    def add_issue(
+        *,
+        stage: str,
+        issue_scope: str,
+        subject_id: str,
+        issue_state: str,
+        status: str,
+        reason_codes: object,
+        detail: str | None = None,
+    ) -> None:
+        payload = {
+            "stage": stage,
+            "issue_scope": issue_scope,
+            "subject_id": subject_id,
+            "issue_state": issue_state,
+            "status": status,
+            "reason_codes": normalized_reasons(
+                reason_codes,
+                "REVIEW_ISSUE_WITHOUT_REASON_CODE",
+            ),
+            "detail": detail,
+        }
+        issues.append(
+            {
+                "review_issue_uid": "review_issue_"
+                + stable_json_sha256(payload)[:24],
+                **payload,
+            }
+        )
+
+    for row in tuple(getattr(phase_two.qc, "review_rows", ())):
+        reasons = normalized_reasons(
+            row.get("eligibility_reason_codes", row.get("reason_codes", ())),
+            "PHASE_TWO_REVIEW_REQUIRED",
+        )
+        issue_state = (
+            "unresolved"
+            if any("UNRESOLVED" in reason or "REVIEW" in reason for reason in reasons)
+            else "excluded_series"
+            if row.get("analytical_record_status") not in {None, "included"}
+            else "warning"
+        )
+        add_issue(
+            stage="phase_2",
+            issue_scope="record",
+            subject_id=str(row.get("record_uid") or "unidentified-record"),
+            issue_state=issue_state,
+            status=str(row.get("eligibility_tier") or "review"),
+            reason_codes=reasons,
+        )
+
+    for row in tuple(phase_three.evidence.series_evidence_rows):
+        evidence_status = str(row.get("evidence_status") or "")
+        if evidence_status not in _SERIES_EVIDENCE_STATUSES:
+            add_issue(
+                stage="phase_3",
+                issue_scope="series",
+                subject_id=str(
+                    row.get("response_series_uid") or "unidentified-series"
+                ),
+                issue_state="structural",
+                status=evidence_status or "missing",
+                reason_codes=("UNKNOWN_SERIES_EVIDENCE_STATUS",),
+            )
+            continue
+        if evidence_status != "unsupported":
+            continue
+        add_issue(
+            stage="phase_3",
+            issue_scope="series",
+            subject_id=str(row.get("response_series_uid") or "unidentified-series"),
+            issue_state="excluded_series",
+            status="unsupported",
+            reason_codes=row.get("reason_codes", ()),
+        )
+
+    for index, warning in enumerate(manifest.get("warnings", ())):
+        detail = str(warning).strip()
+        if not detail:
+            continue
+        add_issue(
+            stage="runtime",
+            issue_scope="runtime",
+            subject_id=f"runtime-warning-{index + 1}",
+            issue_state="warning",
+            status="warning",
+            reason_codes=("RUNTIME_WARNING",),
+            detail=detail,
+        )
+
+    for failure in manifest.get("model_failures", ()):
+        if not isinstance(failure, Mapping) or failure.get("status") != "failed":
+            continue
+        subject_id = str(
+            failure.get("model_attempt_uid")
+            or failure.get("candidate_id")
+            or "unidentified-model-attempt"
+        )
+        add_issue(
+            stage="phase_3",
+            issue_scope="model_attempt",
+            subject_id=subject_id,
+            issue_state="warning",
+            status="failed",
+            reason_codes=failure.get("reason_codes", ()),
+            detail=(str(failure["error"]) if failure.get("error") else None),
+        )
+
+    for row in terminal_state.get("rows", ()):
+        if not isinstance(row, Mapping):
+            continue
+        terminal_status = str(row.get("terminal_status") or "")
+        if terminal_status not in {"failed", "nonconverged", "not_interpretable"}:
+            continue
+        add_issue(
+            stage="phase_4",
+            issue_scope="analysis_candidate",
+            subject_id=str(row.get("candidate_id") or "unidentified-candidate"),
+            issue_state="warning",
+            status=terminal_status,
+            reason_codes=row.get("reason_codes", ()),
+        )
+
+    return tuple(
+        sorted(
+            {row["review_issue_uid"]: row for row in issues}.values(),
+            key=lambda row: (
+                row["stage"],
+                row["issue_scope"],
+                row["subject_id"],
+                row["review_issue_uid"],
+            ),
+        )
+    )
+
+
+_REVIEW_GATE_SCHEMA_VERSION = "ops-03-review-gate-v1"
+_REVIEW_GATE_POLICY_ID = "OPS-03-option-b"
+_REVIEW_GATE_EXPECTED_LEDGERS = (
+    "phase_2_review",
+    "phase_3_series_evidence",
+    "model_attempts",
+    "runtime_warnings",
+    "analysis_terminal_statuses",
+)
+
+
+def _review_gate_allows_reuse(
+    existing_manifest: Mapping[str, Any],
+    *,
+    run_identity_sha256: str,
+    policy_content_sha256: str,
+    mode: str,
+) -> bool:
+    gate = existing_manifest.get("review_gate")
+    if not isinstance(gate, Mapping):
+        return False
+    expected_ledgers = gate.get("expected_ledgers")
+    observed_ledgers = gate.get("observed_ledgers")
+    if not isinstance(expected_ledgers, (list, tuple)) or not isinstance(
+        observed_ledgers,
+        (list, tuple),
+    ):
+        return False
+    if tuple(expected_ledgers) != _REVIEW_GATE_EXPECTED_LEDGERS:
+        return False
+    if tuple(observed_ledgers) != _REVIEW_GATE_EXPECTED_LEDGERS:
+        return False
+    if (
+        gate.get("schema_version") != _REVIEW_GATE_SCHEMA_VERSION
+        or gate.get("policy_id") != _REVIEW_GATE_POLICY_ID
+        or gate.get("mode") != mode
+        or gate.get("run_identity_sha256") != run_identity_sha256
+        or gate.get("policy_content_sha256") != policy_content_sha256
+        or gate.get("evidence_complete") is not True
+        or not isinstance(gate.get("issue_count"), int)
+        or isinstance(gate.get("issue_count"), bool)
+        or int(gate["issue_count"]) < 0
+    ):
+        return False
+    if mode == "full":
+        return (
+            gate.get("decision") == "pass"
+            and gate.get("issue_count") == 0
+            and gate.get("authoritative_release_allowed") is True
+        )
+    if mode == "test":
+        return (
+            gate.get("decision") in {"pass", "bounded_with_findings"}
+            and gate.get("authoritative_release_allowed") is False
+        )
+    return False
+
+
+def _strict_review_gate_stage_writer(
+    config: ValidatedConfig | Any,
+    phase_two: Any,
+    phase_three: PhaseThreeResult | Any,
+    manifest: dict[str, Any],
+    terminal_state: Mapping[str, Any],
+):
+    def write_review_gate(stage_root: Path) -> tuple[Path, ...]:
+        issues = _collect_review_issues(
+            phase_two,
+            phase_three,
+            manifest,
+            terminal_state,
+        )
+        observed_ledgers: list[str] = []
+        if hasattr(phase_two.qc, "review_rows"):
+            observed_ledgers.append("phase_2_review")
+        if hasattr(phase_three.evidence, "series_evidence_rows"):
+            observed_ledgers.append("phase_3_series_evidence")
+        if "model_failures" in manifest:
+            observed_ledgers.append("model_attempts")
+        if "warnings" in manifest:
+            observed_ledgers.append("runtime_warnings")
+        if "rows" in terminal_state and terminal_state.get("reconciles") is True:
+            observed_ledgers.append("analysis_terminal_statuses")
+        evidence_complete = tuple(observed_ledgers) == _REVIEW_GATE_EXPECTED_LEDGERS
+        decision = (
+            "fail_incomplete_evidence"
+            if not evidence_complete
+            else "fail_findings"
+            if issues and config.run_mode in {"validate", "full"}
+            else "bounded_with_findings"
+            if issues
+            else "pass"
+        )
+        state_counts = dict(sorted(Counter(row["issue_state"] for row in issues).items()))
+        payload = {
+            "schema_version": _REVIEW_GATE_SCHEMA_VERSION,
+            "policy_id": _REVIEW_GATE_POLICY_ID,
+            "mode": config.run_mode,
+            "run_identity_sha256": manifest.get("run_identity_sha256"),
+            "policy_content_sha256": (
+                manifest.get("runtime_policy", {}).get("policy_content_sha256")
+                if isinstance(manifest.get("runtime_policy"), Mapping)
+                else None
+            ),
+            "expected_ledgers": list(_REVIEW_GATE_EXPECTED_LEDGERS),
+            "observed_ledgers": observed_ledgers,
+            "evidence_complete": evidence_complete,
+            "issue_count": len(issues),
+            "issue_state_counts": state_counts,
+            "issues": issues,
+            "decision": decision,
+            "authoritative_release_allowed": (
+                config.run_mode == "full" and decision == "pass"
+            ),
+        }
+        manifest["review_gate"] = {
+            key: value
+            for key, value in payload.items()
+            if key != "issues"
+        }
+        path = stage_root / "review_issue_ledger.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if config.run_mode in {"validate", "full"} and decision != "pass":
+            raise ReportingError(
+                "OPS-03 complete review gate failed: "
+                f"decision={decision}; issues={len(issues)}"
+            )
+        return (path,)
+
+    return write_review_gate
+
+
 def _figure_stage_writer(
     config: ValidatedConfig,
     phase_three: PhaseThreeResult,
