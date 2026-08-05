@@ -2393,6 +2393,10 @@ def _report_sections(
     management_status_counts = Counter(row.status for row in phase_four.management_system_proximity)
     management_target_counts = Counter(row.target_gap_status for row in phase_four.management_system_proximity)
     unsupported_reasons = _unsupported_reason_counts(series_evidence_rows)
+    baseline_metrics_enabled = (
+        phase_three.model_policy.get("baseline_response_policy")
+        == "separate_verified_classes"
+    )
     context_parts: list[str] = []
     for dimension in config.comparison_dimensions:
         counts: Counter[str] = Counter()
@@ -2418,7 +2422,7 @@ def _report_sections(
             f"Agronomic-optimum status distribution: {_format_counts(optimum_counts)}.",
             f"Observed-to-maximum proximity distribution: {_format_counts(maximum_counts)}.",
             f"Evidence-strength distribution: {_format_counts(evidence_strength_counts)}; two-level contrasts remain weaker evidence rather than fitted curves.",
-            f"ANA-15 management-system proximity rows: {_format_counts(management_status_counts)}; target-gap statuses: {_format_counts(management_target_counts)}.",
+            f"Management-system proximity rows: {_format_counts(management_status_counts)}; target-gap statuses: {_format_counts(management_target_counts)}.",
             "Context-stratified series coverage: "
             + ("; ".join(context_parts) if context_parts else "no comparison dimensions configured")
             + ".",
@@ -2436,10 +2440,10 @@ def _report_sections(
             f"{unsupported_models} curve-model attempts were non-reportable and are preserved as explicit failed or unsupported attempts.",
             f"Unsupported series reasons: {_format_counts(unsupported_reasons)}.",
             f"Target-yield comparison status: {_format_counts(target_counts)}; not_configured means no target value or gap was inferred.",
-            "Baseline-response metrics are disabled until ELG-10 defines the eligible zero-N/control class."
-            if not config.raw["modeling"]["allow_baseline_response_metrics"]
-            else "Baseline-response metrics use the explicitly enabled ELG-10 policy.",
-            "Economic optimum remains unavailable until decision-dependent price scenarios are approved.",
+            "Baseline-response metrics are disabled until verified zero-N-with-P/K and absolute-control class separation is implemented."
+            if not baseline_metrics_enabled
+            else "Baseline-response metrics require verified zero-N-with-P/K and absolute-control class separation.",
+            "Economic optimum remains unavailable until an approved, versioned price-and-cost scenario artifact and runtime gate exist.",
         ],
     }
 
