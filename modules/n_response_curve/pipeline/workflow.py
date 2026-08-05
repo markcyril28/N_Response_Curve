@@ -2611,6 +2611,8 @@ def release_phases_three_to_five(
     phase_four: PhaseFourResult,
     *,
     run_log: RunLogger,
+    policy_snapshot: RuntimePolicySnapshot,
+    analysis_policy: AnalysisPolicyBundle | None = None,
 ) -> PhaseFiveResult:
     """Write the complete Phase 3–5 evidence package only after in-memory gates reconcile."""
 
@@ -2630,24 +2632,70 @@ def release_phases_three_to_five(
         phase_three.input_records,
         context_dimensions=config.comparison_dimensions,
     )
-    hypothesis_snapshot = _hypothesis_snapshot(config)
+    hypothesis_snapshot = _hypothesis_snapshot(config, phase_four.registry)
+    analysis_policy_evidence = (
+        {
+            "status": "validated",
+            "manifest_sha256": config.analysis_policy_manifest_sha256,
+            "artifact_sha256": dict(analysis_policy.artifact_sha256),
+        }
+        if analysis_policy is not None
+        else {"status": "not_configured"}
+    )
+    source_policy_evidence = (
+        {
+            "status": "validated",
+            "manifest_sha256": (
+                phase_two.source_data_policy.manifest_authority.sha256
+            ),
+            "artifact_sha256": dict(
+                phase_two.source_data_policy.artifact_sha256
+            ),
+        }
+        if phase_two.source_data_policy is not None
+        else {"status": "not_configured"}
+    )
     identity_payload = {
         "config_sha256": sha256_file(config.config_path),
         "code_sha256": _code_fingerprint(),
+        "policy_content_sha256": policy_snapshot.policy_content_sha256,
+        "effective_enablement_sha256": (
+            policy_snapshot.effective_enablement_sha256
+        ),
         "hypothesis_specifications_sha256": hypothesis_snapshot["sha256"],
         "mode": config.run_mode,
         "random_seed": config.raw["run"]["random_seed"],
         "scope_countries": list(config.scope_countries),
         "series_identity_dimensions": list(config.series_identity_dimensions),
         "source_artifact_sha256": dict(integrity.artifact_sha256),
+        "source_data_policy": source_policy_evidence,
+        "analysis_policy": analysis_policy_evidence,
+        "effective_curve_model_policy_sha256": (
+            phase_three.model_policy_sha256
+        ),
     }
     run_identity_sha256 = stable_json_sha256(identity_payload)
-    source_registry = _source_registry(config, integrity.artifact_sha256)
+    source_registry = _source_registry(
+        config,
+        integrity.artifact_sha256,
+        source_scope=(
+            phase_two.source_data_policy.source_scope
+            if phase_two.source_data_policy is not None
+            else None
+        ),
+        source_scope_sha256=(
+            phase_two.source_data_policy.artifact_authorities["source_scope"].sha256
+            if phase_two.source_data_policy is not None
+            else None
+        ),
+    )
     contextual_coverage = _contextual_coverage_summary(phase_two.curation.records)
     series_qc_rows, source_qc_rows = _qc_summary_tables(phase_two)
     r_stage_statuses: list[dict[str, Any]] = []
     r_stage_result_rows: dict[str, tuple[dict[str, Any], ...]] = {}
     multiplicity_reconciliation: dict[str, Any] = {}
+    claim_classification: dict[str, Any] = {}
+    terminal_state: dict[str, Any] = {}
     r_preparation_status_counts: dict[str, int] = {}
     for _, preparation in phase_four.r_preparations:
         r_preparation_status_counts[preparation.status] = r_preparation_status_counts.get(preparation.status, 0) + 1
@@ -2661,10 +2709,13 @@ def release_phases_three_to_five(
             "git": _git_inventory(config.project_root),
         },
         "effective_config": _redact(config.raw),
+        "runtime_policy": policy_snapshot.manifest_payload(
+            project_root=config.project_root
+        ),
         "output_profile": {
             "table_formats": list(config.output_formats),
             "figure_formats": list(config.figure_formats),
-            "document_formats": ["html", "md", "pdf"],
+            "document_formats": ["md", "pdf"],
             "collision_policy": config.raw["outputs"]["collision_policy"],
             "overwrite": config.raw["run"]["overwrite"],
         },
@@ -2682,16 +2733,29 @@ def release_phases_three_to_five(
             ),
         },
         "analysis_hypotheses": hypothesis_snapshot,
+        "analysis_policy": analysis_policy_evidence,
+        "curve_model_policy": {
+            "effective_sha256": phase_three.model_policy_sha256,
+            "reviewed_component_sha256": (
+                analysis_policy.model_authority.sha256
+                if analysis_policy is not None
+                else None
+            ),
+        },
         "engine_assignments": dict(sorted(config.engine_assignments.items())),
         "runtime_inventory": _runtime_inventory(str(config.raw["engines"]["rscript_command"])),
         "source_integrity": {
             "checked_files": integrity.checked_files,
             "artifact_sha256": dict(integrity.artifact_sha256),
         },
+        "source_data_policy": source_policy_evidence,
         "source_registry": source_registry,
         "contextual_coverage": contextual_coverage,
         "canonical_rows": len(phase_two.curation.records),
         "eligibility_rows": len(phase_two.eligibility.ledger),
+        "analysis_eligibility_rows": len(
+            phase_two.analysis_eligibility.ledger
+        ),
         "tier_counts": dict(phase_two.qc.tier_counts),
         "critical_record_uids": list(phase_two.qc.critical_record_uids),
         "qc_summary": {
@@ -2721,12 +2785,18 @@ def release_phases_three_to_five(
             "row_level_qc_enabled": config.raw["outputs"]["row_level_qc"],
         },
         "curve_model_attempt_count": len(phase_three.evidence.model_attempts),
+        "test_subset": (
+            dict(phase_three.test_subset)
+            if phase_three.test_subset is not None
+            else None
+        ),
         "curve_model_reporting_policy": phase_three.evidence.reporting_policy,
         "credible_curve_model_count": len(phase_three.evidence.credible_attempts),
         "selected_curve_model_count": len(phase_three.evidence.selected_attempts),
-        "baseline_response_metrics_enabled": config.raw["modeling"][
-            "allow_baseline_response_metrics"
-        ],
+        "baseline_response_metrics_enabled": (
+            phase_three.model_policy.get("baseline_response_policy")
+            == "separate_verified_classes"
+        ),
         "curve_feature_row_count": len(phase_three.evidence.curve_rows),
         "series_evidence_summary": {
             "row_count": len(series_evidence_rows),
@@ -2738,7 +2808,7 @@ def release_phases_three_to_five(
         },
         "descriptive_summary": _descriptive_summary_manifest(descriptive_summary_rows),
         "management_system_proximity_summary": {
-            "estimand_version": "ANA-15-option-a-v1",
+            "estimand_version": "management-system-proximity-v1",
             "row_count": len(phase_four.management_system_proximity),
             "status_counts": dict(sorted(Counter(row.status for row in phase_four.management_system_proximity).items())),
             "target_gap_status_counts": dict(
@@ -2777,15 +2847,39 @@ def release_phases_three_to_five(
             "level": run_log.level,
         },
     }
-    if target.exists() and not bool(config.raw["run"]["overwrite"]):
+    replacement_record: Mapping[str, Any] | None = None
+    if target.exists():
         try:
             existing = verify_release_package(target)
             existing_manifest = json.loads(existing.manifest_path.read_text(encoding="utf-8"))
         except (OSError, ReportingError, json.JSONDecodeError) as exc:
-            raise ConfigError(f"Existing release package cannot be safely reused: {target}") from exc
-        if existing_manifest.get("run_identity_sha256") == run_identity_sha256:
-            run_log.info("controlled_release_reused", release_target=target)
-            return PhaseFiveResult(package=existing, reused_existing_package=True)
+            if not bool(config.raw["run"]["overwrite"]):
+                raise ConfigError(f"Existing release package cannot be safely reused: {target}") from exc
+        else:
+            existing_policy = existing_manifest.get("runtime_policy", {})
+            if (
+                existing_manifest.get("run_identity_sha256") == run_identity_sha256
+                and isinstance(existing_policy, Mapping)
+                and existing_policy.get("policy_content_sha256")
+                == policy_snapshot.policy_content_sha256
+                and _review_gate_allows_reuse(
+                    existing_manifest,
+                    run_identity_sha256=run_identity_sha256,
+                    policy_content_sha256=policy_snapshot.policy_content_sha256,
+                    mode=config.run_mode,
+                )
+            ):
+                run_log.info("controlled_release_reused", release_target=target)
+                return PhaseFiveResult(package=existing, reused_existing_package=True)
+        if not bool(config.raw["run"]["overwrite"]):
+            raise ConfigError(f"Release package collision at {target}")
+        replacement_record = _load_replacement_record(config, target)
+    if target.exists() and replacement_record is None:
+        # The reporting layer performs the final schema and binding validation.
+        # Raise here so no staging directory or release-stage artifact is created.
+        raise ConfigError(
+            "Replacing an existing release requires an approved named-target replacement record"
+        )
     report_sections = _report_sections(
         config,
         phase_two,
@@ -2802,6 +2896,8 @@ def release_phases_three_to_five(
         return (log_path,)
 
     stage_writers = (
+        _policy_stage_writer(policy_snapshot, manifest),
+        _analysis_policy_stage_writer(analysis_policy, manifest),
         _logged_stage_writer(
             run_log,
             "figures",
@@ -2838,8 +2934,32 @@ def release_phases_three_to_five(
                 phase_four,
                 r_stage_statuses,
                 multiplicity_reconciliation,
+                terminal_state,
                 manifest,
                 report_sections,
+            ),
+        ),
+        _logged_stage_writer(
+            run_log,
+            "claim_classification",
+            _claim_classification_stage_writer(
+                phase_four,
+                multiplicity_reconciliation,
+                terminal_state,
+                claim_classification,
+                manifest,
+                report_sections,
+            ),
+        ),
+        _logged_stage_writer(
+            run_log,
+            "complete_review_gate",
+            _strict_review_gate_stage_writer(
+                config,
+                phase_two,
+                phase_three,
+                manifest,
+                terminal_state,
             ),
         ),
         write_run_log,
@@ -2860,6 +2980,8 @@ def release_phases_three_to_five(
             overwrite=bool(config.raw["run"]["overwrite"]),
             source_roots=_source_target_paths(config),
             stage_writers=stage_writers,
+            replacement_record=replacement_record,
+            release_validator=_strict_release_validator(config),
         )
     except ReportingError as exc:
         raise ConfigError(f"Phase 5 controlled release failed: {exc}") from exc
