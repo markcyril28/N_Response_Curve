@@ -425,7 +425,16 @@ def classify_treatment(
             if review_reasons
             else "comparison_only"
             if treatment_text_class == "FP"
+            else "baseline_only"
+            if treatment_text_class == "absolute_control"
             else "curve_candidate"
+            if treatment_text_class in {
+                "zero_n",
+                "mineral_n_rate",
+                "RCM",
+                "NOPT_NPK",
+            }
+            else "held_out"
         ),
         "nutrient_control_class": nutrient_control_class,
         "is_zero_n": is_zero_n,
