@@ -1581,11 +1581,13 @@ def fit_candidate_model(
             uncertainty_evidence_basis=uncertainty_basis,
             predictions=predictions,
         )
+    parameter_covariance: np.ndarray | None = None
     if uncertainty_status == "eligible_for_reviewed_method" and uncertainty_method:
         (
             predictions,
             uncertainty_status,
             executed_uncertainty_reasons,
+            parameter_covariance,
         ) = _reported_se_delta_intervals(
             model_name,
             parameter_map,
@@ -1598,6 +1600,13 @@ def fit_candidate_model(
             *uncertainty_reasons,
             *executed_uncertainty_reasons,
         )
+    feature_variances = _delta_feature_variances(
+        model_name,
+        parameter_map,
+        parameter_covariance,
+        optimum_summary,
+        predictions,
+    )
     reasons = list(optimum_summary.reason_codes)
     aicc = _aicc(rss, n_observations, parameter_count)
     if aicc is None:
