@@ -926,6 +926,9 @@ def project_public_records(
             record.pop("schema_map_path", None)
             record.pop("raw_cells", None)
             record.pop("restricted_path_aliases", None)
+            record_uid = str(record.get("record_uid") or "").strip()
+            if record_uid:
+                record["release_record_uid"] = record_uid
             public.append(record)
             continue
         if record.get("restricted_release_status") != "eligible_for_reviewed_public_projection":
@@ -940,11 +943,16 @@ def project_public_records(
         record_uid = str(record.get("record_uid") or "").strip()
         if not record_uid:
             raise ValueError("Restricted record lacks an internal record identity")
-        projection["public_record_uid"] = _controlled_pseudonym(
+        public_record_uid = _controlled_pseudonym(
             f"public-record:{record_uid}",
             salt=policy.pseudonym_salt,
         )
+        projection["public_record_uid"] = public_record_uid
+        projection["release_record_uid"] = public_record_uid
         projection["data_classification"] = "public_deidentified"
+        projection["public_projection_status"] = (
+            "released_after_reviewed_projection"
+        )
         projection["disclosure_review_status"] = "automated_and_human_review_recorded"
         projection["access_review_id"] = policy.access_review_id
         projection["automated_disclosure_review_id"] = (
