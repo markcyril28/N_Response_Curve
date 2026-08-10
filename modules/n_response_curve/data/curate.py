@@ -41,7 +41,16 @@ REQUIRED_REVIEWED_LOOKUP_FIELDS = (
     "treatment_class",
 )
 _KNOWN_TREATMENT_LOOKUP_CLASSES = frozenset(
-    {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK", "other", "unresolved"}
+    {
+        "zero_n",
+        "absolute_control",
+        "mineral_n_rate",
+        "RCM",
+        "FP",
+        "NOPT_NPK",
+        "other",
+        "unresolved",
+    }
 )
 _REQUIRED_TREATMENT_LOOKUP_CLASSES = frozenset(
     {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK"}
