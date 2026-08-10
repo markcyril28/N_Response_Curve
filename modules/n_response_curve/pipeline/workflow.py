@@ -437,13 +437,22 @@ def build_effective_model_policy(
         raise ConfigError("Validated model mechanics are unavailable")
     if analysis_policy is None:
         return mechanics
-    reviewed_controls = analysis_policy.curve_model_policy.effective_controls
+    reviewed_controls = dict(
+        analysis_policy.curve_model_policy.effective_controls
+    )
     overlap = set(mechanics).intersection(reviewed_controls)
     if overlap:
         raise ConfigError(
             "Reviewed curve controls overlap runtime model mechanics: "
             + ", ".join(sorted(overlap))
         )
+    reviewed_controls["scientific_policy_authority"] = MappingProxyType(
+        {
+            "approved_by": analysis_policy.model_authority.approved_by,
+            "approved_on": analysis_policy.model_authority.approval_date,
+            "artifact_sha256": analysis_policy.model_authority.sha256,
+        }
+    )
     return MappingProxyType({**mechanics, **reviewed_controls})
 
 
