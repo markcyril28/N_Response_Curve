@@ -633,6 +633,7 @@ def _normalize_hypotheses(
                 analysis_family=str(raw["analysis_family"]),
                 engine=str(raw["engine"]),
                 multiplicity_family_id=str(raw["multiplicity_family_id"]),
+                grouping=grouping,
                 support_rule_id=(
                     str(raw["support_rule_id"])
                     if raw.get("support_rule_id") is not None
