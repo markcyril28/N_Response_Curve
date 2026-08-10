@@ -15,6 +15,7 @@ from n_response_curve.analysis.policy_artifacts import (
     load_analysis_policy_manifest,
 )
 from n_response_curve.data.config import ConfigError, ValidatedConfig, load_config
+from n_response_curve.data.cleaning import FinalCleaningResult, apply_final_cleaning
 from n_response_curve.data.curate import CurationResult, curate_ingestion
 from n_response_curve.data.duplicates import SeriesResolution, resolve_response_series
 from n_response_curve.data.eligibility import EligibilityResult, assign_eligibility
