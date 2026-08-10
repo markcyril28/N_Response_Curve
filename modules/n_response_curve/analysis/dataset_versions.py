@@ -238,9 +238,13 @@ def _verified_recommendation_member(
 
 def _recommendation_set_membership(
     records: Sequence[Mapping[str, Any]],
+    *,
+    policy: Mapping[str, Any],
 ) -> tuple[tuple[str, ...], tuple[DatasetMembershipDiagnostic, ...]]:
-    required = frozenset({"zero_n_with_pk", "RCM", "NOPT_NPK"})
-    optional = frozenset({"FP"})
+    required = frozenset(str(value) for value in policy["required_classes"])
+    optional = frozenset(str(value) for value in policy["optional_classes"])
+    membership_status_field = str(policy["membership_status_field"])
+    verified_status = str(policy["verified_status"])
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:
         series_uid = record.get("response_series_uid")
@@ -285,7 +289,11 @@ def _recommendation_set_membership(
             member_class
             for row in rows
             if (member_class := _recommendation_member_class(row)) is not None
-            and _verified_recommendation_member(row)
+            and _verified_recommendation_member(
+                row,
+                membership_status_field=membership_status_field,
+                verified_status=verified_status,
+            )
         }
         missing = required - observed
         ineligible_required = (required & observed) - verified
@@ -306,7 +314,11 @@ def _recommendation_set_membership(
                 for row in rows
                 if (member_class := _recommendation_member_class(row)) is not None
                 and member_class in required | optional
-                and _verified_recommendation_member(row)
+                and _verified_recommendation_member(
+                    row,
+                    membership_status_field=membership_status_field,
+                    verified_status=verified_status,
+                )
             )
         else:
             reasons.add("INCOMPLETE_RECOMMENDATION_SET_WITHHELD")
@@ -332,7 +344,12 @@ def _recommendation_set_membership(
     return tuple(included_uids), tuple(diagnostics)
 
 
-def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]]) -> DatasetVersion:
+def _available_membership(
+    version_id: str,
+    records: Sequence[Mapping[str, Any]],
+    *,
+    recommendation_set_policy: Mapping[str, Any] | None,
+) -> DatasetVersion:
     all_uids = [_record_uid(record) for record in records]
     primary = _series_groups(records, allowed_tiers=frozenset({"A"}))
     eligible = _series_groups(records, allowed_tiers=frozenset({"A", "B"}))
@@ -401,7 +418,26 @@ def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]])
             ),
         )
     if version_id == "D09_complete_recommendation_set":
-        member_uids, diagnostics = _recommendation_set_membership(records)
+        if (
+            not isinstance(recommendation_set_policy, Mapping)
+            or recommendation_set_policy.get("review_status") != "approved"
+            or not recommendation_set_policy.get("required_classes")
+            or not isinstance(
+                recommendation_set_policy.get("membership_status_field"),
+                str,
+            )
+            or not isinstance(recommendation_set_policy.get("verified_status"), str)
+        ):
+            return _version(
+                version_id,
+                (),
+                status="unavailable",
+                reason_codes=("REVIEWED_RECOMMENDATION_SET_POLICY_REQUIRED",),
+            )
+        member_uids, diagnostics = _recommendation_set_membership(
+            records,
+            policy=recommendation_set_policy,
+        )
         withheld = any(diagnostic.status == "withheld" for diagnostic in diagnostics)
         return _version(
             version_id,
@@ -419,6 +455,17 @@ def _available_membership(version_id: str, records: Sequence[Mapping[str, Any]])
         return _version(version_id, (), status="unavailable", reason_codes=("INTERACTION_CONTEXT_REQUIRED",))
     if version_id == "D12_climate_enriched_future":
         return _version(version_id, (), status="unavailable", reason_codes=("FUTURE_SOURCE_OR_COVARIATE_REQUIRED",))
+    if version_id == "D13_untrimmed_final_cleaning_sensitivity":
+        untrimmed = _series_groups(
+            records,
+            allowed_tiers=frozenset({"A", "B"}),
+            membership_basis="untrimmed",
+        )
+        return _version(
+            version_id,
+            _uids(untrimmed.values()),
+            reason_codes=("FINAL_CLEANING_UNTRIMMED_SENSITIVITY",),
+        )
     raise ValueError(f"Unknown dataset version: {version_id}")
 
 
