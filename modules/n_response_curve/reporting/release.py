@@ -448,9 +448,13 @@ def _promote_stage(
             history_entry.mkdir(parents=True, exist_ok=False)
             replacement_path = history_entry / "replacement_record.json"
             _write_json(replacement_path, replacement.record)
+            _write_promotion_state(history_entry, target, "prepared")
             archived_package = history_entry / "package"
             os.replace(target, archived_package)
+            _write_promotion_state(history_entry, target, "prior_archived")
         os.replace(stage, target)
+        if history_entry is not None:
+            _write_promotion_state(history_entry, target, "complete")
     except BaseException as exc:
         try:
             if archived_package is not None and archived_package.exists():
