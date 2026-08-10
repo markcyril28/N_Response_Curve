@@ -608,6 +608,7 @@ def _normalize_hypotheses(
                     + ", ".join(missing)
                 )
             factor_names = tuple(str(name) for name in raw["factor_names"])
+            grouping = tuple(str(name) for name in raw.get("grouping", ()))
             contrast = raw.get("contrast_specification", {})
             if not isinstance(contrast, Mapping):
                 raise ValueError("Prespecified hypothesis contrast_specification must be a mapping")
