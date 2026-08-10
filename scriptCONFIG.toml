@@ -78,6 +78,7 @@ fill_down_fields = [
 treatment_classes = [
   "zero_n",
   "absolute_control",
+  "mineral_n_rate",
   "RCM",
   "FP",
   "NOPT_NPK",
