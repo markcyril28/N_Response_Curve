@@ -454,6 +454,7 @@ class AnalysisPolicyBundle:
             specifications.append(
                 MappingProxyType(
                     {
+                        "specification_id": hypothesis.hypothesis_id,
                         "hypothesis_id": hypothesis.hypothesis_id,
                         "dataset_version_id": hypothesis.dataset_version_id,
                         "source_combination_id": source_combination_id,
@@ -548,6 +549,9 @@ class AnalysisPolicyBundle:
                 specifications.append(
                     MappingProxyType(
                         {
+                            "specification_id": (
+                                f"{hypothesis.hypothesis_id}:{sensitivity_id}"
+                            ),
                             "hypothesis_id": hypothesis.hypothesis_id,
                             "dataset_version_id": sensitivity["dataset_version_id"],
                             "source_combination_id": sensitivity_source_id,
