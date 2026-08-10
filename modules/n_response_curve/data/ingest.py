@@ -21,6 +21,15 @@ from .provenance import (
 
 
 SUPPORTED_SHAPE_ADAPTERS = frozenset({"core-trial-csv-v1", "fixture-csv-v1"})
+KNOWN_REPRESENTATION_BASES = frozenset(
+    {
+        "observation_level",
+        "treatment_mean",
+        "site_mean",
+        "region_summary",
+        "unclear_mixed_scope",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,8 @@ class IngestedSource:
     text_decoding_lineage: str = "decoded_from_registered_bytes"
     data_classification: str = "internal"
     workbook_csv_basis: str = "csv_registered_artifact"
+    representation_basis: str = "unclear_mixed_scope"
+    representation_basis_status: str = "review_required"
     restricted_access_status: str = "not_restricted"
     source_revision_status: str = "registered_checksum"
     source_revision_comparison_sha256: str | None = None
