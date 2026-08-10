@@ -27,6 +27,7 @@ class DescriptiveComparison:
 
 
 MANAGEMENT_SYSTEM_CLASSES = ("RCM", "FP", "NOPT_NPK")
+MANAGEMENT_SYSTEM_ESTIMAND_VERSION = "management-system-proximity-v2"
 
 
 @dataclass(frozen=True)
@@ -345,7 +346,7 @@ def build_management_system_proximity(
                     management_proximity_uid=_stable_uid(
                         "management-proximity-v2", context_uid, system_class
                     ),
-                    estimand_version="management-system-proximity-v2",
+                    estimand_version=MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
                     comparison_set_uid=context_uid if verified_context else None,
                     response_series_uid=series_uid,
                     dataset_version_id=dataset_version_id,
@@ -387,6 +388,7 @@ def build_management_system_proximity(
 __all__ = [
     "DescriptiveComparison",
     "MANAGEMENT_SYSTEM_CLASSES",
+    "MANAGEMENT_SYSTEM_ESTIMAND_VERSION",
     "ManagementSystemProximity",
     "build_descriptive_comparisons",
     "build_management_system_proximity",
