@@ -96,6 +96,7 @@ class AnalysisCandidate:
     independent_study_count: int
     factor_cell_counts: Mapping[str, int]
     factor_cell_study_counts: Mapping[str, int] = field(default_factory=dict)
+    grouping: tuple[str, ...] = ()
     hypothesis_id: str | None = None
     prespecified_contrast: Mapping[str, Any] = field(default_factory=dict)
     multiplicity_family_id: str | None = None
