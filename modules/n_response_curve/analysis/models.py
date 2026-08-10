@@ -1089,8 +1089,16 @@ def _optimum_summary(
         proximity_status: str,
         shape: str,
         reasons: tuple[str, ...] = (),
+        *,
+        support_asymptote: bool = False,
     ) -> _OptimumSummary:
-        supported_maximum = finite_maximum if finite_maximum is not None else asymptote
+        supported_maximum = (
+            finite_maximum
+            if finite_maximum is not None
+            else asymptote
+            if support_asymptote
+            else None
+        )
         return _OptimumSummary(
             optimum_status,
             optimum,
