@@ -223,6 +223,29 @@ def _policy_content(config: ValidatedConfig) -> dict[str, Any]:
     }
 
 
+def _enabled_restricted_sources(config: ValidatedConfig) -> tuple[str, ...]:
+    raw_sources = config.raw.get("sources")
+    if not isinstance(raw_sources, Mapping):
+        return ()
+    return tuple(
+        source_name
+        for source_name in config.enabled_sources
+        if isinstance(raw_sources.get(source_name), Mapping)
+        and raw_sources[source_name].get("data_classification") == "restricted"
+    )
+
+
+def _authority_matrix_path(config: ValidatedConfig) -> Path:
+    path = (
+        config.paths["run_metadata_root"]
+        / "approvals"
+        / "authority_matrix.json"
+    ).resolve()
+    if not path.is_relative_to(config.project_root):
+        raise ConfigError("Approval authority matrix path escapes the project root")
+    return path
+
+
 def _approval_timestamp(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError("Approved policy snapshot has an invalid approval timestamp")
