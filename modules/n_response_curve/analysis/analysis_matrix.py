@@ -566,6 +566,9 @@ def _candidate(
         factor_cell_study_counts=cell_study_counts,
         grouping=hypothesis.grouping if hypothesis is not None else (),
         hypothesis_id=hypothesis.hypothesis_id if hypothesis is not None else None,
+        specification_id=(
+            hypothesis.specification_id if hypothesis is not None else None
+        ),
         prespecified_contrast=(
             _json_data(hypothesis.contrast_specification)
             if hypothesis is not None
