@@ -848,6 +848,175 @@ def _duplicate_rules(payload: Mapping[str, Any]) -> DuplicateRuleSet:
     )
 
 
+def _optional_finite_number(value: object, *, where: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SourceDataPolicyError(f"{where} must be numeric or null")
+    number = float(value)
+    if not math.isfinite(number):
+        raise SourceDataPolicyError(f"{where} must be finite")
+    return number
+
+
+def _final_cleaning_policies(
+    payload: Mapping[str, Any],
+    *,
+    designated_reviewers: tuple[str, ...],
+) -> Mapping[str, SourceCleaningPolicy]:
+    policies: dict[str, SourceCleaningPolicy] = {}
+    policy_keys = {
+        "source_name",
+        "policy_id",
+        "review_id",
+        "reviewer",
+        "reviewed_on",
+        "default_action",
+        "untrimmed_sensitivity_required",
+        "rules",
+    }
+    rule_keys = {
+        "rule_id",
+        "rule_type",
+        "field",
+        "raw_position",
+        "unit",
+        "lower_bound",
+        "upper_bound",
+        "lower_bound_inclusive",
+        "upper_bound_inclusive",
+        "values",
+        "action",
+        "reason_code",
+    }
+    for index, raw_policy in enumerate(
+        _records(payload, where="final cleaning policy")
+    ):
+        where = f"final cleaning policy record {index}"
+        exact = _exact_object(
+            raw_policy,
+            required_keys=policy_keys,
+            where=where,
+        )
+        source_name = _nonempty_text(
+            exact["source_name"],
+            where=f"{where}.source_name",
+        )
+        if source_name in policies:
+            raise SourceDataPolicyError(
+                f"Final cleaning policy contains duplicate source_name: {source_name}"
+            )
+        reviewer = _nonempty_text(exact["reviewer"], where=f"{where}.reviewer")
+        if reviewer not in designated_reviewers:
+            raise SourceDataPolicyError(
+                f"{where}.reviewer is not in the designated reviewer registry"
+            )
+        raw_rules = exact["rules"]
+        if not isinstance(raw_rules, list):
+            raise SourceDataPolicyError(f"{where}.rules must be a JSON array")
+        rules: list[FinalCleaningRule] = []
+        for rule_index, raw_rule in enumerate(raw_rules):
+            rule_where = f"{where}.rules[{rule_index}]"
+            rule = _exact_object(
+                raw_rule,
+                required_keys=rule_keys,
+                where=rule_where,
+            )
+            field = rule["field"]
+            raw_position = rule["raw_position"]
+            lower_inclusive = rule["lower_bound_inclusive"]
+            upper_inclusive = rule["upper_bound_inclusive"]
+            if not isinstance(lower_inclusive, bool) or not isinstance(
+                upper_inclusive,
+                bool,
+            ):
+                raise SourceDataPolicyError(
+                    f"{rule_where} bound-inclusion fields must be boolean"
+                )
+            try:
+                rules.append(
+                    FinalCleaningRule(
+                        rule_id=_nonempty_text(
+                            rule["rule_id"], where=f"{rule_where}.rule_id"
+                        ),
+                        rule_type=_nonempty_text(
+                            rule["rule_type"], where=f"{rule_where}.rule_type"
+                        ),
+                        field=(
+                            _nonempty_text(field, where=f"{rule_where}.field")
+                            if field is not None
+                            else None
+                        ),
+                        raw_position=(
+                            _integer(
+                                raw_position,
+                                where=f"{rule_where}.raw_position",
+                            )
+                            if raw_position is not None
+                            else None
+                        ),
+                        unit=_nonempty_text(
+                            rule["unit"], where=f"{rule_where}.unit"
+                        ),
+                        lower_bound=_optional_finite_number(
+                            rule["lower_bound"],
+                            where=f"{rule_where}.lower_bound",
+                        ),
+                        upper_bound=_optional_finite_number(
+                            rule["upper_bound"],
+                            where=f"{rule_where}.upper_bound",
+                        ),
+                        lower_bound_inclusive=lower_inclusive,
+                        upper_bound_inclusive=upper_inclusive,
+                        values=_string_tuple(
+                            rule["values"],
+                            where=f"{rule_where}.values",
+                            allow_empty=True,
+                        ),
+                        action=_nonempty_text(
+                            rule["action"], where=f"{rule_where}.action"
+                        ),
+                        reason_code=_nonempty_text(
+                            rule["reason_code"],
+                            where=f"{rule_where}.reason_code",
+                        ),
+                    )
+                )
+            except ValueError as exc:
+                raise SourceDataPolicyError(f"{rule_where} is invalid: {exc}") from exc
+        untrimmed_required = exact["untrimmed_sensitivity_required"]
+        if not isinstance(untrimmed_required, bool):
+            raise SourceDataPolicyError(
+                f"{where}.untrimmed_sensitivity_required must be boolean"
+            )
+        try:
+            policies[source_name] = SourceCleaningPolicy(
+                source_name=source_name,
+                policy_id=_version(
+                    exact["policy_id"],
+                    where=f"{where}.policy_id",
+                ),
+                review_id=_nonempty_text(
+                    exact["review_id"],
+                    where=f"{where}.review_id",
+                ),
+                reviewed_by=reviewer,
+                reviewed_on=_iso_date(
+                    exact["reviewed_on"],
+                    where=f"{where}.reviewed_on",
+                ),
+                default_action=_nonempty_text(
+                    exact["default_action"],
+                    where=f"{where}.default_action",
+                ),
+                untrimmed_sensitivity_required=untrimmed_required,
+                rules=tuple(rules),
+            )
+        except ValueError as exc:
+            raise SourceDataPolicyError(f"{where} is invalid: {exc}") from exc
+    return MappingProxyType(dict(sorted(policies.items())))
+
+
 def _checksum_revision_approvals(
     payload: Mapping[str, Any],
     *,
