@@ -49,6 +49,40 @@ test_that("supported continuous R formulas produce tidy model output", {
   )))
 })
 
+test_that("variance-aware two-stage specifications consume positive first-stage weights", {
+  stage <- list(
+    contract = list(
+      specification = list(
+        analysis_family = "one_factor_inferential",
+        engine = "r",
+        support_gates_passed = TRUE,
+        model_kind = "lm",
+        outcome_kind = "continuous",
+        model_formula = "outcome ~ water_regime",
+        first_stage_uncertainty = list(weight_column = "first_stage_weight")
+      )
+    ),
+    data = data.frame(
+      outcome = c(5, 6, 7, 8, 9, 10, 11, 12),
+      water_regime = rep(c("rainfed", "irrigated"), each = 4L),
+      first_stage_weight = c(4, 4, 1, 1, 1, 1, 4, 4)
+    )
+  )
+
+  result <- nrc_run_mixed_models(stage)
+
+  expect_identical(result$status, "completed")
+  expect_true(length(result$results) >= 2L)
+
+  stage$data$first_stage_weight[[1L]] <- 0
+  invalid <- nrc_run_mixed_models(stage)
+  expect_identical(invalid$status, "skipped")
+  expect_identical(
+    invalid$results[[1L]]$reason_codes[[1L]],
+    "FIRST_STAGE_WEIGHTS_INVALID"
+  )
+})
+
 test_that("supported multiclass outcomes use an explicit multinomial model", {
   stage <- list(
     contract = list(
