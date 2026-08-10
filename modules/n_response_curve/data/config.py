@@ -42,7 +42,16 @@ KNOWN_SERIES_IDENTITY_DIMENSIONS = {
 }
 KNOWN_OUTPUT_FORMATS = set(_SUPPORTED_TABLE_FORMATS)
 KNOWN_FIGURE_FORMATS = set(_SUPPORTED_FIGURE_FORMATS)
-KNOWN_TREATMENT_CLASSES = {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK", "other", "unresolved"}
+KNOWN_TREATMENT_CLASSES = {
+    "zero_n",
+    "absolute_control",
+    "mineral_n_rate",
+    "RCM",
+    "FP",
+    "NOPT_NPK",
+    "other",
+    "unresolved",
+}
 KNOWN_FILL_DOWN_FIELDS = {"Study_ID", "Trial ID", "Source", "Author(s)", "Year of Publication"}
 KNOWN_CRITICAL_ERROR_CODES = {
     "YIELD_UNIT_CONFLICT", "N_RATE_UNIT_CONFLICT", "N_RATE_OUT_OF_RANGE",
