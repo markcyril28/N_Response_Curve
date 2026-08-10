@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import json
+import math
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -28,7 +29,8 @@ from .provenance import (
     sha256_file,
 )
 from .schema import ReviewedLookupTable, validate_reviewed_lookup_table
-from .ingest import IngestionResult
+from .ingest import KNOWN_REPRESENTATION_BASES, IngestionResult
+from .cleaning import FinalCleaningRule, SourceCleaningPolicy
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -39,6 +41,7 @@ _ARTIFACT_KEYS = (
     "category_lookups",
     "restricted_policy",
     "duplicate_rules",
+    "final_cleaning_policy",
     "checksum_revision_approvals",
     "duplicate_adjudications",
     "repeat_adjudications",
@@ -83,6 +86,7 @@ class SourceDataPolicyBundle:
     restricted_policy: RestrictedDataPolicy
     restricted_secret_reference: str
     duplicate_rules: DuplicateRuleSet
+    final_cleaning_policies: Mapping[str, SourceCleaningPolicy]
     checksum_revision_approvals: Mapping[str, ChecksumRevisionApproval]
     duplicate_adjudications: tuple[DuplicateAdjudication, ...]
     repeat_adjudications: tuple[RepeatAdjudication, ...]
