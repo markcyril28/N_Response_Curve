@@ -12,6 +12,7 @@ from .models import (
     MODEL_ORDER,
     ModelAttempt,
     credible_model_attempts,
+    evaluate_model,
     fit_response_models,
     model_attempt_record,
 )
