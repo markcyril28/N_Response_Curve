@@ -15,7 +15,11 @@ from n_response_curve.analysis.policy_artifacts import (
     load_analysis_policy_manifest,
 )
 from n_response_curve.data.config import ConfigError, ValidatedConfig, load_config
-from n_response_curve.data.cleaning import FinalCleaningResult, apply_final_cleaning
+from n_response_curve.data.cleaning import (
+    FINAL_CLEANING_METADATA_FIELDS,
+    FinalCleaningResult,
+    apply_final_cleaning,
+)
 from n_response_curve.data.curate import CurationResult, curate_ingestion
 from n_response_curve.data.duplicates import SeriesResolution, resolve_response_series
 from n_response_curve.data.eligibility import EligibilityResult, assign_eligibility
@@ -195,17 +199,7 @@ def run_phase_two(
                 for record in resolution.aggregate_records
             ),
         )
-        cleaning_fields = (
-            "cleaning_policy_id",
-            "cleaning_review_id",
-            "cleaning_reviewed_by",
-            "cleaning_reviewed_on",
-            "cleaning_rule_ids",
-            "cleaning_reason_codes",
-            "cleaning_review_status",
-            "final_analytical_membership_status",
-            "untrimmed_sensitivity_membership_status",
-        )
+        cleaning_fields = FINAL_CLEANING_METADATA_FIELDS
         assert untrimmed_analysis_eligibility is not None
         untrimmed_analysis_eligibility = EligibilityResult(
             ledger=tuple(
