@@ -177,9 +177,9 @@ def build_management_system_proximity(
 ) -> tuple[ManagementSystemProximity, ...]:
     """Build system-specific maximum and recommendation-target gaps.
 
-    The response-series identifier is the same-context boundary. A system yield is
-    accepted only when exactly one auditable observed system row is present, so the
-    implementation never invents an averaging or pairing rule.
+    The reviewed comparison-set identifier is the same-context boundary. A system
+    yield is accepted only when exactly one auditable observed system row is present,
+    so the implementation never invents an averaging or cross-context pairing rule.
     """
 
     dataset_members = (
@@ -187,7 +187,8 @@ def build_management_system_proximity(
         if dataset_record_uids is None
         else {str(record_uid) for record_uid in dataset_record_uids}
     )
-    rows_by_series: dict[str, list[Mapping[str, Any]]] = {}
+    rows_by_context: dict[str, list[Mapping[str, Any]]] = {}
+    verified_context_ids: set[str] = set()
     for record in records:
         record_uid = str(record.get("record_uid") or "")
         if dataset_members is not None and record_uid not in dataset_members:
@@ -199,7 +200,13 @@ def build_management_system_proximity(
             continue
         if (record.get("series_eligibility_tier") or record.get("eligibility_tier")) == "D":
             continue
-        rows_by_series.setdefault(series_uid, []).append(record)
+        raw_context_uid = record.get("comparison_set_uid")
+        if isinstance(raw_context_uid, str) and raw_context_uid:
+            context_uid = raw_context_uid
+            verified_context_ids.add(context_uid)
+        else:
+            context_uid = f"unresolved:{series_uid}"
+        rows_by_context.setdefault(context_uid, []).append(record)
 
     curve_by_series: dict[str, Mapping[str, Any]] = {}
     for row in curve_rows:
@@ -211,41 +218,22 @@ def build_management_system_proximity(
         curve_by_series[series_uid] = row
 
     output: list[ManagementSystemProximity] = []
-    for series_uid in sorted(rows_by_series):
-        series_records = rows_by_series[series_uid]
+    for context_uid in sorted(rows_by_context):
+        context_records = rows_by_context[context_uid]
+        verified_context = context_uid in verified_context_ids
         rcm_targets = sorted(
             {
                 value
-                for record in series_records
+                for record in context_records
                 if record.get("treatment_text_class") == "RCM"
                 and (value := finite_number(record.get("target_yield_t_ha"))) is not None
             }
         )
-        curve_row = curve_by_series.get(series_uid, {})
-        supported_max = finite_number(curve_row.get("supported_max_yield_t_ha"))
-        model_reporting_policy = str(
-            curve_row.get("model_reporting_policy") or "unavailable"
-        )
-        raw_credible_uids = curve_row.get("credible_model_attempt_uids", ())
-        if isinstance(raw_credible_uids, str):
-            credible_model_uids = (raw_credible_uids,) if raw_credible_uids else ()
-        elif isinstance(raw_credible_uids, (list, tuple, set, frozenset)):
-            credible_model_uids = tuple(
-                sorted(str(value) for value in raw_credible_uids if str(value))
-            )
-        else:
-            credible_model_uids = ()
-        selected_model_uid = curve_row.get("selected_model_attempt_uid")
-        selected_model_uid = str(selected_model_uid) if selected_model_uid else None
-        maximum_basis = str(curve_row.get("maximum_reference_basis") or "unavailable")
-        observed_bound_status = (
-            "inside_observed_n_domain"
-            if supported_max is not None and maximum_basis not in {"", "none", "unavailable"}
-            else "unavailable"
-        )
 
         for system_class in MANAGEMENT_SYSTEM_CLASSES:
             reasons: set[str] = set()
+            if not verified_context:
+                reasons.add("COMPARISON_SET_UID_REQUIRED")
             if dataset_version_id is None or dataset_version_status != "available":
                 reasons.add("PRIMARY_DATASET_VERSION_NOT_BOUND")
             if (
@@ -256,11 +244,44 @@ def build_management_system_proximity(
                 reasons.add("PRIMARY_DATASET_MEMBERSHIP_HASH_UNAVAILABLE")
             system_records = [
                 record
-                for record in series_records
+                for record in context_records
                 if record.get("treatment_text_class") == system_class
                 and finite_number(record.get("n_rate_kg_ha")) is not None
                 and finite_number(record.get("yield_t_ha")) is not None
             ]
+            system_series_uids = sorted(
+                {
+                    str(record.get("response_series_uid") or "")
+                    for record in system_records
+                    if str(record.get("response_series_uid") or "")
+                }
+            )
+            series_uid = system_series_uids[0] if len(system_series_uids) == 1 else ""
+            if len(system_series_uids) > 1:
+                reasons.add("MANAGEMENT_SYSTEM_SERIES_AMBIGUOUS_WITHIN_COMPARISON_SET")
+            curve_row = curve_by_series.get(series_uid, {}) if series_uid else {}
+            supported_max = finite_number(curve_row.get("supported_max_yield_t_ha"))
+            model_reporting_policy = str(
+                curve_row.get("model_reporting_policy") or "unavailable"
+            )
+            raw_credible_uids = curve_row.get("credible_model_attempt_uids", ())
+            if isinstance(raw_credible_uids, str):
+                credible_model_uids = (raw_credible_uids,) if raw_credible_uids else ()
+            elif isinstance(raw_credible_uids, (list, tuple, set, frozenset)):
+                credible_model_uids = tuple(
+                    sorted(str(value) for value in raw_credible_uids if str(value))
+                )
+            else:
+                credible_model_uids = ()
+            selected_model_uid = curve_row.get("selected_model_attempt_uid")
+            selected_model_uid = str(selected_model_uid) if selected_model_uid else None
+            maximum_basis = str(curve_row.get("maximum_reference_basis") or "unavailable")
+            observed_bound_status = (
+                "inside_observed_n_domain"
+                if supported_max is not None
+                and maximum_basis not in {"", "none", "unavailable"}
+                else "unavailable"
+            )
             if not system_records:
                 status = "unavailable"
                 source_record_uid = None
@@ -280,7 +301,7 @@ def build_management_system_proximity(
                 source_record_uid = str(system_records[0].get("record_uid") or "") or None
                 system_n_rate = finite_number(system_records[0].get("n_rate_kg_ha"))
                 system_yield = finite_number(system_records[0].get("yield_t_ha"))
-                yield_basis = "observed_within_response_series"
+                yield_basis = "observed_within_comparison_set"
 
             if system_yield is not None and supported_max is not None:
                 maximum_gap = supported_max - system_yield
@@ -296,6 +317,11 @@ def build_management_system_proximity(
                 target_gap = None
                 target_gap_status = "not_applicable"
                 target_gap_direction = "not_applicable_non_rcm_system"
+            elif not verified_context:
+                target_yield = None
+                target_gap = None
+                target_gap_status = "unavailable"
+                target_gap_direction = "target_yield_minus_actual_rcm_yield"
             elif not rcm_targets:
                 target_yield = None
                 target_gap = None
@@ -316,8 +342,11 @@ def build_management_system_proximity(
 
             output.append(
                 ManagementSystemProximity(
-                    management_proximity_uid=_stable_uid("management-proximity-v1", series_uid, system_class),
-                    estimand_version="management-system-proximity-v1",
+                    management_proximity_uid=_stable_uid(
+                        "management-proximity-v2", context_uid, system_class
+                    ),
+                    estimand_version="management-system-proximity-v2",
+                    comparison_set_uid=context_uid if verified_context else None,
                     response_series_uid=series_uid,
                     dataset_version_id=dataset_version_id,
                     dataset_version_status=dataset_version_status,
@@ -343,8 +372,12 @@ def build_management_system_proximity(
                     target_gap_t_ha=target_gap,
                     target_gap_status=target_gap_status,
                     target_gap_direction=target_gap_direction,
-                    target_population="resolved_same_response_series",
-                    same_context_status="verified_response_series",
+                    target_population="resolved_same_comparison_set",
+                    same_context_status=(
+                        "verified_comparison_set_uid"
+                        if verified_context
+                        else "unavailable_missing_comparison_set_uid"
+                    ),
                     reason_codes=tuple(sorted(reasons)),
                 )
             )
