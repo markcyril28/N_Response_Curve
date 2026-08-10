@@ -550,6 +550,16 @@ def _uncertainty_gate(
             (),
             ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
         )
+    if not observation_evidence or any(
+        row.get("analysis_grain_status") != "reviewed_treatment_mean"
+        for row in observation_evidence
+    ):
+        return (
+            "suppressed_unsupported_evidence",
+            method,
+            (),
+            ("TREATMENT_MEAN_GRAIN_NOT_REVIEWED",),
+        )
     available: set[str] = set()
     if observation_evidence and all(
         isinstance(row.get("yield_se_t_ha"), (float, int))
