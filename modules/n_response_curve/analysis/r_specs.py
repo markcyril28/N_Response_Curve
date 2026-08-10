@@ -40,8 +40,11 @@ def _present(value: object) -> bool:
     return isinstance(value, (str, bool)) and bool(str(value).strip())
 
 
-def _has_supported_random_intercept(rows: Sequence[Mapping[str, Any]]) -> bool:
-    counts = Counter(str(row.get("study_uid") or "") for row in rows)
+def _has_supported_random_intercept(
+    rows: Sequence[Mapping[str, Any]],
+    grouping_column: str,
+) -> bool:
+    counts = Counter(str(row.get(grouping_column) or "") for row in rows)
     counts.pop("", None)
     return len(counts) >= 3 and sum(count >= 2 for count in counts.values()) >= 2
 
