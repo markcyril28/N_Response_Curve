@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import itertools
 import json
@@ -69,6 +69,7 @@ class PrespecifiedHypothesis:
     analysis_family: str
     engine: str
     multiplicity_family_id: str
+    specification_id: str | None = None
     grouping: tuple[str, ...] = ()
     support_rule_id: str | None = None
     support_policy: Mapping[str, Any] = field(default_factory=dict)
@@ -98,6 +99,7 @@ class AnalysisCandidate:
     factor_cell_study_counts: Mapping[str, int] = field(default_factory=dict)
     grouping: tuple[str, ...] = ()
     hypothesis_id: str | None = None
+    specification_id: str | None = None
     prespecified_contrast: Mapping[str, Any] = field(default_factory=dict)
     multiplicity_family_id: str | None = None
     support_rule_id: str | None = None
@@ -123,6 +125,7 @@ class MultiplicityFamily:
     method: str
     candidate_ids: tuple[str, ...]
     hypothesis_ids: tuple[str, ...]
+    specification_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -516,6 +519,9 @@ def _candidate(
         "dataset_version_id": version.version_id,
         "engine": engine,
         "factor_names": factor_names,
+        "specification_id": (
+            hypothesis.specification_id if hypothesis is not None else None
+        ),
         "hypothesis_id": hypothesis.hypothesis_id if hypothesis is not None else None,
         "contrast_specification": (
             _json_data(hypothesis.contrast_specification)
