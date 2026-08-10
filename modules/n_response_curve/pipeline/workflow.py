@@ -1839,10 +1839,27 @@ def _table_artifacts(
     series_qc_rows, source_qc_rows = _qc_summary_tables(phase_two)
     public_curated_rows = _public_release_rows(
         phase_two,
-        phase_two.curation.records,
+        phase_two.resolution.records,
+    )
+    final_cleaning_rows = (
+        phase_two.final_cleaning.decision_rows
+        if phase_two.final_cleaning is not None
+        else ()
+    )
+    public_final_cleaning_rows = _public_release_rows(
+        phase_two,
+        _with_record_release_metadata(phase_two, final_cleaning_rows),
     )
     return {
         "curated_master": TableArtifact(rows=public_curated_rows),
+        "final_cleaning_decisions": TableArtifact(
+            rows=public_final_cleaning_rows,
+            stable_key="release_record_uid",
+        ),
+        "final_cleaning_sensitivity": TableArtifact(
+            rows=_final_cleaning_sensitivity_rows(phase_four),
+            stable_key="cleaning_sensitivity_uid",
+        ),
         "duplicate_adjudication_ledger": TableArtifact(
             rows=tuple(
                 row
