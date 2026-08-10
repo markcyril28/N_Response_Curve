@@ -169,6 +169,58 @@ def run_phase_two(
             else {}
         ),
     )
+    untrimmed_analysis_eligibility: EligibilityResult | None = None
+    if source_data_policy is not None:
+        untrimmed_analysis_eligibility = assign_eligibility(
+            resolution.analysis_records,
+            policy=config.raw["eligibility"],
+        )
+    final_cleaning: FinalCleaningResult | None = None
+    if source_data_policy is not None:
+        final_cleaning = apply_final_cleaning(
+            (*resolution.records, *resolution.aggregate_records),
+            source_data_policy.final_cleaning_policies,
+        )
+        cleaned_by_uid = {
+            str(record["record_uid"]): record
+            for record in final_cleaning.records
+        }
+        resolution = SeriesResolution(
+            records=tuple(
+                cleaned_by_uid[str(record["record_uid"])]
+                for record in resolution.records
+            ),
+            aggregate_records=tuple(
+                cleaned_by_uid[str(record["record_uid"])]
+                for record in resolution.aggregate_records
+            ),
+        )
+        cleaning_fields = (
+            "cleaning_policy_id",
+            "cleaning_review_id",
+            "cleaning_reviewed_by",
+            "cleaning_reviewed_on",
+            "cleaning_rule_ids",
+            "cleaning_reason_codes",
+            "cleaning_review_status",
+            "final_analytical_membership_status",
+            "untrimmed_sensitivity_membership_status",
+        )
+        assert untrimmed_analysis_eligibility is not None
+        untrimmed_analysis_eligibility = EligibilityResult(
+            ledger=tuple(
+                {
+                    **record,
+                    **{
+                        field: cleaned_by_uid[str(record["record_uid"])].get(field)
+                        for field in cleaning_fields
+                    },
+                }
+                for record in untrimmed_analysis_eligibility.ledger
+            ),
+            series_metrics=untrimmed_analysis_eligibility.series_metrics,
+            critical_record_uids=untrimmed_analysis_eligibility.critical_record_uids,
+        )
     eligibility = assign_eligibility(
         resolution.records,
         policy=config.raw["eligibility"],
@@ -177,6 +229,8 @@ def run_phase_two(
         resolution.analysis_records,
         policy=config.raw["eligibility"],
     )
+    if untrimmed_analysis_eligibility is None:
+        untrimmed_analysis_eligibility = analysis_eligibility
     qc = build_qc_report(
         eligibility.ledger,
         inventory_record_uids=(record["record_uid"] for record in curation.records),
@@ -191,6 +245,8 @@ def run_phase_two(
         analysis_eligibility=analysis_eligibility,
         qc=qc,
         source_data_policy=source_data_policy,
+        final_cleaning=final_cleaning,
+        untrimmed_analysis_eligibility=untrimmed_analysis_eligibility,
     )
 
 
