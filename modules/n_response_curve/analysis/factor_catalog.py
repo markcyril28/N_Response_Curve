@@ -124,8 +124,14 @@ def _reviewed_factor_value(
         raise ValueError("Reviewed factor representation unit conflicts with the catalog")
     if representation.get("role") != metadata["role"]:
         raise ValueError("Reviewed factor representation role conflicts with the catalog")
-    if representation.get("missingness_rule") != "no_imputation":
-        raise ValueError("Reviewed factor representation must use no_imputation")
+    if (
+        representation.get("missingness_rule")
+        != "factor_outcome_complete_case_no_imputation"
+    ):
+        raise ValueError(
+            "Reviewed factor representation must use "
+            "factor_outcome_complete_case_no_imputation"
+        )
     if representation.get("learned_within_training_only") is not True:
         raise ValueError(
             "Reviewed factor representation must restrict learned transforms to training"
