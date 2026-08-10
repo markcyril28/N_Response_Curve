@@ -53,12 +53,16 @@ def _normalized_rows(
     rows: Sequence[Mapping[str, Any]],
     factor_names: Sequence[str],
     *,
+    candidate_id: str,
     factor_representations: Mapping[str, Mapping[str, Any]],
     outcome_name: str,
     stable_key: str,
     observation_level: bool,
-) -> tuple[dict[str, Any], ...]:
+    first_stage_variance_field: str | None = None,
+    dependence_unit_field: str | None = None,
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
     normalized: list[dict[str, Any]] = []
+    membership: list[dict[str, Any]] = []
     for raw_row in rows:
         row = dict(raw_row)
         factors = {
@@ -69,14 +73,47 @@ def _normalized_rows(
             )
             for name in factor_names
         }
-        if (
-            not row.get(stable_key)
-            or not row.get("study_uid")
-            or not _present(row.get(outcome_name))
-            or any(not _present(value) for value in factors.values())
-        ):
-            continue
+        exclusion_reasons: list[str] = []
+        if not row.get(stable_key):
+            exclusion_reasons.append("MISSING_STABLE_RECORD_ID")
+        if not row.get("study_uid"):
+            exclusion_reasons.append("MISSING_STUDY_ID")
+        if dependence_unit_field is not None and not row.get(dependence_unit_field):
+            exclusion_reasons.append("MISSING_DEPENDENCE_UNIT")
+        if not _present(row.get(outcome_name)):
+            exclusion_reasons.append("MISSING_OUTCOME")
+        exclusion_reasons.extend(
+            f"MISSING_FACTOR:{name}"
+            for name, value in factors.items()
+            if not _present(value)
+        )
         if observation_level and finite_number(row.get("n_rate_kg_ha")) is None:
+            exclusion_reasons.append("MISSING_N_RATE")
+        variance: float | None = None
+        if first_stage_variance_field is not None:
+            variance = finite_number(row.get(first_stage_variance_field))
+            if variance is None or variance <= 0.0:
+                exclusion_reasons.append("INVALID_FIRST_STAGE_VARIANCE")
+        membership_row = {
+            "candidate_id": candidate_id,
+            "membership_record_uid": str(
+                row.get(stable_key)
+                or row.get("record_uid")
+                or row.get("response_series_uid")
+                or row.get("source_record_uid")
+                or ""
+            ),
+            "membership_status": "excluded" if exclusion_reasons else "included",
+            "exclusion_reasons": tuple(exclusion_reasons),
+            "source_name": row.get("source_name"),
+            "study_uid": row.get("study_uid"),
+            "response_series_uid": row.get("response_series_uid"),
+            **factors,
+        }
+        if dependence_unit_field is not None:
+            membership_row[dependence_unit_field] = row.get(dependence_unit_field)
+        membership.append(membership_row)
+        if exclusion_reasons:
             continue
         analysis_row = {
             stable_key: row[stable_key],
@@ -84,15 +121,27 @@ def _normalized_rows(
             outcome_name: row[outcome_name],
             **factors,
         }
+        if dependence_unit_field is not None:
+            analysis_row[dependence_unit_field] = row[dependence_unit_field]
         if observation_level:
             analysis_row["response_series_uid"] = row["response_series_uid"]
             analysis_row["n_rate_kg_ha"] = row["n_rate_kg_ha"]
+        elif first_stage_variance_field is not None:
+            assert variance is not None
+            analysis_row["first_stage_variance"] = variance
+            analysis_row["first_stage_weight"] = 1.0 / variance
         normalized.append(analysis_row)
-    return tuple(
-        sorted(
-            normalized,
-            key=lambda row: str(row.get(stable_key, "")),
-        )
+    return (
+        tuple(sorted(normalized, key=lambda row: str(row.get(stable_key, "")))),
+        tuple(
+            sorted(
+                membership,
+                key=lambda row: (
+                    str(row.get("membership_record_uid") or ""),
+                    str(row.get("study_uid") or ""),
+                ),
+            )
+        ),
     )
 
 
