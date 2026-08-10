@@ -280,6 +280,7 @@ def apply_final_cleaning(
 
 
 __all__ = [
+    "FINAL_CLEANING_METADATA_FIELDS",
     "FinalCleaningResult",
     "FinalCleaningRule",
     "SourceCleaningPolicy",
