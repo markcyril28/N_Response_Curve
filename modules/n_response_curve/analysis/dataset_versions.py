@@ -221,12 +221,16 @@ def _recommendation_member_class(record: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _verified_recommendation_member(record: Mapping[str, Any]) -> bool:
+def _verified_recommendation_member(
+    record: Mapping[str, Any],
+    *,
+    membership_status_field: str,
+    verified_status: str,
+) -> bool:
     return (
         _eligible(record)
         and record.get("treatment_classification_status") == "resolved"
-        and record.get("recommendation_set_membership_status")
-        == "verified_context_comparable"
+        and record.get(membership_status_field) == verified_status
         and finite_number(record.get("n_rate_kg_ha")) is not None
         and finite_number(record.get("yield_t_ha")) is not None
     )
