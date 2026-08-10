@@ -374,7 +374,7 @@ def build_management_system_proximity(
                     target_gap_t_ha=target_gap,
                     target_gap_status=target_gap_status,
                     target_gap_direction=target_gap_direction,
-                    target_population="resolved_same_comparison_set",
+                    target_population=MANAGEMENT_SYSTEM_TARGET_POPULATION,
                     same_context_status=(
                         "verified_comparison_set_uid"
                         if verified_context
@@ -390,6 +390,7 @@ __all__ = [
     "DescriptiveComparison",
     "MANAGEMENT_SYSTEM_CLASSES",
     "MANAGEMENT_SYSTEM_ESTIMAND_VERSION",
+    "MANAGEMENT_SYSTEM_TARGET_POPULATION",
     "ManagementSystemProximity",
     "build_descriptive_comparisons",
     "build_management_system_proximity",
