@@ -48,6 +48,35 @@ class PhaseTwoResult:
     analysis_eligibility: EligibilityResult
     qc: QcReport
     source_data_policy: SourceDataPolicyBundle | None = None
+    final_cleaning: FinalCleaningResult | None = None
+    untrimmed_analysis_eligibility: EligibilityResult | None = None
+
+
+def _resource_snapshot(
+    config: ValidatedConfig,
+    *,
+    phase: str,
+) -> dict[str, Any]:
+    """Capture a lightweight planned-versus-observed process resource snapshot."""
+
+    run = config.raw["run"]
+    threads_per_job = int(run["r_threads_per_job"])
+    parallel_jobs = int(run["max_parallel_r_jobs"])
+    visible_cpus = (
+        len(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else (os.cpu_count() or 1)
+    )
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return {
+        "phase": phase,
+        "planned_r_threads_per_job": threads_per_job,
+        "planned_max_parallel_r_jobs": parallel_jobs,
+        "planned_r_cpu_budget": threads_per_job * parallel_jobs,
+        "affinity_visible_cpu_count": visible_cpus,
+        "process_cpu_seconds": round(float(usage.ru_utime + usage.ru_stime), 6),
+        "process_max_rss_bytes": max(0, int(usage.ru_maxrss) * 1024),
+    }
 
 
 def _load_analysis_policy(
