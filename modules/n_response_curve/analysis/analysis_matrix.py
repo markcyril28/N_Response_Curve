@@ -723,7 +723,15 @@ def _multiplicity_family_registry(
     families: list[MultiplicityFamily] = []
     for family_id, members in sorted(grouped.items()):
         candidate_ids = tuple(sorted(member.candidate_id for member in members))
-        hypothesis_ids = tuple(sorted(str(member.hypothesis_id) for member in members))
+        hypothesis_ids = tuple(
+            sorted({str(member.hypothesis_id) for member in members})
+        )
+        specification_ids = tuple(
+            sorted(
+                str(member.specification_id or member.hypothesis_id)
+                for member in members
+            )
+        )
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError(f"Multiplicity family {family_id!r} contains duplicate candidates")
         if len(hypothesis_ids) != len(set(hypothesis_ids)):
