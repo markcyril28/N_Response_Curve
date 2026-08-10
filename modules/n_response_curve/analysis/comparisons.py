@@ -28,6 +28,7 @@ class DescriptiveComparison:
 
 MANAGEMENT_SYSTEM_CLASSES = ("RCM", "FP", "NOPT_NPK")
 MANAGEMENT_SYSTEM_ESTIMAND_VERSION = "management-system-proximity-v2"
+MANAGEMENT_SYSTEM_TARGET_POPULATION = "resolved_same_comparison_set"
 
 
 @dataclass(frozen=True)
