@@ -310,17 +310,27 @@ def ingest_configured_sources(
     checksum_revision_approvals: Mapping[
         str, ChecksumRevisionApproval | Mapping[str, object]
     ] | None = None,
+    source_representation_bases: Mapping[str, str] | None = None,
     designated_reviewers: Iterable[str] = (),
 ) -> IngestionResult:
     """Verify the intake package and read every enabled source without writing it."""
 
     configured_specs = dict(adapter_specs or {})
     revision_approvals = dict(checksum_revision_approvals or {})
+    representation_bases = dict(source_representation_bases or {})
     unexpected_revision_sources = set(revision_approvals) - set(config.enabled_sources)
     if unexpected_revision_sources:
         raise ConfigError(
             "Checksum revision approval supplied for a disabled or unknown source: "
             + ", ".join(sorted(unexpected_revision_sources))
+        )
+    unexpected_representation_sources = set(representation_bases) - set(
+        config.enabled_sources
+    )
+    if unexpected_representation_sources:
+        raise ConfigError(
+            "Representation basis supplied for a disabled or unknown source: "
+            + ", ".join(sorted(unexpected_representation_sources))
         )
     for source_name in config.enabled_sources:
         adapter = str(config.sources[source_name]["shape_adapter_version"])
@@ -403,6 +413,15 @@ def ingest_configured_sources(
                     "parallel_workbook_csv_unresolved"
                     if source_config.get("workbook")
                     else "csv_registered_artifact"
+                ),
+                representation_basis=representation_bases.get(
+                    source_name,
+                    "unclear_mixed_scope",
+                ),
+                representation_basis_status=(
+                    "reviewed"
+                    if source_name in representation_bases
+                    else "review_required"
                 ),
                 checksum_revision_approval=revision_approvals.get(source_name),
                 checksum_revision_artifact_path=manifest_relative_path,
