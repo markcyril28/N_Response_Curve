@@ -110,6 +110,11 @@ def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
         "representation_review_status": {"resolved"},
         "schema_mapping_status": {"reviewed"},
         "treatment_classification_status": {"resolved"},
+        "cleaning_review_status": {
+            "resolved_excluded",
+            "resolved_flagged",
+            "resolved_retained",
+        },
         "restricted_release_status": {
             "not_restricted",
             "eligible_for_reviewed_public_projection",
@@ -170,6 +175,9 @@ def _tier_and_reasons(
         reasons.add("N_RATE_OUT_OF_RANGE")
     if yield_value is not None and not policy["yield_min_t_ha"] <= yield_value <= policy["yield_max_t_ha"]:
         reasons.add("YIELD_OUT_OF_RANGE")
+    cleaning_membership = record.get("final_analytical_membership_status")
+    if cleaning_membership == "excluded":
+        reasons.add("FINAL_CLEANING_EXCLUSION")
 
     hard_blockers = {
         "UNRESOLVED_RESPONSE_SERIES",
@@ -179,6 +187,7 @@ def _tier_and_reasons(
         "N_RATE_UNIT_CONFLICT",
         "N_RATE_OUT_OF_RANGE",
         "YIELD_OUT_OF_RANGE",
+        "FINAL_CLEANING_EXCLUSION",
     }
     if (
         hard_blockers.intersection(reasons)
@@ -209,6 +218,9 @@ def _tier_and_reasons(
         insufficient = True
     flagged = False
     excluded = False
+    if cleaning_membership == "included_flagged":
+        reasons.add("FINAL_CLEANING_FLAG_ONLY")
+        flagged = True
 
     organic_present = metrics["organic_or_biofertilizer_present"]
     organic_policy = policy.get("organic_policy", "retain_flagged")
