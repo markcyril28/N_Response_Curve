@@ -1805,6 +1805,18 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "input_snapshot_sha256": attempt.input_snapshot_sha256,
         "model_policy_sha256": attempt.model_policy_sha256,
         "model_gate_policy_id": attempt.model_gate_policy_id,
+        "estimator_policy_id": attempt.estimator_policy_id,
+        "estimator_name": attempt.estimator_name,
+        "estimator_status": attempt.estimator_status,
+        "analysis_grain": attempt.analysis_grain,
+        "weighted_sensitivity_status": attempt.weighted_sensitivity_status,
+        "weighted_sensitivity_parameters": dict(
+            attempt.weighted_sensitivity_parameters
+        ),
+        "weighted_sensitivity_objective": attempt.weighted_sensitivity_objective,
+        "weighted_sensitivity_reason_codes": list(
+            attempt.weighted_sensitivity_reason_codes
+        ),
         "status": attempt.status,
         "reason_codes": list(attempt.reason_codes),
         "n_observations": attempt.n_observations,
@@ -1831,6 +1843,7 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "uncertainty_status": attempt.uncertainty_status,
         "uncertainty_method": attempt.uncertainty_method,
         "uncertainty_evidence_basis": list(attempt.uncertainty_evidence_basis),
+        "feature_variances": dict(attempt.feature_variances),
         "predictions": [dict(row) for row in attempt.predictions],
     }
 
