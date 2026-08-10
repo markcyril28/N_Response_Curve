@@ -1114,6 +1114,7 @@ def _all_credible_curve_row(
         if supported_max is not None and supported_max > 0.0
         else None
     )
+    row.update(_first_stage_uncertainty_fields(credible, row, policy=policy))
     row["reason_codes"] = tuple(
         sorted(set(row["reason_codes"]) | set(summary.reason_codes))
     )
@@ -1382,6 +1383,8 @@ def build_curve_evidence(
         credible_attempts_flat,
         policy=policy,
     )
+    efficiency_rows = _partial_factor_productivity_rows(copied_records)
+    environmental_risk_rows = _environmental_risk_rows(copied_records)
     return CurveEvidenceResult(
         reporting_policy=reporting_policy,
         model_attempts=tuple(attempts),
@@ -1392,6 +1395,8 @@ def build_curve_evidence(
         curve_rows=curve_rows,
         prediction_rows=predictions,
         economic_optimum_rows=economic_optimum_rows,
+        efficiency_rows=efficiency_rows,
+        environmental_risk_rows=environmental_risk_rows,
     )
 
 
