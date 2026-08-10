@@ -2761,6 +2761,12 @@ def release_phases_three_to_five(
         "config_sha256": sha256_file(config.config_path),
         "code_sha256": _code_fingerprint(),
         "policy_content_sha256": policy_snapshot.policy_content_sha256,
+        "approval_artifact_sha256": policy_snapshot.artifact_sha256,
+        "approval_authority_matrix_sha256": (
+            policy_snapshot.authority_matrix.artifact_sha256
+            if policy_snapshot.authority_matrix is not None
+            else None
+        ),
         "effective_enablement_sha256": (
             policy_snapshot.effective_enablement_sha256
         ),
@@ -2823,6 +2829,9 @@ def release_phases_three_to_five(
         },
         "analysis_scope": {
             "country_codes": list(config.scope_countries),
+            "observed_spatiotemporal_scope": _observed_spatiotemporal_scope(
+                phase_two.curation.records
+            ),
             "series_identity_dimensions": list(config.series_identity_dimensions),
             "n_level_tolerance_kg_ha": config.raw["eligibility"]["n_level_tolerance_kg_ha"],
             "enabled_analysis_families": list(config.analysis_families),
@@ -2910,7 +2919,7 @@ def release_phases_three_to_five(
         },
         "descriptive_summary": _descriptive_summary_manifest(descriptive_summary_rows),
         "management_system_proximity_summary": {
-            "estimand_version": "management-system-proximity-v1",
+            "estimand_version": MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
             "row_count": len(phase_four.management_system_proximity),
             "status_counts": dict(sorted(Counter(row.status for row in phase_four.management_system_proximity).items())),
             "target_gap_status_counts": dict(
@@ -2932,7 +2941,7 @@ def release_phases_three_to_five(
             ),
             "n_rate_unit": "kg N/ha",
             "yield_unit": "t/ha",
-            "target_population": "resolved_same_response_series",
+            "target_population": MANAGEMENT_SYSTEM_TARGET_POPULATION,
             "maximum_gap_direction": "supported_maximum_minus_system_yield",
             "target_gap_direction": "target_yield_minus_actual_rcm_yield",
         },
@@ -2975,7 +2984,11 @@ def release_phases_three_to_five(
                 return PhaseFiveResult(package=existing, reused_existing_package=True)
         if not bool(config.raw["run"]["overwrite"]):
             raise ConfigError(f"Release package collision at {target}")
-        replacement_record = _load_replacement_record(config, target)
+        replacement_record = _load_replacement_record(
+            config,
+            target,
+            authority_matrix=policy_snapshot.authority_matrix,
+        )
     if target.exists() and replacement_record is None:
         # The reporting layer performs the final schema and binding validation.
         # Raise here so no staging directory or release-stage artifact is created.
