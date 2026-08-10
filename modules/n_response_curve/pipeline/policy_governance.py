@@ -561,9 +561,12 @@ def write_approval_authority_matrix_template(destination: str | Path) -> Path:
 
 
 __all__ = [
+    "ApprovalAuthorityMatrix",
     "RuntimePolicySnapshot",
     "effective_analysis_hypotheses",
     "effective_enablement",
+    "load_approval_authority_matrix",
     "validate_runtime_policy",
+    "write_approval_authority_matrix_template",
     "write_policy_snapshot_template",
 ]
