@@ -1825,6 +1825,157 @@ def _public_release_rows(
         raise ReportingError(f"Restricted-data public projection failed: {exc}") from exc
 
 
+def _with_record_release_metadata(
+    phase_two: Any,
+    rows: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Attach authoritative classification metadata before projecting row ledgers."""
+
+    source_records = tuple(
+        dict(record)
+        for record in getattr(getattr(phase_two, "resolution", None), "records", ())
+    )
+    source_by_uid = {
+        str(record.get("record_uid")): record
+        for record in source_records
+        if record.get("record_uid")
+    }
+    if len(source_by_uid) != len(source_records):
+        raise ReportingError(
+            "Release metadata requires unique stable record identities"
+        )
+    materialized: list[dict[str, Any]] = []
+    for row in rows:
+        release_row = dict(row)
+        record_uid = str(release_row.get("record_uid") or "").strip()
+        source_record = source_by_uid.get(record_uid)
+        if not record_uid or source_record is None:
+            raise ReportingError(
+                "Release ledger row cannot be bound to one canonical record"
+            )
+        for field in ("data_classification", "restricted_release_status"):
+            if field in source_record:
+                release_row[field] = source_record[field]
+        materialized.append(release_row)
+    return tuple(materialized)
+
+
+def _final_cleaning_sensitivity_rows(
+    phase_four: PhaseFourResult,
+) -> tuple[dict[str, Any], ...]:
+    """Compare the prespecified cleaned and untrimmed curve views without raw values."""
+
+    primary_id = "D02_strict_primary_zero_optional"
+    untrimmed_id = "D13_untrimmed_final_cleaning_sensitivity"
+    versions = {version.version_id: version for version in phase_four.dataset_versions}
+    primary = versions.get(primary_id)
+    untrimmed = versions.get(untrimmed_id)
+    if primary is None or untrimmed is None:
+        return ()
+    views = {
+        (view.dataset_version_id, view.source_combination_id): view
+        for view in phase_four.derived_curve_views
+        if view.dataset_version_id in {primary_id, untrimmed_id}
+    }
+    combinations = sorted({combination_id for _, combination_id in views})
+    feature_fields = (
+        "agronomic_optimum_n_kg_ha",
+        "plateau_onset_n_kg_ha",
+        "predicted_observed_domain_peak_yield_t_ha",
+        "finite_maximum_yield_t_ha",
+        "fitted_asymptote_yield_t_ha",
+        "supported_max_yield_t_ha",
+        "maximum_reference_basis",
+        "optimum_status",
+    )
+    rows: list[dict[str, Any]] = []
+    for combination_id in combinations:
+        primary_view = views.get((primary_id, combination_id))
+        untrimmed_view = views.get((untrimmed_id, combination_id))
+        primary_rows = {
+            str(row.get("response_series_uid")): row
+            for row in getattr(primary_view, "curve_rows", ())
+            if row.get("response_series_uid")
+        }
+        untrimmed_rows = {
+            str(row.get("response_series_uid")): row
+            for row in getattr(untrimmed_view, "curve_rows", ())
+            if row.get("response_series_uid")
+        }
+        series_uids = sorted(set(primary_rows) | set(untrimmed_rows)) or [None]
+        for series_uid in series_uids:
+            cleaned_row = primary_rows.get(str(series_uid)) if series_uid else None
+            untrimmed_row = untrimmed_rows.get(str(series_uid)) if series_uid else None
+            differences = {
+                field: {
+                    "cleaned": cleaned_row.get(field) if cleaned_row else None,
+                    "untrimmed": untrimmed_row.get(field) if untrimmed_row else None,
+                }
+                for field in feature_fields
+                if (
+                    (cleaned_row.get(field) if cleaned_row else None)
+                    != (untrimmed_row.get(field) if untrimmed_row else None)
+                )
+            }
+            identity = {
+                "source_combination_id": combination_id,
+                "response_series_uid": series_uid,
+                "primary_membership_sha256": primary.membership_sha256,
+                "untrimmed_membership_sha256": untrimmed.membership_sha256,
+            }
+            rows.append(
+                {
+                    "cleaning_sensitivity_uid": hashlib.sha256(
+                        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest(),
+                    **identity,
+                    "cleaned_dataset_version_id": primary_id,
+                    "untrimmed_dataset_version_id": untrimmed_id,
+                    "cleaned_view_status": getattr(primary_view, "status", "missing"),
+                    "untrimmed_view_status": getattr(untrimmed_view, "status", "missing"),
+                    "cleaned_curve_evidence_present": cleaned_row is not None,
+                    "untrimmed_curve_evidence_present": untrimmed_row is not None,
+                    "feature_difference_count": len(differences),
+                    "feature_differences": differences,
+                    "comparison_status": (
+                        "compared"
+                        if cleaned_row is not None and untrimmed_row is not None
+                        else "not_comparable_missing_parallel_curve_evidence"
+                    ),
+                }
+            )
+    return tuple(rows)
+
+
+def _complete_case_composition_rows(
+    phase_four: PhaseFourResult,
+) -> tuple[dict[str, Any], ...]:
+    counts: dict[tuple[str, str, str, str, str], int] = {}
+    for candidate_id, preparation in phase_four.r_preparations:
+        for row in preparation.membership_rows:
+            status = str(row.get("membership_status") or "unknown")
+            source_name = str(row.get("source_name") or "missing")
+            study_uid = str(row.get("study_uid") or "missing")
+            for grain, study in (("source", ""), ("source_study", study_uid)):
+                key = (candidate_id, status, grain, source_name, study)
+                counts[key] = counts.get(key, 0) + 1
+    return tuple(
+        {
+            "candidate_id": candidate_id,
+            "membership_status": status,
+            "composition_grain": grain,
+            "source_name": source_name,
+            "study_uid": study_uid or None,
+            "record_count": count,
+        }
+        for (candidate_id, status, grain, source_name, study_uid), count in sorted(
+            counts.items()
+        )
+    )
+
+
 def _table_artifacts(
     phase_two: Any,
     phase_three: PhaseThreeResult,
