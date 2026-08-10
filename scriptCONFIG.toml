@@ -386,6 +386,7 @@ wet = [
 [schema.normalization.treatment_class]
 absolute_control = ["absolute control"]
 zero_n = ["zero N", "0 N", "control"]
+mineral_n_rate = ["mineral N rate", "inorganic N series"]
 RCM = ["RCM", "recommended crop management"]
 FP = ["FP", "farmer practice"]
 NOPT_NPK = ["NOPT", "NOPT NPK"]
