@@ -20,6 +20,7 @@ class RAnalysisPreparation:
     specification: Mapping[str, Any]
     rows: tuple[Mapping[str, Any], ...]
     stable_key: str
+    membership_rows: tuple[Mapping[str, Any], ...] = ()
 
 
 _CATEGORICAL_OUTCOMES = frozenset({"curve_shape_class", "optimum_status"})
