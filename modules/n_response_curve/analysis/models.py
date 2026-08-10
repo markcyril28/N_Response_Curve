@@ -656,10 +656,25 @@ def _fit_parameters(
     maximum_yield: float,
     tolerance: float,
     gate: _ReviewedModelGate,
+    weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, tuple[str, ...]]:
+    if weights is None:
+        square_root_weights = np.ones_like(y)
+    else:
+        if (
+            weights.shape != y.shape
+            or not np.isfinite(weights).all()
+            or np.any(weights <= 0.0)
+        ):
+            return None, ("INVALID_ESTIMATOR_WEIGHTS",)
+        square_root_weights = np.sqrt(weights)
     if model_name == "linear":
         matrix = np.column_stack((np.ones_like(x), x))
-        parameters, _, rank, _ = np.linalg.lstsq(matrix, y, rcond=None)
+        parameters, _, rank, _ = np.linalg.lstsq(
+            matrix * square_root_weights[:, None],
+            y * square_root_weights,
+            rcond=None,
+        )
         if rank < 2:
             return None, ("RANK_DEFICIENT_DESIGN",)
         if np.any(parameters < gate.lower_bounds) or np.any(parameters > gate.upper_bounds):
@@ -667,7 +682,11 @@ def _fit_parameters(
         return parameters, ()
     if model_name == "quadratic":
         matrix = np.column_stack((np.ones_like(x), x, x**2))
-        parameters, _, rank, _ = np.linalg.lstsq(matrix, y, rcond=None)
+        parameters, _, rank, _ = np.linalg.lstsq(
+            matrix * square_root_weights[:, None],
+            y * square_root_weights,
+            rcond=None,
+        )
         if rank < 3:
             return None, ("RANK_DEFICIENT_DESIGN",)
         if np.any(parameters < gate.lower_bounds) or np.any(parameters > gate.upper_bounds):
@@ -712,7 +731,8 @@ def _fit_parameters(
     evaluator = _EVALUATORS[model_name]
     try:
         result = least_squares(
-            lambda parameters: evaluator(x, parameters) - y,
+            lambda parameters: (evaluator(x, parameters) - y)
+            * square_root_weights,
             x0=initial,
             bounds=(lower, upper),
             xtol=tolerance,
