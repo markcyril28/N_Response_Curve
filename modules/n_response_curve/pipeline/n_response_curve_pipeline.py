@@ -351,6 +351,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     if launcher_run_id:
         run_context["launcher_run_id"] = launcher_run_id
     run_log.info("run_started", **run_context)
+    run_log.info("resource_snapshot", **_resource_snapshot(config, phase="start"))
     if analysis_policy is not None:
         run_log.info(
             "analysis_policy_validated",
@@ -384,6 +385,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         )
     if config.run_mode == "validate":
         _print_validation_plan(config, phase_two)
+        run_log.info("resource_snapshot", **_resource_snapshot(config, phase="end"))
         run_log.info("validation_completed", writes_outputs=False)
         return 0
     with run_log.stage("phase_3"):
@@ -414,6 +416,7 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         concrete_candidates=len(phase_four.registry.candidates),
         theoretical_candidates=phase_four.registry.theoretical_candidate_count,
     )
+    run_log.info("resource_snapshot", **_resource_snapshot(config, phase="end"))
     phase_five = release_phases_three_to_five(
         config,
         phase_two,
