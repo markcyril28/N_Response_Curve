@@ -1245,9 +1245,10 @@ def _optimum_summary(
                 None,
                 None,
                 float(parameters["asymptote"]),
-                "identifiable_asymptote",
-                "SUPPORTED_ASYMPTOTIC_MAXIMUM_REFERENCE",
+                "model_implied_asymptote",
+                "ASYMPTOTE_SUPPORT_GATE_NOT_APPROVED",
                 "asymptotic_diminishing_returns",
+                ("ASYMPTOTE_RETAINED_AS_MODEL_IMPLIED_ONLY",),
             )
         return summary(
             "UNIDENTIFIABLE_ASYMPTOTE",
