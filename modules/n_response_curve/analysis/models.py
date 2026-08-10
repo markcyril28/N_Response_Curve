@@ -896,13 +896,19 @@ def _reported_se_delta_intervals(
     predictions: Sequence[Mapping[str, float]],
     *,
     method: str,
-) -> tuple[tuple[dict[str, float], ...], str, tuple[str, ...]]:
+) -> tuple[
+    tuple[dict[str, float], ...],
+    str,
+    tuple[str, ...],
+    np.ndarray | None,
+]:
     confidence_level = UNCERTAINTY_METHOD_CONFIDENCE_LEVELS.get(method)
     if confidence_level is None:
         return (
             tuple(dict(row) for row in predictions),
             "suppressed_unreviewed_method",
             ("REVIEWED_UNCERTAINTY_METHOD_UNAVAILABLE",),
+            None,
         )
     try:
         standard_errors = np.asarray(
@@ -948,6 +954,7 @@ def _reported_se_delta_intervals(
             tuple(dict(row) for row in predictions),
             "suppressed_numerically_unavailable",
             ("UNCERTAINTY_INTERVAL_NUMERICALLY_UNAVAILABLE",),
+            None,
         )
 
     critical_value = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
@@ -972,6 +979,7 @@ def _reported_se_delta_intervals(
         tuple(bounded_rows),
         f"available_{method}",
         (),
+        parameter_covariance,
     )
 
 
