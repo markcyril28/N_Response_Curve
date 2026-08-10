@@ -274,6 +274,8 @@ def ingest_csv(
         source_encoding=encoding,
         data_classification=data_classification,
         workbook_csv_basis=workbook_csv_basis,
+        representation_basis=representation_basis,
+        representation_basis_status=representation_basis_status,
         restricted_access_status=(
             "restricted_controls_required"
             if data_classification == "restricted"
