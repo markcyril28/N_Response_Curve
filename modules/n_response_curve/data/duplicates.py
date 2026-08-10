@@ -87,7 +87,12 @@ class SeriesResolution:
             for record in self.records
             if record.get("analytical_record_status") == "included"
         )
-        return source_rows + self.aggregate_records
+        aggregate_rows = tuple(
+            record
+            for record in self.aggregate_records
+            if record.get("analytical_record_status") == "included"
+        )
+        return source_rows + aggregate_rows
 
 
 def _stable_identifier(prefix: str, parts: Iterable[object]) -> str:
@@ -642,6 +647,7 @@ def _repeat_aggregate(
             "series_status": "resolved",
             "same_n_status": "exchangeable_replicate_aggregate",
             "analytical_record_status": "included",
+            "analysis_grain_status": "reviewed_treatment_mean",
             "repeat_review_id": adjudication.review_id,
             "repeat_reviewer": adjudication.reviewer,
             "repeat_reviewed_on": adjudication.reviewed_on,
