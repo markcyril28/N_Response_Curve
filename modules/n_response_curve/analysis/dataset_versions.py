@@ -133,7 +133,12 @@ def _record_uid(record: Mapping[str, Any]) -> str:
 
 def _eligible(record: Mapping[str, Any]) -> bool:
     tier = record.get("series_eligibility_tier") or record.get("eligibility_tier")
-    return record.get("series_status") == "resolved" and tier in {"A", "B"}
+    return (
+        record.get("series_status") == "resolved"
+        and tier in {"A", "B"}
+        and record.get("final_analytical_membership_status")
+        not in {"excluded", "review_required"}
+    )
 
 
 def _strict_primary(record: Mapping[str, Any]) -> bool:
