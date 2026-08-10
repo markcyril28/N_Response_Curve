@@ -436,6 +436,7 @@ __all__ = [
     "IngestionResult",
     "RawColumn",
     "RawRow",
+    "KNOWN_REPRESENTATION_BASES",
     "SourceAdapterSpec",
     "SUPPORTED_SHAPE_ADAPTERS",
     "ingest_configured_sources",
