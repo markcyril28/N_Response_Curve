@@ -246,6 +246,76 @@ def _series_coverage_tokens(rows: Sequence[Mapping[str, Any]]) -> frozenset[str]
         tier = str(
             row.get("series_eligibility_tier")
             or row.get("eligibility_tier")
+
+def _observed_spatiotemporal_scope(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Summarize only observed time and geography fields, retaining missingness."""
+
+    years: list[int] = []
+    countries: set[str] = set()
+    regions: set[str] = set()
+    provinces: set[str] = set()
+    for record in records:
+        raw_year = record.get("planting_year")
+        text_year = str(raw_year).strip() if raw_year is not None else ""
+        if text_year.isdigit() and len(text_year) == 4:
+            years.append(int(text_year))
+        for target, candidates in (
+            (countries, (record.get("source_country_code"), record.get("country_code"))),
+            (regions, (record.get("region_normalized"), record.get("region"))),
+            (provinces, (record.get("province_normalized"), record.get("province"))),
+        ):
+            value = next(
+                (
+                    str(candidate).strip()
+                    for candidate in candidates
+                    if candidate is not None
+                    and str(candidate).strip()
+                    and str(candidate).strip().lower() != "unresolved"
+                ),
+                "",
+            )
+            if value:
+                target.add(value)
+    record_count = len(records)
+    temporal_status = (
+        "unavailable"
+        if not years
+        else "available"
+        if len(years) == record_count
+        else "partially_available"
+    )
+    geographic_complete = bool(records) and all(
+        any(
+            str(record.get(field) or "").strip()
+            and str(record.get(field) or "").strip().lower() != "unresolved"
+            for field in ("region_normalized", "region", "province_normalized", "province")
+        )
+        for record in records
+    )
+    return {
+        "temporal": {
+            "status": temporal_status,
+            "observed_record_count": len(years),
+            "missing_or_unusable_record_count": record_count - len(years),
+            "minimum_year": min(years) if years else None,
+            "maximum_year": max(years) if years else None,
+        },
+        "geographic": {
+            "status": (
+                "available"
+                if geographic_complete
+                else "partially_available"
+                if countries or regions or provinces
+                else "unavailable"
+            ),
+            "country_codes": sorted(countries),
+            "regions": sorted(regions),
+            "provinces": sorted(provinces),
+        },
+    }
+
             or "unresolved"
         ).strip()
         tokens.add(f"eligibility_tier:{tier}")
