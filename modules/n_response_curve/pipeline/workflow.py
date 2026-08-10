@@ -34,6 +34,7 @@ from n_response_curve.analysis.comparisons import (
 from n_response_curve.analysis.policy_artifacts import AnalysisPolicyBundle
 from n_response_curve.data.config import ConfigError, ValidatedConfig
 from n_response_curve.data.curate import project_public_records
+    ApprovalAuthorityMatrix,
 from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_curve_evidence, curve_fit_record_uids
 from n_response_curve.analysis.curve_views import DerivedCurveView, build_derived_curve_views
@@ -50,6 +51,7 @@ from n_response_curve.pipeline.policy_governance import (
 )
 from n_response_curve.reporting.release import (
     ReleasePackage,
+    sensitivity_input_records: tuple[dict[str, Any], ...]
     ReportingError,
     TableArtifact,
     verify_release_package,
