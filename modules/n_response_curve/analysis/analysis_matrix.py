@@ -339,6 +339,46 @@ def _support_summary(
     )
 
 
+def first_stage_uncertainty_reasons(
+    rows: Sequence[Mapping[str, Any]],
+    outcome: str,
+) -> tuple[str, ...]:
+    variance_field = f"{outcome}_first_stage_variance"
+    variance_status_field = f"{outcome}_first_stage_variance_status"
+    selection_status_field = f"{outcome}_model_selection_uncertainty_status"
+    method_field = f"{outcome}_first_stage_uncertainty_method_id"
+    reviewer_field = f"{outcome}_first_stage_uncertainty_reviewer"
+    reviewed_on_field = f"{outcome}_first_stage_uncertainty_reviewed_on"
+    reasons: set[str] = set()
+    method_ids: set[str] = set()
+    for row in rows:
+        outcome_value = row.get(outcome)
+        variance_value = row.get(variance_field)
+        if (
+            isinstance(outcome_value, bool)
+            or not isinstance(outcome_value, (int, float))
+            or not math.isfinite(float(outcome_value))
+            or isinstance(variance_value, bool)
+            or not isinstance(variance_value, (int, float))
+            or not math.isfinite(float(variance_value))
+            or float(variance_value) <= 0.0
+            or row.get(variance_status_field) != "verified_comparable"
+        ):
+            reasons.add("FIRST_STAGE_UNCERTAINTY_NOT_VERIFIED_COMPARABLE")
+        if row.get(selection_status_field) != "incorporated":
+            reasons.add("MODEL_SELECTION_UNCERTAINTY_NOT_INCORPORATED")
+        if any(
+            not isinstance(row.get(field), str) or not str(row.get(field)).strip()
+            for field in (method_field, reviewer_field, reviewed_on_field)
+        ):
+            reasons.add("FIRST_STAGE_UNCERTAINTY_METHOD_NOT_APPROVED")
+        elif isinstance(row.get(method_field), str):
+            method_ids.add(str(row[method_field]))
+    if len(method_ids) != 1:
+        reasons.add("FIRST_STAGE_UNCERTAINTY_METHOD_NOT_APPROVED")
+    return tuple(sorted(reasons))
+
+
 def _reasons_for_candidate(
     *,
     version: DatasetVersion,
