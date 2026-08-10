@@ -6,7 +6,12 @@ import hashlib
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from .ingest import IngestedSource, IngestionResult, RawRow
+from .ingest import (
+    KNOWN_REPRESENTATION_BASES,
+    IngestedSource,
+    IngestionResult,
+    RawRow,
+)
 from .schema import (
     CANONICAL_N_RATE_UNIT,
     CANONICAL_YIELD_UNIT,
