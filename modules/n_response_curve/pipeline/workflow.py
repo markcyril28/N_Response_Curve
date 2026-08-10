@@ -26,40 +26,14 @@ from n_response_curve.analysis.comparisons import (
     ManagementSystemProximity,
     build_management_system_proximity,
 )
-    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
-    MANAGEMENT_SYSTEM_TARGET_POPULATION,
-    ManagementSystemProximity,
-    build_management_system_proximity,
-)
-    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
-    MANAGEMENT_SYSTEM_TARGET_POPULATION,
-    ManagementSystemProximity,
-    ApprovalAuthorityMatrix,
-    build_management_system_proximity,
-)
-    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
-    MANAGEMENT_SYSTEM_TARGET_POPULATION,
-    ManagementSystemProximity,
-    ApprovalAuthorityMatrix,
-    build_management_system_proximity,
-)
-    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
-    MANAGEMENT_SYSTEM_TARGET_POPULATION,
-    ManagementSystemProximity,
-    build_management_system_proximity,
-)
 from n_response_curve.analysis.policy_artifacts import AnalysisPolicyBundle
 from n_response_curve.data.config import ConfigError, ValidatedConfig
 from n_response_curve.data.curate import project_public_records
-    ApprovalAuthorityMatrix,
 from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_curve_evidence, curve_fit_record_uids
 from n_response_curve.analysis.curve_views import DerivedCurveView, build_derived_curve_views
 from n_response_curve.analysis.dataset_versions import DatasetVersion, build_dataset_versions
 from n_response_curve.analysis.explanatory import PythonAnalysisResult, execute_python_candidates, select_candidate_curve_rows
-    sensitivity_input_records: tuple[dict[str, Any], ...]
-    sensitivity_input_records: tuple[dict[str, Any], ...]
-    ApprovalAuthorityMatrix,
 from n_response_curve.analysis.factor_catalog import FactorCatalogEntry, build_factor_catalog
 from n_response_curve.reporting.plots import write_observed_series_figures, write_response_curve_figures
 from n_response_curve.analysis.r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
@@ -71,7 +45,6 @@ from n_response_curve.pipeline.policy_governance import (
 )
 from n_response_curve.reporting.release import (
     ReleasePackage,
-    sensitivity_input_records: tuple[dict[str, Any], ...]
     ReportingError,
     TableArtifact,
     verify_release_package,
@@ -84,6 +57,7 @@ from n_response_curve.logging.run_logging import RunLogger
 class PhaseThreeResult:
     evidence: CurveEvidenceResult
     input_records: tuple[dict[str, Any], ...]
+    sensitivity_input_records: tuple[dict[str, Any], ...]
     test_subset: Mapping[str, Any] | None
     model_policy: Mapping[str, Any]
     model_policy_sha256: str
@@ -348,38 +322,6 @@ def _observed_spatiotemporal_scope(
             "provinces": sorted(provinces),
         },
     }
-
-            or "unresolved"
-        ).strip()
-        tokens.add(f"eligibility_tier:{tier}")
-        treatment = str(
-            row.get("treatment_text_class")
-            or row.get("treatment_class")
-            or "unresolved"
-        ).strip()
-        tokens.add(f"treatment_class:{treatment}")
-        source_type = str(
-            row.get("source_type")
-            or row.get("source_family")
-            or row.get("source_name")
-            or "unresolved"
-        ).strip()
-        tokens.add(f"source_type:{source_type}")
-        reasons = tuple(row.get("series_eligibility_reason_codes") or ())
-        for reason in reasons:
-            if (
-                isinstance(reason, str)
-                and reason
-                and reason != "PRIMARY_ELIGIBLE"
-            ):
-                tokens.add(f"edge_case:{reason}")
-        if bool(row.get("is_high_n")):
-            tokens.add("edge_case:high_n")
-        if bool(row.get("organic_fertilizer_present")) or bool(row.get("biofertilizer_present")):
-            tokens.add("edge_case:organic_or_biofertilizer")
-        if row.get("same_n_status") == "repeated_measurement":
-            tokens.add("edge_case:repeated_n_level")
-    return frozenset(tokens)
 
 
 def _test_subset_selection(
@@ -2831,7 +2773,6 @@ def _report_sections(
             "Baseline-response metrics are disabled until verified zero-N-with-P/K and absolute-control class separation is implemented."
             if not baseline_metrics_enabled
             else "Baseline-response metrics require verified zero-N-with-P/K and absolute-control class separation.",
-            "Economic optimum remains unavailable until an approved, versioned price-and-cost scenario artifact and runtime gate exist.",
         ],
     }
 
