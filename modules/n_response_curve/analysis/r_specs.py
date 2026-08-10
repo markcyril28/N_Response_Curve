@@ -271,6 +271,53 @@ def prepare_r_analysis(
 
     if candidate.engine != "r":
         raise ValueError("R analysis preparation requires an R-owned candidate")
+    contrast_specification = dict(candidate.prespecified_contrast)
+    same_context_management_contrast = (
+        candidate.analysis_family == "marginal_contrasts"
+        and contrast_specification.get("estimand_type")
+        == "same_context_management_contrast"
+    )
+    dependence_unit_field: str | None = None
+    if same_context_management_contrast:
+        raw_dependence_unit = contrast_specification.get("dependence_unit")
+        if (
+            contrast_specification.get("same_context_required") is not True
+            or not isinstance(raw_dependence_unit, str)
+            or raw_dependence_unit != "comparison_set_uid"
+        ):
+            return RAnalysisPreparation(
+                "skipped",
+                ("VERIFIED_SAME_CONTEXT_ESTIMAND_REQUIRED",),
+                {},
+                (),
+                "record_uid" if observation_level else "response_series_uid",
+            )
+        dependence_unit_field = raw_dependence_unit
+    expected_grouping = (
+        ("study_uid", "response_series_uid")
+        if observation_level
+        else (
+            (dependence_unit_field,)
+            if dependence_unit_field is not None
+            else ("study_uid",)
+        )
+    )
+    if not candidate.grouping:
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_GROUPING_REQUIRED",),
+            {},
+            (),
+            "record_uid" if observation_level else "response_series_uid",
+        )
+    if candidate.grouping != expected_grouping:
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_GROUPING_UNSUPPORTED",),
+            {},
+            (),
+            "record_uid" if observation_level else "response_series_uid",
+        )
     if not candidate.factor_names:
         return RAnalysisPreparation(
             "skipped",
@@ -279,16 +326,94 @@ def prepare_r_analysis(
             (),
             "record_uid" if observation_level else "response_series_uid",
         )
+    if same_context_management_contrast:
+        treatment = contrast_specification.get("treatment")
+        comparator = contrast_specification.get("comparator")
+        if (
+            len(candidate.factor_names) != 1
+            or not isinstance(treatment, str)
+            or not treatment
+            or not isinstance(comparator, str)
+            or not comparator
+            or treatment == comparator
+        ):
+            return RAnalysisPreparation(
+                "skipped",
+                ("PRESPECIFIED_MANAGEMENT_CONTRAST_REQUIRED",),
+                {},
+                (),
+                "record_uid" if observation_level else "response_series_uid",
+            )
+        contrast_specification["factor_name"] = candidate.factor_names[0]
+        contrast_specification.setdefault("adjustment", "BH")
     stable_key = "record_uid" if observation_level else "response_series_uid"
     outcome_name = "yield_t_ha" if observation_level else candidate.curve_outcome
-    normalized = _normalized_rows(
+    first_stage_variance_field: str | None = None
+    if (
+        not observation_level
+        and candidate.analysis_family in _FITTED_FEATURE_INFERENTIAL_FAMILIES
+    ):
+        first_stage_reasons = first_stage_uncertainty_reasons(rows, outcome_name)
+        if first_stage_reasons:
+            return RAnalysisPreparation(
+                "skipped",
+                first_stage_reasons,
+                {},
+                (),
+                stable_key,
+            )
+        first_stage_variance_field = f"{outcome_name}_first_stage_variance"
+    normalized, membership_rows = _normalized_rows(
         rows,
         candidate.factor_names,
+        candidate_id=candidate.candidate_id,
         factor_representations=candidate.factor_representations,
         outcome_name=outcome_name,
         stable_key=stable_key,
         observation_level=observation_level,
+        first_stage_variance_field=first_stage_variance_field,
+        dependence_unit_field=dependence_unit_field,
     )
+    if same_context_management_contrast:
+        assert dependence_unit_field is not None
+        factor_name = candidate.factor_names[0]
+        treatment = str(contrast_specification["treatment"])
+        comparator = str(contrast_specification["comparator"])
+        levels_by_context: dict[str, set[str]] = {}
+        for row in normalized:
+            context_uid = str(row.get(dependence_unit_field) or "")
+            if context_uid:
+                levels_by_context.setdefault(context_uid, set()).add(
+                    str(row.get(factor_name) or "")
+                )
+        complete_contexts = {
+            context_uid
+            for context_uid, levels in levels_by_context.items()
+            if {treatment, comparator}.issubset(levels)
+        }
+        normalized = tuple(
+            row
+            for row in normalized
+            if str(row.get(dependence_unit_field) or "") in complete_contexts
+            and str(row.get(factor_name) or "") in {treatment, comparator}
+        )
+        membership_rows = tuple(
+            {
+                **row,
+                "membership_status": "excluded",
+                "exclusion_reasons": (
+                    *tuple(row.get("exclusion_reasons") or ()),
+                    "PRESPECIFIED_CONTRAST_PAIR_INCOMPLETE",
+                ),
+            }
+            if row.get("membership_status") == "included"
+            and (
+                str(row.get(dependence_unit_field) or "") not in complete_contexts
+                or str(row.get(factor_name) or "") not in {treatment, comparator}
+            )
+            else row
+            for row in membership_rows
+        )
     if observation_level:
         levels_by_series: dict[str, set[float]] = {}
         for row in normalized:
@@ -305,6 +430,20 @@ def prepare_r_analysis(
             row
             for row in normalized
             if str(row.get("response_series_uid") or "") in supported_series
+        )
+        membership_rows = tuple(
+            {
+                **row,
+                "membership_status": "excluded",
+                "exclusion_reasons": (
+                    *tuple(row.get("exclusion_reasons") or ()),
+                    "INSUFFICIENT_WITHIN_SERIES_N_SUPPORT",
+                ),
+            }
+            if row.get("membership_status") == "included"
+            and str(row.get("response_series_uid") or "") not in supported_series
+            else row
+            for row in membership_rows
         )
         if len(supported_series) < 3:
             return RAnalysisPreparation(
@@ -334,7 +473,11 @@ def prepare_r_analysis(
             stable_key,
         )
 
-    random_intercept = _has_supported_random_intercept(normalized)
+    grouping_column = str(expected_grouping[0])
+    random_intercept = _has_supported_random_intercept(
+        normalized,
+        grouping_column,
+    )
     if observation_level:
         n_levels = {
             finite_number(row.get("n_rate_kg_ha"))
@@ -363,7 +506,7 @@ def prepare_r_analysis(
         if not random_intercept:
             return RAnalysisPreparation(
                 "skipped",
-                ("INSUFFICIENT_NESTED_RANDOM_EFFECT_SUPPORT",),
+                ("PREDECLARED_GROUPING_NOT_IDENTIFIABLE",),
                 {},
                 normalized,
                 stable_key,
@@ -393,12 +536,17 @@ def prepare_r_analysis(
                     stable_key,
                 )
             if len(level_counts) > 2:
-                model_kind = "multinom"
-                random_intercept = False
+                return RAnalysisPreparation(
+                    "skipped",
+                    ("PREDECLARED_GROUPING_UNSUPPORTED_FOR_MULTINOMIAL_OUTCOME",),
+                    {},
+                    normalized,
+                    stable_key,
+                )
             else:
-                model_kind = "glmmTMB" if random_intercept else "glm"
+                model_kind = "glmmTMB"
         else:
-            model_kind = "lmer" if random_intercept else "lm"
+            model_kind = "lmer"
         gate_reason = _design_gate_reason(
             normalized,
             candidate.factor_names,
@@ -409,9 +557,18 @@ def prepare_r_analysis(
         )
         if gate_reason is not None:
             return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
+        if not random_intercept:
+            return RAnalysisPreparation(
+                "skipped",
+                ("PREDECLARED_GROUPING_NOT_IDENTIFIABLE",),
+                {},
+                normalized,
+                stable_key,
+            )
         formula = _curve_formula(
             candidate,
             include_random_intercept=random_intercept,
+            grouping_column=grouping_column,
         )
 
     specification: dict[str, Any] = {
