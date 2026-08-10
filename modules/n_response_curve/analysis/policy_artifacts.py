@@ -1831,6 +1831,12 @@ def load_curve_model_policy(
         uncertainty_method_contract,
         uncertainty_basis,
     ) = _uncertainty_policy(raw["uncertainty"])
+    first_stage_contextual_uncertainty = (
+        _first_stage_contextual_uncertainty_policy(
+            raw.get("first_stage_contextual_uncertainty"),
+            active_within_model_method=uncertainty_method,
+        )
+    )
     (
         economic_policy_id,
         economic_status,
@@ -1861,6 +1867,9 @@ def load_curve_model_policy(
             uncertainty_method=uncertainty_method,
             uncertainty_method_contract=uncertainty_method_contract,
             uncertainty_evidence_basis=uncertainty_basis,
+            first_stage_contextual_uncertainty_policy=(
+                first_stage_contextual_uncertainty
+            ),
             economic_policy_id=economic_policy_id,
             economic_review_status=economic_status,
             economic_table_id=economic_table_id,
