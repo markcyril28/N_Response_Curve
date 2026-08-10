@@ -10,6 +10,27 @@ _RULE_TYPES = frozenset({"numeric_outside_range", "remark_match"})
 _RULE_ACTIONS = frozenset({"exclude_primary", "flag_only", "retain"})
 _DEFAULT_ACTIONS = frozenset({"retain"})
 _SPACE_RE = re.compile(r"\s+")
+FINAL_CLEANING_METADATA_FIELDS = (
+    "cleaning_policy_id",
+    "cleaning_review_id",
+    "cleaning_reviewer",
+    "cleaning_reviewed_on",
+    "cleaning_rule_ids",
+    "cleaning_reason_codes",
+    "cleaning_review_status",
+    "final_analytical_membership_status",
+    "untrimmed_sensitivity_membership_status",
+)
+_CANONICAL_NUMERIC_FIELD_UNITS = {
+    "yield_t_ha": frozenset({"t/ha", "t ha-1", "tonnes ha-1"}),
+    "n_rate_kg_ha": frozenset({"kg n/ha", "kg n ha-1", "kg n ha^-1"}),
+    "p_rate_kg_p2o5_ha": frozenset({"kg p2o5/ha", "kg p2o5 ha-1"}),
+    "k_rate_kg_k2o_ha": frozenset({"kg k2o/ha", "kg k2o ha-1"}),
+}
+
+
+def _normalized_unit(value: str) -> str:
+    return _SPACE_RE.sub(" ", value.strip()).casefold()
 
 
 @dataclass(frozen=True)
