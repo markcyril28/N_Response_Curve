@@ -29,6 +29,15 @@ _INTERACTION_ORDER_FAMILIES = frozenset(
         "penalized_predictive_models",
     }
 )
+_FITTED_FEATURE_INFERENTIAL_FAMILIES = frozenset(
+    {
+        "one_factor_inferential",
+        "all_supported_interactions",
+        "multivariable_mixed_effects",
+        "observation_level_curve_modification",
+        "marginal_contrasts",
+    }
+)
 
 
 def _json_data(value: Any) -> Any:
@@ -60,6 +69,7 @@ class PrespecifiedHypothesis:
     analysis_family: str
     engine: str
     multiplicity_family_id: str
+    grouping: tuple[str, ...] = ()
     support_rule_id: str | None = None
     support_policy: Mapping[str, Any] = field(default_factory=dict)
     factor_representations: Mapping[str, Mapping[str, Any]] = field(
