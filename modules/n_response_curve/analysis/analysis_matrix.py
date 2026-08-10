@@ -734,14 +734,17 @@ def _multiplicity_family_registry(
         )
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError(f"Multiplicity family {family_id!r} contains duplicate candidates")
-        if len(hypothesis_ids) != len(set(hypothesis_ids)):
-            raise ValueError(f"Multiplicity family {family_id!r} contains duplicate hypotheses")
+        if len(specification_ids) != len(set(specification_ids)):
+            raise ValueError(
+                f"Multiplicity family {family_id!r} contains duplicate specifications"
+            )
         families.append(
             MultiplicityFamily(
                 family_id=family_id,
                 method="BH",
                 candidate_ids=candidate_ids,
                 hypothesis_ids=hypothesis_ids,
+                specification_ids=specification_ids,
             )
         )
     return tuple(families)
