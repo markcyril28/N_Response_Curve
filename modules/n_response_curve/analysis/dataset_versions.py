@@ -473,6 +473,7 @@ def build_dataset_versions(
     records: Iterable[Mapping[str, Any]],
     *,
     version_names: Sequence[str],
+    recommendation_set_policy: Mapping[str, Any] | None = None,
 ) -> tuple[DatasetVersion, ...]:
     """Build enabled deterministic dataset views without copying or editing raw artifacts."""
 
@@ -486,7 +487,14 @@ def build_dataset_versions(
     record_uids = [_record_uid(record) for record in rows]
     if len(record_uids) != len(set(record_uids)):
         raise ValueError("Canonical records may not have duplicate record_uids")
-    return tuple(_available_membership(version_id, rows) for version_id in requested)
+    return tuple(
+        _available_membership(
+            version_id,
+            rows,
+            recommendation_set_policy=recommendation_set_policy,
+        )
+        for version_id in requested
+    )
 
 
 def select_dataset_version_records(
