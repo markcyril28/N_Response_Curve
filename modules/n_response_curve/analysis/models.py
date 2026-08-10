@@ -246,6 +246,50 @@ def _as_finite_array(values: Sequence[float | int]) -> np.ndarray | None:
     return array
 
 
+def _estimator_grain_status(
+    evidence: Sequence[Mapping[str, Any]],
+    observation_count: int,
+) -> str:
+    if len(evidence) != observation_count or not evidence:
+        return "exploratory_unreviewed_grain"
+    if all(
+        row.get("analysis_grain_status") == "reviewed_treatment_mean"
+        for row in evidence
+    ):
+        return "primary_reviewed"
+    return "exploratory_unreviewed_grain"
+
+
+def _inverse_variance_sensitivity_weights(
+    evidence: Sequence[Mapping[str, Any]],
+    observation_count: int,
+) -> tuple[np.ndarray | None, tuple[str, ...]]:
+    if len(evidence) != observation_count or not evidence:
+        return None, ("INCOMPLETE_REPORTED_STANDARD_ERROR_EVIDENCE",)
+    standard_errors: list[float] = []
+    for row in evidence:
+        if row.get("analysis_grain_status") != "reviewed_treatment_mean":
+            return None, ("TREATMENT_MEAN_GRAIN_NOT_REVIEWED",)
+        if row.get("yield_se_status") != "verified":
+            return None, ("REPORTED_STANDARD_ERROR_NOT_VERIFIED",)
+        if row.get("experimental_unit_status") != "verified":
+            return None, ("EXPERIMENTAL_UNIT_NOT_VERIFIED",)
+        if row.get("mean_independence_status") != "verified":
+            return None, ("MEAN_INDEPENDENCE_NOT_VERIFIED",)
+        raw_standard_error = row.get("yield_se_t_ha")
+        if not isinstance(raw_standard_error, (int, float, str)):
+            return None, ("INCOMPLETE_REPORTED_STANDARD_ERROR_EVIDENCE",)
+        try:
+            standard_error = float(raw_standard_error)
+        except (TypeError, ValueError):
+            return None, ("INCOMPLETE_REPORTED_STANDARD_ERROR_EVIDENCE",)
+        if not math.isfinite(standard_error) or standard_error <= 0.0:
+            return None, ("INVALID_REPORTED_STANDARD_ERROR",)
+        standard_errors.append(standard_error)
+    values = np.asarray(standard_errors, dtype=float)
+    return 1.0 / np.square(values), ()
+
+
 def _observed_bounds(n_rates: np.ndarray) -> tuple[float, float]:
     return float(np.min(n_rates)), float(np.max(n_rates))
 
