@@ -24,6 +24,14 @@ class RAnalysisPreparation:
 
 
 _CATEGORICAL_OUTCOMES = frozenset({"curve_shape_class", "optimum_status"})
+_FITTED_FEATURE_INFERENTIAL_FAMILIES = frozenset(
+    {
+        "one_factor_inferential",
+        "all_supported_interactions",
+        "multivariable_mixed_effects",
+        "marginal_contrasts",
+    }
+)
 
 
 def _present(value: object) -> bool:
