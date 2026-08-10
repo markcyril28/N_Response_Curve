@@ -444,7 +444,7 @@ class AnalysisPolicyBundle:
                     "eligibility_rule": estimand.eligibility_rule,
                     "unavailable_reason_field": estimand.unavailable_reason_field,
                     "hypothesis_population": hypothesis.population,
-                    "hypothesis_grouping": hypothesis.grouping,
+                    "grouping": hypothesis.grouping,
                     "evidence_role": hypothesis.evidence_role,
                     "alpha": hypothesis.alpha,
                     "sensitivities": hypothesis.sensitivities,
@@ -459,6 +459,7 @@ class AnalysisPolicyBundle:
                         "source_combination_id": source_combination_id,
                         "curve_outcome": hypothesis.outcome,
                         "factor_names": hypothesis.factor_names,
+                        "grouping": hypothesis.grouping,
                         "contrast_specification": contrast_specification,
                         "analysis_family": hypothesis.analysis_family,
                         "engine": hypothesis.engine,
@@ -552,6 +553,7 @@ class AnalysisPolicyBundle:
                             "source_combination_id": sensitivity_source_id,
                             "curve_outcome": hypothesis.outcome,
                             "factor_names": sensitivity["factor_names"],
+                            "grouping": sensitivity["grouping"],
                             "contrast_specification": MappingProxyType(
                                 sensitivity_contrast
                             ),
