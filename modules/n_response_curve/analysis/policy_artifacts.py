@@ -1571,6 +1571,116 @@ def _economic_policy(
     )
 
 
+def _first_stage_contextual_uncertainty_policy(
+    value: object | None,
+    *,
+    active_within_model_method: str | None,
+) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType(
+            {
+                "policy_id": "ANA-16-withheld",
+                "review_status": "withheld",
+                "method_id": None,
+                "eligible_outcomes": (),
+                "within_model_variance_method": None,
+                "model_selection_uncertainty_method": None,
+            }
+        )
+    raw = _exact_object(
+        value,
+        required_keys={
+            "policy_id",
+            "review_status",
+            "method_id",
+            "eligible_outcomes",
+            "within_model_variance_method",
+            "model_selection_uncertainty_method",
+        },
+        where="curve model policy first_stage_contextual_uncertainty",
+    )
+    policy_id = _nonempty_text(
+        raw["policy_id"],
+        where="curve model policy first_stage_contextual_uncertainty.policy_id",
+    )
+    status = _review_status(
+        raw["review_status"],
+        where="curve model policy first_stage_contextual_uncertainty.review_status",
+    )
+    if status != "approved":
+        if any(
+            raw[field] not in (None, [])
+            for field in (
+                "method_id",
+                "eligible_outcomes",
+                "within_model_variance_method",
+                "model_selection_uncertainty_method",
+            )
+        ):
+            raise PolicyArtifactError(
+                "Withheld first-stage contextual uncertainty cannot enable a method or outcome"
+            )
+        return MappingProxyType(
+            {
+                "policy_id": policy_id,
+                "review_status": status,
+                "method_id": None,
+                "eligible_outcomes": (),
+                "within_model_variance_method": None,
+                "model_selection_uncertainty_method": None,
+            }
+        )
+    method_id = _nonempty_text(
+        raw["method_id"],
+        where="curve model policy first_stage_contextual_uncertainty.method_id",
+    )
+    model_selection_method = _nonempty_text(
+        raw["model_selection_uncertainty_method"],
+        where=(
+            "curve model policy first_stage_contextual_uncertainty."
+            "model_selection_uncertainty_method"
+        ),
+    )
+    if (
+        method_id != "all_credible_equal_weight_total_variance"
+        or model_selection_method != method_id
+    ):
+        raise PolicyArtifactError(
+            "Approved first-stage contextual uncertainty must use the executable "
+            "all-credible total-variance method"
+        )
+    within_method = _nonempty_text(
+        raw["within_model_variance_method"],
+        where=(
+            "curve model policy first_stage_contextual_uncertainty."
+            "within_model_variance_method"
+        ),
+    )
+    if within_method != active_within_model_method:
+        raise PolicyArtifactError(
+            "First-stage contextual uncertainty must reference the active reviewed "
+            "within-model uncertainty method"
+        )
+    outcomes = _string_tuple(
+        raw["eligible_outcomes"],
+        where="curve model policy first_stage_contextual_uncertainty.eligible_outcomes",
+    )
+    if set(outcomes) - _FIRST_STAGE_NUMERIC_OUTCOMES:
+        raise PolicyArtifactError(
+            "First-stage contextual uncertainty contains a nonnumeric or unsupported outcome"
+        )
+    return MappingProxyType(
+        {
+            "policy_id": policy_id,
+            "review_status": status,
+            "method_id": method_id,
+            "eligible_outcomes": outcomes,
+            "within_model_variance_method": within_method,
+            "model_selection_uncertainty_method": model_selection_method,
+        }
+    )
+
+
 def load_curve_model_policy(
     path: str | Path,
     *,
