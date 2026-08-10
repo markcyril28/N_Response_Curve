@@ -1698,18 +1698,26 @@ def load_curve_model_policy(
         raise PolicyArtifactError(
             "Curve model policy must contain exactly one complete record"
         )
+    required_record_keys = {
+        "policy_id",
+        "restricted_fit_models",
+        "model_gates",
+        "baseline_response",
+        "recommendation_set",
+        "material_disagreement",
+        "uncertainty",
+        "economic_scenarios",
+    }
+    if not isinstance(records[0], Mapping):
+        raise PolicyArtifactError("curve model policy record must be an object")
+    observed_record_keys = set(records[0])
+    if observed_record_keys == required_record_keys | {
+        "first_stage_contextual_uncertainty"
+    }:
+        required_record_keys = observed_record_keys
     raw = _exact_object(
         records[0],
-        required_keys={
-            "policy_id",
-            "restricted_fit_models",
-            "model_gates",
-            "baseline_response",
-            "recommendation_set",
-            "material_disagreement",
-            "uncertainty",
-            "economic_scenarios",
-        },
+        required_keys=required_record_keys,
         where="curve model policy record",
     )
     policy_id = _nonempty_text(
