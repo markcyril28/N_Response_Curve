@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .analysis_matrix import AnalysisCandidate
+from .analysis_matrix import AnalysisCandidate, first_stage_uncertainty_reasons
 from .factor_catalog import factor_value
 from .values import finite_number
 
