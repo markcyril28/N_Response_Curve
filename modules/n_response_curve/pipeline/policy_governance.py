@@ -288,6 +288,100 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     return dict(payload)
 
 
+def load_approval_authority_matrix(path: str | Path) -> ApprovalAuthorityMatrix:
+    """Load the independently approved OPS-08 matrix with exact gate ownership."""
+
+    artifact_path = Path(path).resolve()
+    try:
+        payload = _load_json_object(artifact_path)
+    except ConfigError as exc:
+        raise ConfigError(
+            "Authoritative full mode requires a separately approved OPS-08 authority matrix"
+        ) from exc
+    required_keys = {
+        "schema_version",
+        "status",
+        "matrix_id",
+        "effective_from",
+        "approved_by",
+        "approved_at",
+        "approval_source",
+        "gate_authorities",
+        "role_combination_policy",
+        "substitution_policy",
+        "recusal_policy",
+        "dual_approval_policy",
+    }
+    if set(payload) != required_keys:
+        raise ConfigError("Approval authority matrix fields do not match the required schema")
+    if payload["schema_version"] != _AUTHORITY_MATRIX_SCHEMA_VERSION:
+        raise ConfigError("Approval authority matrix schema version is unsupported")
+    if payload["status"] != _APPROVED_STATUS:
+        raise ConfigError("Approval authority matrix is not approved")
+    matrix_id = _approval_text(payload["matrix_id"], field="matrix identifier")
+    effective_from = _approval_timestamp(payload["effective_from"])
+    approval = {
+        "approved_by": _approval_text(payload["approved_by"], field="matrix approver"),
+        "approved_at": _approval_timestamp(payload["approved_at"]),
+        "approval_source": _approval_text(
+            payload["approval_source"],
+            field="matrix approval source",
+        ),
+    }
+    raw_gates = payload["gate_authorities"]
+    if not isinstance(raw_gates, Mapping) or set(raw_gates) != set(_AUTHORITY_GATES):
+        raise ConfigError(
+            "Approval authority matrix must assign every source/privacy, scientific, "
+            "runtime, and release gate"
+        )
+    gate_authorities: dict[str, Mapping[str, str]] = {}
+    required_gate_fields = {
+        "accountable_role",
+        "accountable_party",
+        "authority_scope",
+        "approval_source",
+    }
+    for gate in _AUTHORITY_GATES:
+        raw_assignment = raw_gates[gate]
+        if (
+            not isinstance(raw_assignment, Mapping)
+            or set(raw_assignment) != required_gate_fields
+        ):
+            raise ConfigError(
+                f"Approval authority assignment for {gate!r} does not match the required schema"
+            )
+        assignment = {
+            field: _approval_text(
+                raw_assignment[field],
+                field=f"{gate} {field}",
+            )
+            for field in sorted(required_gate_fields)
+        }
+        if assignment["authority_scope"] != gate:
+            raise ConfigError(
+                f"Approval authority assignment for {gate!r} has a mismatched scope"
+            )
+        gate_authorities[gate] = assignment
+    policies = {
+        field: _approval_text(payload[field], field=field.replace("_", " "))
+        for field in (
+            "role_combination_policy",
+            "substitution_policy",
+            "recusal_policy",
+            "dual_approval_policy",
+        )
+    }
+    return ApprovalAuthorityMatrix(
+        matrix_id=matrix_id,
+        effective_from=effective_from,
+        approval=approval,
+        gate_authorities=gate_authorities,
+        artifact_path=artifact_path,
+        artifact_sha256=sha256_file(artifact_path),
+        **policies,
+    )
+
+
 def _validate_approved_snapshot(
     config: ValidatedConfig,
     *,
