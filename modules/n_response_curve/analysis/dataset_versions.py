@@ -155,9 +155,18 @@ def _series_groups(
     records: Sequence[Mapping[str, Any]],
     *,
     allowed_tiers: frozenset[str],
+    membership_basis: str = "primary_cleaned",
 ) -> dict[str, tuple[Mapping[str, Any], ...]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:
+        if membership_basis == "primary_cleaned" and record.get(
+            "final_analytical_membership_status"
+        ) in {"excluded", "review_required"}:
+            continue
+        if membership_basis == "untrimmed" and record.get(
+            "untrimmed_sensitivity_membership_status"
+        ) != "included":
+            continue
         series_uid = record.get("response_series_uid")
         if isinstance(series_uid, str) and series_uid:
             grouped.setdefault(series_uid, []).append(record)
