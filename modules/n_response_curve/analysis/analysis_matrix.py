@@ -633,6 +633,9 @@ def _normalize_hypotheses(
                     "Prespecified hypothesis factor_representations must map factors to mappings"
                 )
             hypothesis = PrespecifiedHypothesis(
+                specification_id=str(
+                    raw.get("specification_id") or raw["hypothesis_id"]
+                ),
                 hypothesis_id=str(raw["hypothesis_id"]),
                 dataset_version_id=str(raw["dataset_version_id"]),
                 source_combination_id=str(raw["source_combination_id"]),
@@ -656,7 +659,13 @@ def _normalize_hypotheses(
             )
         else:
             raise ValueError("Prespecified hypotheses must be mappings or PrespecifiedHypothesis values")
+        if hypothesis.specification_id is None:
+            hypothesis = replace(
+                hypothesis,
+                specification_id=hypothesis.hypothesis_id,
+            )
         text_fields = (
+            hypothesis.specification_id,
             hypothesis.hypothesis_id,
             hypothesis.dataset_version_id,
             hypothesis.source_combination_id,
@@ -692,9 +701,9 @@ def _normalize_hypotheses(
                 "Prespecified hypothesis semantic controls must be finite JSON data"
             ) from exc
         normalized.append(hypothesis)
-    identifiers = [item.hypothesis_id for item in normalized]
+    identifiers = [item.specification_id for item in normalized]
     if len(identifiers) != len(set(identifiers)):
-        raise ValueError("Prespecified hypothesis IDs must be unique")
+        raise ValueError("Prespecified specification IDs must be unique")
     return tuple(normalized)
 
 
