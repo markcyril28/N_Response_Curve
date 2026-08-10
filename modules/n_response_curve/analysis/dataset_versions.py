@@ -143,7 +143,12 @@ def _eligible(record: Mapping[str, Any]) -> bool:
 
 def _strict_primary(record: Mapping[str, Any]) -> bool:
     tier = record.get("series_eligibility_tier") or record.get("eligibility_tier")
-    return record.get("series_status") == "resolved" and tier == "A"
+    return (
+        record.get("series_status") == "resolved"
+        and tier == "A"
+        and record.get("final_analytical_membership_status")
+        not in {"excluded", "review_required"}
+    )
 
 
 def _series_groups(
