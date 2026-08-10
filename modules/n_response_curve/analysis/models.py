@@ -1730,6 +1730,7 @@ def fit_response_models(
             {
                 key: row.get(key)
                 for key in (
+                    "analysis_grain_status",
                     "experimental_unit_status",
                     "mean_independence_review_id",
                     "mean_independence_status",
