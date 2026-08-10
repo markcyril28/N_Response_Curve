@@ -2589,18 +2589,34 @@ def _policy_stage_writer(
     manifest: dict[str, Any],
 ) -> Callable[[Path], tuple[Path, ...]]:
     def write_policy_snapshot(stage_root: Path) -> tuple[Path, ...]:
+        written: list[Path] = []
         source = policy_snapshot.artifact_path
-        if source is None:
-            return ()
-        destination = stage_root / "governance" / "approved_policy_snapshot.json"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        if sha256_file(destination) != policy_snapshot.artifact_sha256:
-            raise ReportingError("Archived policy snapshot does not match its validated source")
-        manifest["runtime_policy"]["archived_artifact_path"] = (
-            destination.relative_to(stage_root).as_posix()
-        )
-        return (destination,)
+        if source is not None:
+            destination = stage_root / "governance" / "approved_policy_snapshot.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            if sha256_file(destination) != policy_snapshot.artifact_sha256:
+                raise ReportingError("Archived policy snapshot does not match its validated source")
+            manifest["runtime_policy"]["archived_artifact_path"] = (
+                destination.relative_to(stage_root).as_posix()
+            )
+            written.append(destination)
+        authority_matrix = policy_snapshot.authority_matrix
+        if authority_matrix is not None:
+            authority_destination = (
+                stage_root / "governance" / "approval_authority_matrix.json"
+            )
+            authority_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(authority_matrix.artifact_path, authority_destination)
+            if sha256_file(authority_destination) != authority_matrix.artifact_sha256:
+                raise ReportingError(
+                    "Archived approval authority matrix does not match its validated source"
+                )
+            manifest["runtime_policy"]["approval_authority_matrix"][
+                "archived_artifact_path"
+            ] = authority_destination.relative_to(stage_root).as_posix()
+            written.append(authority_destination)
+        return tuple(written)
 
     return write_policy_snapshot
 
