@@ -831,7 +831,7 @@ def build_analysis_registry(
         "observation_level_curve_modification",
         "penalized_predictive_models",
     }
-    materialized_hypothesis_ids: set[str] = set()
+    materialized_specification_ids: set[str] = set()
     for version in versions:
         for combination in combinations:
             for family in family_names:
@@ -869,7 +869,9 @@ def build_analysis_registry(
                                     hypothesis=hypothesis,
                                 )
                             )
-                            materialized_hypothesis_ids.add(hypothesis.hypothesis_id)
+                            materialized_specification_ids.add(
+                                str(hypothesis.specification_id)
+                            )
                         continue
                     factor_sets = _factor_combinations(family, tuple(known_factors.values()), orders)
                     theoretical_count += len(factor_sets)
@@ -916,13 +918,14 @@ def build_analysis_registry(
                             )
                         )
     if bounded_hypotheses is not None:
-        missing_hypotheses = {
-            hypothesis.hypothesis_id for hypothesis in bounded_hypotheses
-        } - materialized_hypothesis_ids
-        if missing_hypotheses:
+        missing_specifications = {
+            str(hypothesis.specification_id)
+            for hypothesis in bounded_hypotheses
+        } - materialized_specification_ids
+        if missing_specifications:
             raise ValueError(
-                "Prespecified hypotheses could not be represented by the configured registry: "
-                + ", ".join(sorted(missing_hypotheses))
+                "Prespecified specifications could not be represented by the configured registry: "
+                + ", ".join(sorted(missing_specifications))
             )
         if any(candidate.status == "run" and candidate.hypothesis_id is None for candidate in candidates):
             raise ValueError("Bounded hypothesis registry produced an undeclared executable candidate")
@@ -933,6 +936,7 @@ def build_analysis_registry(
             candidate.curve_outcome,
             candidate.analysis_family,
             candidate.factor_names,
+            candidate.specification_id or "",
             candidate.hypothesis_id or "",
         )
     )
