@@ -192,6 +192,7 @@ dataset_versions = [
   "D10_factor_specific_complete_case",
   # "D11_balanced_interaction_cells", # Deferred with interaction families under ANA-06 Option C.
   # "D12_climate_enriched_future",
+  "D13_untrimmed_final_cleaning_sensitivity", # ELG-12 D: approved full-range sensitivity against final source-specific cleaning.
 ]
 
 source_combination_modes = [
