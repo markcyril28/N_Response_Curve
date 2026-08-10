@@ -1872,11 +1872,29 @@ def _table_artifacts(
             rows=tuple(asdict(candidate) for candidate in phase_four.registry.candidates),
             stable_key="candidate_id",
         ),
+        "candidate_complete_case_membership": TableArtifact(
+            rows=tuple(
+                dict(row)
+                for _, preparation in phase_four.r_preparations
+                for row in preparation.membership_rows
+            ),
+        ),
+        "candidate_complete_case_composition": TableArtifact(
+            rows=_complete_case_composition_rows(phase_four),
+        ),
         "analysis_pruned_families": TableArtifact(rows=tuple(asdict(item) for item in phase_four.registry.pruned_families)),
         "curve_features": TableArtifact(rows=phase_three.evidence.curve_rows, stable_key="response_series_uid"),
         "economic_optima": TableArtifact(
             rows=phase_three.evidence.economic_optimum_rows,
             stable_key="economic_optimum_uid",
+        ),
+        "n_efficiency": TableArtifact(
+            rows=phase_three.evidence.efficiency_rows,
+            stable_key="efficiency_metric_uid",
+        ),
+        "environmental_risk_flags": TableArtifact(
+            rows=phase_three.evidence.environmental_risk_rows,
+            stable_key="environmental_risk_uid",
         ),
         "series_evidence": TableArtifact(rows=series_evidence_rows, stable_key="response_series_uid"),
         "descriptive_summaries": TableArtifact(
@@ -1946,14 +1964,14 @@ def _table_artifacts(
         ),
         "eligibility_ledger": TableArtifact(
             rows=_public_release_rows(phase_two, phase_two.eligibility.ledger),
-            stable_key="record_uid",
+            stable_key="release_record_uid",
         ),
         "analysis_eligibility_ledger": TableArtifact(
             rows=_public_release_rows(
                 phase_two,
                 phase_two.analysis_eligibility.ledger,
             ),
-            stable_key="record_uid",
+            stable_key="release_record_uid",
         ),
         "factor_catalog": TableArtifact(
             rows=tuple(asdict(entry) for entry in phase_four.factor_catalog),
