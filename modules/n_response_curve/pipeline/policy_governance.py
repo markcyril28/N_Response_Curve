@@ -437,7 +437,7 @@ def _validate_approved_snapshot(
 
 
 def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
-    """Validate semantic policy and load approval for an authoritative run."""
+    """Validate runtime policy before restricted access or authoritative use."""
 
     forbidden_figures = set(config.figure_formats) - {"png", "jpeg"}
     if forbidden_figures:
@@ -456,6 +456,11 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
     content = _policy_content(config)
     content_hash = stable_json_sha256(content)
     enablement = dict(content["effective_enablement"])
+    authority_matrix = None
+    if _enabled_restricted_sources(config):
+        authority_matrix = load_approval_authority_matrix(
+            _authority_matrix_path(config)
+        )
     if config.run_mode != "full":
         return RuntimePolicySnapshot(
             mode=config.run_mode,
@@ -466,6 +471,7 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
             approval=None,
             artifact_path=None,
             artifact_sha256=None,
+            authority_matrix=authority_matrix,
         )
 
     snapshot_path = (
@@ -476,11 +482,24 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
     ).resolve()
     if not snapshot_path.is_relative_to(config.project_root):
         raise ConfigError("Approved policy snapshot path escapes the project root")
-    return _validate_approved_snapshot(
+    snapshot = _validate_approved_snapshot(
         config,
         path=snapshot_path,
         expected_content=content,
     )
+    if authority_matrix is None:
+        authority_matrix = load_approval_authority_matrix(
+            _authority_matrix_path(config)
+        )
+    runtime_party = authority_matrix.gate_authorities["runtime_integrity"][
+        "accountable_party"
+    ]
+    if snapshot.approval is None or snapshot.approval["approved_by"] != runtime_party:
+        raise ConfigError(
+            "Approved runtime snapshot signer is not the accountable runtime-integrity "
+            "party in the OPS-08 authority matrix"
+        )
+    return replace(snapshot, authority_matrix=authority_matrix)
 
 
 def write_policy_snapshot_template(
