@@ -2649,6 +2649,8 @@ def _analysis_policy_stage_writer(
 def _load_replacement_record(
     config: ValidatedConfig,
     target: Path,
+    *,
+    authority_matrix: ApprovalAuthorityMatrix | None,
 ) -> Mapping[str, Any] | None:
     path = (
         config.paths["run_metadata_root"]
@@ -2664,6 +2666,19 @@ def _load_replacement_record(
         raise ConfigError("Approved replacement record is unreadable or malformed") from exc
     if not isinstance(payload, Mapping):
         raise ConfigError("Approved replacement record must be a JSON object")
+    if config.run_mode == "full":
+        if authority_matrix is None:
+            raise ConfigError(
+                "Authoritative replacement requires the approved OPS-08 authority matrix"
+            )
+        release_owner = authority_matrix.gate_authorities["release_promotion"][
+            "accountable_party"
+        ]
+        if payload.get("approved_by") != release_owner:
+            raise ConfigError(
+                "Approved replacement record signer is not the accountable "
+                "release-promotion party in the OPS-08 authority matrix"
+            )
     return dict(payload)
 
 
