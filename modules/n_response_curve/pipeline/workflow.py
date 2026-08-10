@@ -65,6 +65,7 @@ from n_response_curve.reporting.plots import write_observed_series_figures, writ
 from n_response_curve.analysis.r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
 from n_response_curve.analysis.r_specs import RAnalysisPreparation, prepare_r_analysis
 from n_response_curve.pipeline.policy_governance import (
+    ApprovalAuthorityMatrix,
     RuntimePolicySnapshot,
     effective_analysis_hypotheses,
 )
