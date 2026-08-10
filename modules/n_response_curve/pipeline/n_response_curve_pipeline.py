@@ -313,12 +313,33 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
     print("stages=config_validation,source_integrity,position_safe_ingestion,canonical_curation,response_series_resolution,eligibility_qc")
 
 
-def run(config_path: str | Path, *, project_root: str | Path) -> int:
+def _preflight_runtime(
+    config_path: str | Path,
+    *,
+    project_root: str | Path,
+) -> tuple[ValidatedConfig, Any, Any, Any, Any]:
     config = load_config(config_path, project_root=project_root, check_files=True, preflight_engines=True)
     analysis_policy = _load_analysis_policy(config)
     source_data_policy = _load_source_data_policy(config)
     model_policy = build_effective_model_policy(config, analysis_policy)
     policy_snapshot = validate_runtime_policy(config)
+    return (
+        config,
+        analysis_policy,
+        source_data_policy,
+        model_policy,
+        policy_snapshot,
+    )
+
+
+def run(config_path: str | Path, *, project_root: str | Path) -> int:
+    (
+        config,
+        analysis_policy,
+        source_data_policy,
+        model_policy,
+        policy_snapshot,
+    ) = _preflight_runtime(config_path, project_root=project_root)
     run_id = f"n_response_{config.run_mode}_{config.raw['run']['random_seed']}"
     run_log = RunLogger(level=str(config.raw["logging"]["level"]), run_id=run_id)
     run_context = {
