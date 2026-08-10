@@ -1689,9 +1689,15 @@ def fit_candidate_model(
         supported_max_yield_t_ha=optimum_summary.supported_max_yield_t_ha,
         maximum_reference_basis=optimum_summary.maximum_reference_basis,
         maximum_proximity_status=optimum_summary.maximum_proximity_status,
+        estimator_status=estimator_status,
+        weighted_sensitivity_status=weighted_sensitivity_status,
+        weighted_sensitivity_parameters=weighted_sensitivity_parameters,
+        weighted_sensitivity_objective=weighted_sensitivity_objective,
+        weighted_sensitivity_reason_codes=sensitivity_reasons,
         uncertainty_status=uncertainty_status,
         uncertainty_method=uncertainty_method,
         uncertainty_evidence_basis=uncertainty_basis,
+        feature_variances=feature_variances,
         predictions=predictions,
     )
 
