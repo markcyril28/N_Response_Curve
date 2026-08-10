@@ -97,6 +97,17 @@ _UNCERTAINTY_EVIDENCE_BASES = frozenset(
         "verified_true_replication",
     }
 )
+_FIRST_STAGE_NUMERIC_OUTCOMES = frozenset(
+    {
+        "agronomic_optimum_n_kg_ha",
+        "plateau_onset_n_kg_ha",
+        "predicted_max_yield_t_ha",
+        "predicted_observed_domain_peak_yield_t_ha",
+        "finite_maximum_yield_t_ha",
+        "fitted_asymptote_yield_t_ha",
+        "supported_max_yield_t_ha",
+    }
+)
 _BASELINE_CLASSES = ("zero_n_with_pk", "absolute_control")
 _RECOMMENDATION_REQUIRED_CLASSES = ("zero_n_with_pk", "RCM", "NOPT_NPK")
 _RECOMMENDATION_OPTIONAL_CLASSES = ("FP",)
@@ -241,6 +252,7 @@ class CurveModelPolicy:
     uncertainty_method: str | None
     uncertainty_method_contract: Mapping[str, Any]
     uncertainty_evidence_basis: tuple[str, ...]
+    first_stage_contextual_uncertainty_policy: Mapping[str, Any]
     economic_policy_id: str
     economic_review_status: str
     economic_table_id: str | None
@@ -309,6 +321,9 @@ class CurveModelPolicy:
                         "method_contract": self.uncertainty_method_contract,
                         "evidence_basis": self.uncertainty_evidence_basis,
                     }
+                ),
+                "first_stage_contextual_uncertainty_policy": (
+                    self.first_stage_contextual_uncertainty_policy
                 ),
                 "economic_scenario_table": MappingProxyType(
                     {
