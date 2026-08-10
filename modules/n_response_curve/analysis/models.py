@@ -1768,12 +1768,13 @@ def fit_response_models(
 
 
 def credible_model_attempts(attempts: Iterable[ModelAttempt]) -> tuple[ModelAttempt, ...]:
-    """Return every fitted, identifiable candidate in deterministic roster order."""
+    """Return fitted candidates backed by the reviewed treatment-mean grain."""
 
     fitted = [
         attempt
         for attempt in attempts
         if attempt.status == "fitted"
+        and attempt.estimator_status == "primary_reviewed"
         and "UNIDENTIFIABLE_SHAPE_PARAMETERS" not in attempt.reason_codes
     ]
     return tuple(
