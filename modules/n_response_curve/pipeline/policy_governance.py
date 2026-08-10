@@ -13,8 +13,50 @@ from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 
 
 _POLICY_SNAPSHOT_SCHEMA_VERSION = 1
+_AUTHORITY_MATRIX_SCHEMA_VERSION = 1
 _APPROVED_STATUS = "APPROVED"
 _SAFE_APPROVAL_TEXT = re.compile(r"^[^\x00-\x1f\x7f]+$")
+_AUTHORITY_GATES = (
+    "source_integrity",
+    "restricted_data",
+    "scientific_methods",
+    "runtime_integrity",
+    "release_promotion",
+)
+
+
+@dataclass(frozen=True)
+class ApprovalAuthorityMatrix:
+    """Authenticated OPS-08 gate ownership; never inferred from a job title."""
+
+    matrix_id: str
+    effective_from: str
+    approval: Mapping[str, str]
+    gate_authorities: Mapping[str, Mapping[str, str]]
+    role_combination_policy: str
+    substitution_policy: str
+    recusal_policy: str
+    dual_approval_policy: str
+    artifact_path: Path
+    artifact_sha256: str
+
+    def manifest_payload(self, *, project_root: Path) -> dict[str, Any]:
+        try:
+            relative_path = self.artifact_path.relative_to(project_root).as_posix()
+        except ValueError:
+            relative_path = None
+        return {
+            "matrix_id": self.matrix_id,
+            "effective_from": self.effective_from,
+            "approval": dict(self.approval),
+            "gate_authorities": _json_value(self.gate_authorities),
+            "role_combination_policy": self.role_combination_policy,
+            "substitution_policy": self.substitution_policy,
+            "recusal_policy": self.recusal_policy,
+            "dual_approval_policy": self.dual_approval_policy,
+            "artifact_path": relative_path,
+            "artifact_sha256": self.artifact_sha256,
+        }
 
 
 @dataclass(frozen=True)
@@ -29,6 +71,7 @@ class RuntimePolicySnapshot:
     approval: Mapping[str, str] | None
     artifact_path: Path | None
     artifact_sha256: str | None
+    authority_matrix: ApprovalAuthorityMatrix | None = None
 
     def manifest_payload(self, *, project_root: Path) -> dict[str, Any]:
         artifact_relative: str | None = None
@@ -46,6 +89,11 @@ class RuntimePolicySnapshot:
             "approval": dict(self.approval) if self.approval is not None else None,
             "approval_artifact_path": artifact_relative,
             "approval_artifact_sha256": self.artifact_sha256,
+            "approval_authority_matrix": (
+                self.authority_matrix.manifest_payload(project_root=project_root)
+                if self.authority_matrix is not None
+                else None
+            ),
         }
 
 
