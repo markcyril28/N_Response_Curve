@@ -558,6 +558,7 @@ def _candidate(
         independent_study_count=independent_studies,
         factor_cell_counts=cell_counts,
         factor_cell_study_counts=cell_study_counts,
+        grouping=hypothesis.grouping if hypothesis is not None else (),
         hypothesis_id=hypothesis.hypothesis_id if hypothesis is not None else None,
         prespecified_contrast=(
             _json_data(hypothesis.contrast_specification)
