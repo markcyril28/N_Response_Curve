@@ -690,7 +690,6 @@ def write_release_package(
         if target.exists()
         else None
     )
-    target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.stage-", dir=target.parent))
     try:
         table_metadata: dict[str, dict[str, Any]] = {}
