@@ -465,6 +465,18 @@ def run_phase_three(
         config,
         phase_two.analysis_eligibility.ledger,
     )
+    untrimmed_eligibility = getattr(
+        phase_two,
+        "untrimmed_analysis_eligibility",
+        None,
+    )
+    if untrimmed_eligibility is None:
+        sensitivity_input_records = input_records
+    else:
+        sensitivity_input_records, _ = _model_input_records(
+            config,
+            untrimmed_eligibility.ledger,
+        )
     evidence = build_curve_evidence(
         input_records,
         model_names=config.enabled_models,
@@ -480,6 +492,7 @@ def run_phase_three(
     return PhaseThreeResult(
         evidence=evidence,
         input_records=input_records,
+        sensitivity_input_records=sensitivity_input_records,
         test_subset=test_subset,
         model_policy=effective_model_policy,
         model_policy_sha256=model_policy_sha256,
@@ -504,15 +517,18 @@ def run_phase_four(
             "Primary and derived curve fits must share one effective model policy"
         )
     versions = build_dataset_versions(
-        phase_three.input_records,
+        phase_three.sensitivity_input_records,
         version_names=config.dataset_versions,
+        recommendation_set_policy=effective_model_policy.get(
+            "recommendation_set_policy"
+        ),
     )
     source_combinations = build_source_combinations(
         config.enabled_sources,
         modes=config.source_combination_modes,
     )
     derived_curve_views = build_derived_curve_views(
-        phase_three.input_records,
+        phase_three.sensitivity_input_records,
         dataset_versions=versions,
         source_combinations=source_combinations,
         model_names=config.enabled_models,
@@ -550,12 +566,12 @@ def run_phase_four(
         curve_rows=curve_rows,
         dataset_versions=versions,
         factor_catalog=factor_catalog,
-        eligibility_records=phase_three.input_records,
+        eligibility_records=phase_three.sensitivity_input_records,
     )
     r_preparations = _prepare_r_candidates(
         registry,
         versions,
-        input_records=phase_three.input_records,
+        input_records=phase_three.sensitivity_input_records,
         curve_rows=curve_rows,
     )
     if not registry.reconciles:
@@ -1005,6 +1021,7 @@ def _reconcile_multiplicity_families(
                 "complete": family_complete,
                 "reason_codes": [] if family_complete else sorted(family_reasons),
                 "expected_candidate_ids": list(expected_candidate_ids),
+                "expected_specification_ids": list(family.specification_ids),
                 "expected_hypothesis_ids": list(family.hypothesis_ids),
                 "expected_candidate_count": len(expected_candidate_ids),
                 "observed_result_count": len(collected),
@@ -1459,6 +1476,24 @@ def _collect_review_issues(
                 issue_state="structural",
                 status=evidence_status or "missing",
                 reason_codes=("UNKNOWN_SERIES_EVIDENCE_STATUS",),
+            )
+            continue
+        if evidence_status == "descriptive_only":
+            add_issue(
+                stage="phase_3",
+                issue_scope="series",
+                subject_id=str(
+                    row.get("response_series_uid") or "unidentified-series"
+                ),
+                issue_state="excluded_series",
+                status="descriptive_only",
+                reason_codes=(
+                    *normalized_reasons(
+                        row.get("reason_codes", ()),
+                        "DESCRIPTIVE_ONLY_SERIES",
+                    ),
+                    "OPS_09_LITERAL_HOLDING_RULE",
+                ),
             )
             continue
         if evidence_status != "unsupported":
