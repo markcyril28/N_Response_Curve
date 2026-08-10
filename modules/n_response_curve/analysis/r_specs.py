@@ -596,12 +596,36 @@ def prepare_r_analysis(
             "method": "BH",
             "family_id": candidate.multiplicity_family_id,
             "hypothesis_id": candidate.hypothesis_id,
+            "family_scope_complete": (
+                candidate.multiplicity_family_id is None
+                or bool(candidate.hypothesis_id)
+            ),
             "registry_authority": "prespecified_analysis_registry",
             "adjustment_status": "pending_central_reconciliation",
         },
-        "grouping_column": "study_uid",
+        "grouping_column": grouping_column,
+        "predeclared_grouping": list(candidate.grouping),
         "missing_data_policy": "factor-specific complete cases; no imputation",
     }
+    if first_stage_variance_field is not None:
+        method_field = f"{outcome_name}_first_stage_uncertainty_method_id"
+        method_ids = sorted(
+            {
+                str(row[method_field])
+                for row in rows
+                if isinstance(row.get(method_field), str) and row.get(method_field)
+            }
+        )
+        specification["first_stage_uncertainty"] = {
+            "decision_id": "ANA-16",
+            "mode": "variance_aware_two_stage",
+            "method_id": method_ids[0] if len(method_ids) == 1 else None,
+            "source_variance_field": first_stage_variance_field,
+            "variance_column": "first_stage_variance",
+            "weight_column": "first_stage_weight",
+            "weighting": "inverse_first_stage_variance",
+            "model_selection_uncertainty": "incorporated",
+        }
     if observation_level:
         specification.update(
             {
@@ -611,7 +635,7 @@ def prepare_r_analysis(
             }
         )
     elif candidate.analysis_family == "marginal_contrasts":
-        specification["contrast_specification"] = dict(candidate.prespecified_contrast) or {
+        specification["contrast_specification"] = contrast_specification or {
             "factor_name": candidate.factor_names[0],
             "adjustment": "BH",
         }
@@ -621,6 +645,7 @@ def prepare_r_analysis(
         specification,
         normalized,
         stable_key,
+        membership_rows,
     )
 
 
