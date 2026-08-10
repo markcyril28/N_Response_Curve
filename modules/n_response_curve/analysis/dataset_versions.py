@@ -22,6 +22,7 @@ KNOWN_DATASET_VERSIONS = (
     "D10_factor_specific_complete_case",
     "D11_balanced_interaction_cells",
     "D12_climate_enriched_future",
+    "D13_untrimmed_final_cleaning_sensitivity",
 )
 
 
