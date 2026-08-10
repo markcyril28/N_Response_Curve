@@ -573,6 +573,18 @@ def _finalize_canonical_record(
         )
     )
     treatment_lookup = category_lookups.get("treatment_class")
+    if treatment_lookup is None:
+        record["treatment_class_normalization_status"] = (
+            "review_required_unversioned"
+        )
+    else:
+        treatment_normalization = normalize_category_with_evidence(
+            _optional_field(record, "treatment"),
+            treatment_lookup,
+        )
+        record["treatment_class_normalization_status"] = (
+            treatment_normalization.status
+        )
     record["treatment_class_map_version"] = (
         treatment_lookup.map_version if treatment_lookup is not None else None
     )
@@ -704,6 +716,8 @@ def _curate_source(
                 "normalization_map_version": effective_map.normalization_map_version,
                 "normalization_review_id": effective_map.normalization_review_id,
                 "workbook_csv_basis": effective_map.workbook_csv_basis,
+                "representation_basis": effective_map.representation_basis,
+                "representation_basis_status": effective_map.representation_basis_status,
                 "source_uid": source_uid,
                 "parent_row_uid": parent_row_uid,
                 "source_arm_id": arm.arm_id,
