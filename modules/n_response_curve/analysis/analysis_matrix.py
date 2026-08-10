@@ -523,6 +523,7 @@ def _candidate(
             else {}
         ),
         "multiplicity_family_id": hypothesis.multiplicity_family_id if hypothesis is not None else None,
+        "grouping": hypothesis.grouping if hypothesis is not None else (),
         "support_rule_id": hypothesis.support_rule_id if hypothesis is not None else None,
         "factor_representations": (
             {
