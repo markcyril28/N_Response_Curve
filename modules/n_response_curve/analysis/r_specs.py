@@ -149,6 +149,7 @@ def _curve_formula(
     candidate: AnalysisCandidate,
     *,
     include_random_intercept: bool,
+    grouping_column: str,
 ) -> str:
     if candidate.analysis_family == "all_supported_interactions":
         fixed_terms = " * ".join(candidate.factor_names)
@@ -156,7 +157,7 @@ def _curve_formula(
         fixed_terms = " + ".join(candidate.factor_names)
     formula = f"{candidate.curve_outcome} ~ {fixed_terms}"
     if include_random_intercept:
-        formula += " + (1 | study_uid)"
+        formula += f" + (1 | {grouping_column})"
     return formula
 
 
