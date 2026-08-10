@@ -90,10 +90,13 @@ class ReviewedSourceMap:
     fields: Mapping[str, int]
     expected_headers: Mapping[int, str]
     dispositions: tuple[PhysicalColumnDisposition, ...]
+    representation_basis: str = "unclear_mixed_scope"
+    representation_basis_status: str = "review_required"
     fill_down_headers: tuple[str, ...] = ()
     arms: tuple[SourceArmMap, ...] = ()
     normalization_map_version: str | None = None
     normalization_review_id: str | None = None
+    declared_constant_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,7 @@ def _validate_reviewed_source_map(
         ("map version", source_map.map_version),
         ("review evidence", source_map.review_id),
         ("workbook/CSV basis", source_map.workbook_csv_basis),
+        ("representation basis", source_map.representation_basis),
     ):
         if not value.strip():
             raise ValueError(f"Reviewed source map {label} must be nonempty")
@@ -178,6 +182,17 @@ def _validate_reviewed_source_map(
     if source_map.workbook_csv_basis != source.workbook_csv_basis:
         raise ValueError(
             "Reviewed source map workbook/CSV basis differs from the ingested source basis"
+        )
+    if source_map.representation_basis not in KNOWN_REPRESENTATION_BASES:
+        raise ValueError("Reviewed source map has an unsupported representation basis")
+    if source_map.representation_basis_status not in {"reviewed", "review_required"}:
+        raise ValueError("Reviewed source map has an unsupported representation-basis status")
+    if (
+        source.representation_basis_status == "reviewed"
+        and source_map.representation_basis != source.representation_basis
+    ):
+        raise ValueError(
+            "Reviewed source map representation basis differs from the ingested source basis"
         )
     positions = tuple(disposition.position for disposition in source_map.dispositions)
     expected_positions = tuple(range(1, len(source.columns) + 1))
@@ -229,8 +244,24 @@ def _validate_reviewed_source_map(
         for canonical_name, position in arm.field_positions.items():
             if not canonical_name.strip() or position not in by_position:
                 raise ValueError("Reviewed source arm mapping is outside the physical shape")
+            disposition = by_position[position]
+            if (
+                disposition.role not in {"canonical", "restricted"}
+                or disposition.canonical_field != canonical_name
+            ):
+                raise ValueError(
+                    "Reviewed source arm mapping disagrees with its column disposition"
+                )
         if set(arm.field_positions).intersection(arm.constants):
             raise ValueError("A source-arm field cannot be both positional and constant")
+        undeclared_constants = set(arm.constants) - set(
+            source_map.declared_constant_fields
+        )
+        if undeclared_constants:
+            raise ValueError(
+                "Reviewed source arm constants require declared canonical fields: "
+                + ", ".join(sorted(undeclared_constants))
+            )
 
 
 def validate_reviewed_curation_controls(
