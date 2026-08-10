@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import hashlib
 import itertools
 import json
+import math
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..data.provenance import stable_identifier
