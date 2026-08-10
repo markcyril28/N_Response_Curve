@@ -34,6 +34,11 @@ from n_response_curve.analysis.comparisons import (
     MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
     MANAGEMENT_SYSTEM_TARGET_POPULATION,
     ManagementSystemProximity,
+    build_management_system_proximity,
+)
+    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
+    MANAGEMENT_SYSTEM_TARGET_POPULATION,
+    ManagementSystemProximity,
     ApprovalAuthorityMatrix,
     build_management_system_proximity,
 )
