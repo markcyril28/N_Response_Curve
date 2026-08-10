@@ -449,9 +449,17 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate and orchestrate the N-response workflow.")
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument(
+        "--governance-preflight",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parents[3]
     try:
+        if args.governance_preflight:
+            _preflight_runtime(args.config, project_root=project_root)
+            return 0
         return run(args.config, project_root=project_root)
     except ConfigError as exc:
         print(f"configuration-error: {exc}", file=sys.stderr)
