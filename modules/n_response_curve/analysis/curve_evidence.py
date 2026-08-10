@@ -939,6 +939,107 @@ def _curve_row(
     }
 
 
+def _first_stage_uncertainty_fields(
+    credible: Sequence[ModelAttempt],
+    row: Mapping[str, Any],
+    *,
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Combine within-model and all-credible-model uncertainty for ANA-16."""
+
+    raw_policy = policy.get("first_stage_contextual_uncertainty_policy")
+    authority = policy.get("scientific_policy_authority")
+    if (
+        not isinstance(raw_policy, Mapping)
+        or raw_policy.get("review_status") != "approved"
+        or raw_policy.get("method_id")
+        != "all_credible_equal_weight_total_variance"
+        or raw_policy.get("model_selection_uncertainty_method")
+        != "all_credible_equal_weight_total_variance"
+        or not isinstance(authority, Mapping)
+    ):
+        return {}
+    policy_id = raw_policy.get("policy_id")
+    within_method = raw_policy.get("within_model_variance_method")
+    reviewer = authority.get("approved_by")
+    reviewed_on = authority.get("approved_on")
+    eligible_outcomes = raw_policy.get("eligible_outcomes")
+    if (
+        not isinstance(policy_id, str)
+        or not policy_id.strip()
+        or not isinstance(within_method, str)
+        or not within_method.strip()
+        or not isinstance(reviewer, str)
+        or not reviewer.strip()
+        or not isinstance(reviewed_on, str)
+        or not reviewed_on.strip()
+        or not isinstance(eligible_outcomes, (list, tuple))
+    ):
+        return {}
+    output: dict[str, Any] = {}
+    method_id = (
+        f"{policy_id}:{within_method}:"
+        "all_credible_equal_weight_total_variance"
+    )
+    for raw_outcome in eligible_outcomes:
+        if not isinstance(raw_outcome, str) or not raw_outcome:
+            continue
+        outcome = raw_outcome
+        prefix = f"{outcome}_"
+        output.update(
+            {
+                f"{prefix}first_stage_variance": None,
+                f"{prefix}first_stage_variance_status": "unavailable",
+                f"{prefix}model_selection_uncertainty_status": "not_incorporated",
+                f"{prefix}first_stage_uncertainty_method_id": None,
+                f"{prefix}first_stage_uncertainty_reviewer": None,
+                f"{prefix}first_stage_uncertainty_reviewed_on": None,
+            }
+        )
+        reported_value = finite_number(row.get(outcome))
+        estimates: list[float] = []
+        within_variances: list[float] = []
+        valid = reported_value is not None and bool(credible)
+        for attempt in credible:
+            estimate = finite_number(getattr(attempt, outcome, None))
+            variance = finite_number(attempt.feature_variances.get(outcome))
+            if (
+                estimate is None
+                or variance is None
+                or variance <= 0.0
+                or attempt.uncertainty_method != within_method
+                or not attempt.uncertainty_status.startswith("available_")
+            ):
+                valid = False
+                break
+            estimates.append(estimate)
+            within_variances.append(variance)
+        if not valid:
+            continue
+        mixture_mean = statistics.fmean(estimates)
+        total_variance = statistics.fmean(
+            within + (estimate - mixture_mean) ** 2
+            for estimate, within in zip(
+                estimates,
+                within_variances,
+                strict=True,
+            )
+        )
+        if not math.isfinite(total_variance) or total_variance <= 0.0:
+            continue
+        output.update(
+            {
+                f"{prefix}first_stage_variance": total_variance,
+                f"{prefix}first_stage_variance_status": "verified_comparable",
+                f"{prefix}model_selection_uncertainty_status": "incorporated",
+                f"{prefix}first_stage_uncertainty_method_id": method_id,
+                f"{prefix}first_stage_uncertainty_reviewer": reviewer,
+                f"{prefix}first_stage_uncertainty_reviewed_on": reviewed_on,
+            }
+        )
+    return output
+
+
 def _all_credible_curve_row(
     fit_rows: Sequence[Mapping[str, Any]],
     evidence_rows: Sequence[Mapping[str, Any]],
