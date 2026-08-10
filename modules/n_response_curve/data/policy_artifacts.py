@@ -128,6 +128,13 @@ class SourceDataPolicyBundle:
             {
                 "checksum_revision_approvals": self.checksum_revision_approvals,
                 "designated_reviewers": self.designated_reviewers,
+                "source_representation_bases": MappingProxyType(
+                    {
+                        source_name: source_map.representation_basis
+                        for source_name, source_map in self.source_maps.items()
+                        if source_map.representation_basis_status == "reviewed"
+                    }
+                ),
             }
         )
 
@@ -575,6 +582,19 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
             raise SourceDataPolicyError(f"{where}.source_sha256 is malformed")
         normalization_map_version = record.get("normalization_map_version")
         normalization_review_id = record.get("normalization_review_id")
+        raw_representation_basis = record.get("representation_basis")
+        representation_basis = (
+            _nonempty_text(
+                raw_representation_basis,
+                where=f"{where}.representation_basis",
+            )
+            if raw_representation_basis is not None
+            else "unclear_mixed_scope"
+        )
+        if representation_basis not in KNOWN_REPRESENTATION_BASES:
+            raise SourceDataPolicyError(
+                f"{where}.representation_basis is not a supported category"
+            )
         maps[source_name] = ReviewedSourceMap(
             source_name=source_name,
             map_version=_version(
@@ -603,6 +623,12 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                 where=f"{where}.expected_headers",
             ),
             dispositions=tuple(dispositions),
+            representation_basis=representation_basis,
+            representation_basis_status=(
+                "reviewed"
+                if raw_representation_basis is not None
+                else "review_required"
+            ),
             fill_down_headers=_string_tuple(
                 record.get("fill_down_headers", []),
                 where=f"{where}.fill_down_headers",
@@ -624,6 +650,11 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                 )
                 if normalization_review_id is not None
                 else None
+            ),
+            declared_constant_fields=_string_tuple(
+                record.get("declared_constant_fields", []),
+                where=f"{where}.declared_constant_fields",
+                allow_empty=True,
             ),
         )
     return MappingProxyType(maps)
