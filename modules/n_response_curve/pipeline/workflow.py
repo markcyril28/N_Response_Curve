@@ -246,6 +246,38 @@ def _series_coverage_tokens(rows: Sequence[Mapping[str, Any]]) -> frozenset[str]
         tier = str(
             row.get("series_eligibility_tier")
             or row.get("eligibility_tier")
+            or "unresolved"
+        ).strip()
+        tokens.add(f"eligibility_tier:{tier}")
+        treatment = str(
+            row.get("treatment_text_class")
+            or row.get("treatment_class")
+            or "unresolved"
+        ).strip()
+        tokens.add(f"treatment_class:{treatment}")
+        source_type = str(
+            row.get("source_type")
+            or row.get("source_family")
+            or row.get("source_name")
+            or "unresolved"
+        ).strip()
+        tokens.add(f"source_type:{source_type}")
+        reasons = tuple(row.get("series_eligibility_reason_codes") or ())
+        for reason in reasons:
+            if (
+                isinstance(reason, str)
+                and reason
+                and reason != "PRIMARY_ELIGIBLE"
+            ):
+                tokens.add(f"edge_case:{reason}")
+        if bool(row.get("is_high_n")):
+            tokens.add("edge_case:high_n")
+        if bool(row.get("organic_fertilizer_present")) or bool(row.get("biofertilizer_present")):
+            tokens.add("edge_case:organic_or_biofertilizer")
+        if row.get("same_n_status") == "repeated_measurement":
+            tokens.add("edge_case:repeated_n_level")
+    return frozenset(tokens)
+
 
 def _observed_spatiotemporal_scope(
     records: Sequence[Mapping[str, Any]],
