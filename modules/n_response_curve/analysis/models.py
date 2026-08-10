@@ -1624,6 +1624,43 @@ def fit_candidate_model(
     if grouped_prediction_rmse is None:
         reasons.append("GROUPED_PREDICTION_UNAVAILABLE")
     reasons.extend(uncertainty_reasons)
+    sensitivity_weights, sensitivity_reasons = _inverse_variance_sensitivity_weights(
+        evidence_rows,
+        n_observations,
+    )
+    weighted_sensitivity_status = (
+        "not_run_incomplete_comparable_se_or_independence_evidence"
+    )
+    weighted_sensitivity_parameters: Mapping[str, float] = {}
+    weighted_sensitivity_objective: float | None = None
+    if sensitivity_weights is not None:
+        sensitivity_values, sensitivity_fit_reasons = _fit_parameters(
+            model_name,
+            x,
+            y,
+            minimum_yield=minimum_yield,
+            maximum_yield=maximum_yield,
+            tolerance=model_gate.optimizer_tolerance,
+            gate=model_gate,
+            weights=sensitivity_weights,
+        )
+        if sensitivity_values is None:
+            weighted_sensitivity_status = "failed_inverse_variance_weighted"
+            sensitivity_reasons = (*sensitivity_reasons, *sensitivity_fit_reasons)
+        else:
+            weighted_sensitivity_parameters = _parameter_mapping(
+                model_name,
+                sensitivity_values,
+            )
+            sensitivity_prediction = evaluate_model(
+                model_name,
+                x.tolist(),
+                weighted_sensitivity_parameters,
+            )
+            weighted_sensitivity_objective = float(
+                np.sum(sensitivity_weights * np.square(sensitivity_prediction - y))
+            )
+            weighted_sensitivity_status = "completed_inverse_variance_weighted"
     return _attempt(
         response_series_uid=response_series_uid,
         model_name=model_name,
