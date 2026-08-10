@@ -72,6 +72,7 @@ KNOWN_DATASET_VERSIONS = {f"D{i:02d}_{name}" for i, name in enumerate(
         "factor_specific_complete_case",
         "balanced_interaction_cells",
         "climate_enriched_future",
+        "untrimmed_final_cleaning_sensitivity",
     )
 )}
 KNOWN_SOURCE_COMBINATION_MODES = {
