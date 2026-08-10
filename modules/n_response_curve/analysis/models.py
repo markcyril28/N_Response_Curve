@@ -167,9 +167,15 @@ def _attempt(
     maximum_reference_basis: str = "none",
     maximum_proximity_status: str = "NO_SUPPORTED_MAXIMUM_REFERENCE",
     model_gate_policy_id: str | None = None,
+    estimator_status: str = "exploratory_unreviewed_grain",
+    weighted_sensitivity_status: str = "not_run_incomplete_comparable_se_or_independence_evidence",
+    weighted_sensitivity_parameters: Mapping[str, float] | None = None,
+    weighted_sensitivity_objective: float | None = None,
+    weighted_sensitivity_reason_codes: Iterable[str] = (),
     uncertainty_status: str = "suppressed_no_supported_evidence_basis",
     uncertainty_method: str | None = None,
     uncertainty_evidence_basis: Iterable[str] = (),
+    feature_variances: Mapping[str, float] | None = None,
     predictions: Iterable[Mapping[str, float]] = (),
 ) -> ModelAttempt:
     input_snapshot_sha256 = stable_json_sha256(identity_payload["observations"])
@@ -189,6 +195,16 @@ def _attempt(
         input_snapshot_sha256=input_snapshot_sha256,
         model_policy_sha256=model_policy_sha256,
         model_gate_policy_id=model_gate_policy_id,
+        estimator_policy_id="MOD-09-option-a",
+        estimator_name="unweighted_least_squares",
+        estimator_status=estimator_status,
+        analysis_grain="one_reviewed_treatment_mean_per_distinct_n_level",
+        weighted_sensitivity_status=weighted_sensitivity_status,
+        weighted_sensitivity_parameters=_frozen_mapping(weighted_sensitivity_parameters),
+        weighted_sensitivity_objective=weighted_sensitivity_objective,
+        weighted_sensitivity_reason_codes=tuple(
+            sorted(set(weighted_sensitivity_reason_codes))
+        ),
         status=status,
         reason_codes=tuple(sorted(set(reason_codes))),
         n_observations=n_observations,
@@ -215,6 +231,7 @@ def _attempt(
         uncertainty_status=uncertainty_status,
         uncertainty_method=uncertainty_method,
         uncertainty_evidence_basis=tuple(sorted(set(uncertainty_evidence_basis))),
+        feature_variances=_frozen_mapping(feature_variances),
         predictions=tuple(MappingProxyType(dict(row)) for row in predictions),
     )
 
