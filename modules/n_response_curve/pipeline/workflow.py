@@ -2443,6 +2443,7 @@ def _hypothesis_snapshot(
                 {
                     "candidate_id": candidate.candidate_id,
                     "specification_hash": candidate.specification_hash,
+                    "specification_id": candidate.specification_id,
                     "hypothesis_id": candidate.hypothesis_id,
                     "dataset_version_id": candidate.dataset_version_id,
                     "source_combination_id": candidate.source_combination_id,
