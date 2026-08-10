@@ -20,7 +20,17 @@ from n_response_curve.analysis.claims import (
     build_runtime_claim_evidence,
     classify_claim_evidence,
 )
-from n_response_curve.analysis.comparisons import ManagementSystemProximity, build_management_system_proximity
+from n_response_curve.analysis.comparisons import (
+    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
+    MANAGEMENT_SYSTEM_TARGET_POPULATION,
+    ManagementSystemProximity,
+    build_management_system_proximity,
+)
+    MANAGEMENT_SYSTEM_ESTIMAND_VERSION,
+    MANAGEMENT_SYSTEM_TARGET_POPULATION,
+    ManagementSystemProximity,
+    build_management_system_proximity,
+)
 from n_response_curve.analysis.policy_artifacts import AnalysisPolicyBundle
 from n_response_curve.data.config import ConfigError, ValidatedConfig
 from n_response_curve.data.curate import project_public_records
@@ -29,6 +39,7 @@ from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_
 from n_response_curve.analysis.curve_views import DerivedCurveView, build_derived_curve_views
 from n_response_curve.analysis.dataset_versions import DatasetVersion, build_dataset_versions
 from n_response_curve.analysis.explanatory import PythonAnalysisResult, execute_python_candidates, select_candidate_curve_rows
+    ApprovalAuthorityMatrix,
 from n_response_curve.analysis.factor_catalog import FactorCatalogEntry, build_factor_catalog
 from n_response_curve.reporting.plots import write_observed_series_figures, write_response_curve_figures
 from n_response_curve.analysis.r_bridge import RBridgeError, invoke_r_stage, write_r_stage_contract
