@@ -715,6 +715,101 @@ def _economic_scenario_status(
     )
 
 
+def _model_function_economic_optimum(
+    attempt: ModelAttempt,
+    *,
+    grain_value_per_tonne: float,
+    n_cost_per_kg: float,
+) -> dict[str, float] | None:
+    """Maximize reviewed net return over the continuous observed N domain."""
+
+    lower = finite_number(attempt.observed_n_min_kg_ha)
+    upper = finite_number(attempt.observed_n_max_kg_ha)
+    if (
+        lower is None
+        or upper is None
+        or lower > upper
+        or not math.isfinite(grain_value_per_tonne)
+        or grain_value_per_tonne <= 0.0
+        or not math.isfinite(n_cost_per_kg)
+        or n_cost_per_kg < 0.0
+    ):
+        return None
+    parameters = {
+        name: float(value)
+        for name, value in attempt.parameters.items()
+        if finite_number(value) is not None
+    }
+    if len(parameters) != len(attempt.parameters):
+        return None
+    candidates = {lower, upper}
+
+    def add_candidate(value: float | None) -> None:
+        if value is not None and math.isfinite(value):
+            candidates.add(min(max(float(value), lower), upper))
+
+    if attempt.model_name == "linear":
+        pass
+    elif attempt.model_name == "quadratic":
+        curvature = parameters["curvature"]
+        denominator = 2.0 * grain_value_per_tonne * curvature
+        if denominator != 0.0:
+            add_candidate(
+                (n_cost_per_kg - grain_value_per_tonne * parameters["slope"])
+                / denominator
+            )
+    elif attempt.model_name == "linear_plateau":
+        add_candidate(parameters["plateau_onset"])
+    elif attempt.model_name == "quadratic_plateau":
+        onset = parameters["plateau_onset"]
+        gain = parameters["gain"]
+        if onset <= 0.0:
+            return None
+        add_candidate(onset)
+        denominator = 2.0 * grain_value_per_tonne * gain
+        if denominator != 0.0:
+            add_candidate(onset - n_cost_per_kg * onset**2 / denominator)
+    elif attempt.model_name == "mitscherlich":
+        amplitude = parameters["amplitude"]
+        rate = parameters["rate"]
+        marginal_value_at_zero = grain_value_per_tonne * amplitude * rate
+        if n_cost_per_kg > 0.0 and marginal_value_at_zero > 0.0 and rate != 0.0:
+            ratio = n_cost_per_kg / marginal_value_at_zero
+            if ratio > 0.0:
+                add_candidate(-math.log(ratio) / rate)
+    else:
+        raise ValueError(
+            f"Economic optimization is not implemented for model {attempt.model_name!r}"
+        )
+
+    rates = sorted(candidates)
+    predicted = evaluate_model(attempt.model_name, rates, parameters)
+    evaluated = tuple(
+        {
+            "n_rate_kg_ha": float(n_rate),
+            "predicted_yield_t_ha": float(yield_value),
+            "net_return_per_ha": (
+                float(yield_value) * grain_value_per_tonne
+                - float(n_rate) * n_cost_per_kg
+            ),
+        }
+        for n_rate, yield_value in zip(rates, predicted, strict=True)
+        if math.isfinite(float(yield_value))
+    )
+    if not evaluated:
+        return None
+    maximum_net_return = max(row["net_return_per_ha"] for row in evaluated)
+    tolerance = max(abs(maximum_net_return), 1.0) * 1e-12
+    return min(
+        (
+            row
+            for row in evaluated
+            if abs(row["net_return_per_ha"] - maximum_net_return) <= tolerance
+        ),
+        key=lambda row: row["n_rate_kg_ha"],
+    )
+
+
 def _economic_optimum_rows(
     credible_attempts: Sequence[ModelAttempt],
     *,
@@ -736,22 +831,12 @@ def _economic_optimum_rows(
             ]
             grain_price = float(scenario["grain_price"])
             n_cost = float(scenario["n_cost"])
-            evaluated = tuple(
-                {
-                    "n_rate_kg_ha": float(prediction["n_rate_kg_ha"]),
-                    "predicted_yield_t_ha": float(
-                        prediction["predicted_yield_t_ha"]
-                    ),
-                    "net_return_per_ha": (
-                        float(prediction["predicted_yield_t_ha"])
-                        * grain_price_factor
-                        * grain_price
-                        - float(prediction["n_rate_kg_ha"]) * n_cost
-                    ),
-                }
-                for prediction in attempt.predictions
+            optimum = _model_function_economic_optimum(
+                attempt,
+                grain_value_per_tonne=grain_price_factor * grain_price,
+                n_cost_per_kg=n_cost,
             )
-            if not evaluated:
+            if optimum is None:
                 continue
             maximum_net_return = max(row["net_return_per_ha"] for row in evaluated)
             tolerance = max(abs(maximum_net_return), 1.0) * 1e-12
@@ -806,6 +891,7 @@ def _economic_optimum_rows(
                     "observed_n_min_kg_ha": attempt.observed_n_min_kg_ha,
                     "observed_n_max_kg_ha": attempt.observed_n_max_kg_ha,
                     "tie_rule": "lowest_n_rate",
+                    "optimization_method": "model_function_candidate_points_v1",
                     "status": "computed_observed_domain",
                     "reason_codes": (),
                 }
