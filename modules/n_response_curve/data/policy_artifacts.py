@@ -1298,6 +1298,13 @@ def validate_source_data_policy_coverage(
         category_lookups=bundle.category_lookups,
         required_lookup_fields=required_lookup_fields,
     )
+    source_names = {source.source_name for source in ingestion.sources}
+    cleaning_sources = set(bundle.final_cleaning_policies)
+    if source_names != cleaning_sources:
+        raise SourceDataPolicyError(
+            "Final cleaning policy coverage does not match the ingested sources: "
+            f"ingested={sorted(source_names)}; reviewed={sorted(cleaning_sources)}"
+        )
 
 
 def validate_source_scope_activation(
@@ -1354,6 +1361,10 @@ def validate_source_scope_activation(
         if source_name not in bundle.source_maps:
             raise SourceDataPolicyError(
                 f"Approved active source {source_name!r} has no reviewed source map"
+            )
+        if source_name not in bundle.final_cleaning_policies:
+            raise SourceDataPolicyError(
+                f"Approved active source {source_name!r} has no reviewed final cleaning policy"
             )
 
 
