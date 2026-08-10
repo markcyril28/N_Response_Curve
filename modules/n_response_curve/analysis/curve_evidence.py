@@ -83,6 +83,138 @@ def _series_rows(records: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[st
     return grouped
 
 
+def _partial_factor_productivity_rows(
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Materialize EFF-01 Option A at the observed record-by-N-level grain."""
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        record_uid = str(record.get("record_uid") or "")
+        series_uid = str(record.get("response_series_uid") or "")
+        n_rate = finite_number(record.get("n_rate_kg_ha"))
+        yield_t_ha = finite_number(record.get("yield_t_ha"))
+        if (
+            not record_uid
+            or not series_uid
+            or record.get("series_status") != "resolved"
+            or n_rate is None
+            or n_rate <= 0.0
+            or yield_t_ha is None
+            or record.get("yield_unit_status") == "conflict"
+            or record.get("final_analytical_membership_status")
+            == "excluded_by_reviewed_cleaning_rule"
+        ):
+            continue
+        grain_status = str(
+            record.get("analysis_grain_status") or "unreviewed_observed_record"
+        )
+        value = yield_t_ha * 1000.0 / n_rate
+        identity = {
+            "metric_id": "EFF-01-option-a-partial-factor-productivity",
+            "record_uid": record_uid,
+            "response_series_uid": series_uid,
+            "n_rate_kg_ha": n_rate,
+            "yield_t_ha": yield_t_ha,
+            "analysis_grain_status": grain_status,
+        }
+        rows.append(
+            {
+                "efficiency_metric_uid": stable_identifier(
+                    "efficiency",
+                    tuple(identity.values()),
+                ),
+                **identity,
+                "source_name": record.get("source_name"),
+                "study_uid": record.get("study_uid"),
+                "treatment_class": record.get("treatment_text_class"),
+                "metric_name": "partial_factor_productivity",
+                "formula": "yield_kg_ha / applied_n_kg_ha",
+                "basis": (
+                    "observed_reviewed_treatment_mean"
+                    if grain_status == "reviewed_treatment_mean"
+                    else "observed_record"
+                ),
+                "aggregation_level": "record_by_n_level",
+                "unit": "kg_grain_per_kg_n",
+                "partial_factor_productivity_kg_grain_per_kg_n": value,
+                "status": (
+                    "computed"
+                    if grain_status == "reviewed_treatment_mean"
+                    else "computed_exploratory_unreviewed_grain"
+                ),
+            }
+        )
+    return tuple(sorted(rows, key=lambda row: str(row["record_uid"])))
+
+
+def _environmental_risk_rows(
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Materialize EFF-04 Option B as explicitly noninferential series flags."""
+
+    output: list[dict[str, Any]] = []
+    for series_uid, rows in _series_rows(records).items():
+        reviewed = [
+            row
+            for row in rows
+            if row.get("analysis_grain_status") == "reviewed_treatment_mean"
+            and finite_number(row.get("n_rate_kg_ha")) is not None
+            and finite_number(row.get("yield_t_ha")) is not None
+        ]
+        levels = sorted(
+            {
+                float(row["n_rate_kg_ha"]): float(row["yield_t_ha"])
+                for row in reviewed
+            }.items()
+        )
+        if len(levels) < 2:
+            continue
+        highest_n, highest_yield = levels[-1]
+        lower_max_yield = max(yield_value for _, yield_value in levels[:-1])
+        high_n_exposure = any(bool(row.get("is_high_n")) for row in reviewed)
+        high_n_decline = highest_yield < lower_max_yield
+        severe_stress = any(
+            row.get("severe_stress_status") == "verified_present"
+            for row in reviewed
+        )
+        reasons = ["NO_CAUSAL_ENVIRONMENTAL_CLAIM"]
+        if high_n_exposure:
+            reasons.append("OBSERVED_HIGH_N_EXPOSURE")
+        if high_n_decline:
+            reasons.append("OBSERVED_YIELD_DECLINE_AT_HIGHEST_N")
+        if severe_stress:
+            reasons.append("SOURCE_VERIFIED_SEVERE_STRESS")
+        identity = {
+            "response_series_uid": series_uid,
+            "highest_observed_n_kg_ha": highest_n,
+            "highest_n_yield_t_ha": highest_yield,
+            "maximum_lower_n_yield_t_ha": lower_max_yield,
+            "high_n_exposure_flag": high_n_exposure,
+            "yield_decline_at_highest_n_flag": high_n_decline,
+            "source_verified_severe_stress_flag": severe_stress,
+        }
+        output.append(
+            {
+                "environmental_risk_uid": stable_identifier(
+                    "environmental_risk",
+                    identity,
+                ),
+                **identity,
+                "metric_id": "EFF-04-option-b-descriptive-risk-flags",
+                "claim_class": "descriptive_noninferential",
+                "status": (
+                    "flagged"
+                    if high_n_exposure or high_n_decline or severe_stress
+                    else "no_flag_observed"
+                ),
+                "reason_codes": tuple(sorted(reasons)),
+            }
+        )
+    output.sort(key=lambda row: str(row["environmental_risk_uid"]))
+    return tuple(output)
+
+
 def _one_value(rows: Sequence[Mapping[str, Any]], key: str) -> Any:
     values = {str(row[key]) for row in rows if row.get(key) not in {None, ""}}
     if len(values) == 1:
