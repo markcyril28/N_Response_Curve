@@ -889,7 +889,10 @@ def _curve_row(
         "province": _one_value(evidence_rows, "province"),
         "rice_variety": _one_value(evidence_rows, "rice_variety"),
         "planting_year": _one_value(evidence_rows, "planting_year"),
+        "comparison_set_uid": _one_value(evidence_rows, "comparison_set_uid"),
+        "treatment_uid": _one_value(evidence_rows, "treatment_uid"),
         "treatment_text_class": _one_value(evidence_rows, "treatment_text_class"),
+        "treatment_class": _one_value(evidence_rows, "treatment_class"),
         "n_split": _one_value(evidence_rows, "n_split"),
         "organic_fertilizer_present": any(
             bool(row.get("organic_fertilizer_present")) for row in evidence_rows
