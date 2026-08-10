@@ -526,6 +526,40 @@ def write_policy_snapshot_template(
     return destination_path
 
 
+def write_approval_authority_matrix_template(destination: str | Path) -> Path:
+    """Write a non-approval OPS-08 matrix template for independent completion."""
+
+    destination_path = Path(destination).resolve()
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": _AUTHORITY_MATRIX_SCHEMA_VERSION,
+        "status": "REVIEW_REQUIRED",
+        "matrix_id": "",
+        "effective_from": "",
+        "approved_by": "",
+        "approved_at": "",
+        "approval_source": "",
+        "gate_authorities": {
+            gate: {
+                "accountable_role": "",
+                "accountable_party": "",
+                "authority_scope": gate,
+                "approval_source": "",
+            }
+            for gate in _AUTHORITY_GATES
+        },
+        "role_combination_policy": "",
+        "substitution_policy": "",
+        "recusal_policy": "",
+        "dual_approval_policy": "",
+    }
+    destination_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination_path
+
+
 __all__ = [
     "RuntimePolicySnapshot",
     "effective_analysis_hypotheses",
