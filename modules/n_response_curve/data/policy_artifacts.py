@@ -1263,6 +1263,10 @@ def load_source_data_policy_manifest(
         restricted_policy=restricted_policy,
         restricted_secret_reference=secret_reference,
         duplicate_rules=_duplicate_rules(artifacts["duplicate_rules"]),
+        final_cleaning_policies=_final_cleaning_policies(
+            artifacts["final_cleaning_policy"],
+            designated_reviewers=designated_reviewers,
+        ),
         checksum_revision_approvals=_checksum_revision_approvals(
             artifacts["checksum_revision_approvals"],
             project_root=root,
