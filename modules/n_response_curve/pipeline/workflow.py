@@ -2405,6 +2405,27 @@ def _format_counts(counts: Mapping[str, int]) -> str:
     return ", ".join(f"{key}={value}" for key, value in sorted(counts.items())) or "none"
 
 
+def _economic_report_line(rows: Sequence[Mapping[str, Any]]) -> str:
+    if not rows:
+        return (
+            "Economic optimum remains unavailable until an approved, versioned "
+            "price-and-cost scenario artifact and runtime gate exist."
+        )
+    scenario_counts = _field_counts(rows, "scenario_id")
+    model_count = len(
+        {
+            str(row.get("model_attempt_uid"))
+            for row in rows
+            if row.get("model_attempt_uid")
+        }
+    )
+    return (
+        f"{len(rows)} computed economic optimum rows were retained across "
+        f"{model_count} credible model attempts by approved scenario "
+        f"({_format_counts(scenario_counts)}); no single-model optimum was inferred."
+    )
+
+
 def _unsupported_reason_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for row in rows:
