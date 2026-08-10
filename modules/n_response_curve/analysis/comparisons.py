@@ -33,6 +33,7 @@ MANAGEMENT_SYSTEM_CLASSES = ("RCM", "FP", "NOPT_NPK")
 class ManagementSystemProximity:
     management_proximity_uid: str
     estimand_version: str
+    comparison_set_uid: str | None
     response_series_uid: str
     dataset_version_id: str | None
     dataset_version_status: str
