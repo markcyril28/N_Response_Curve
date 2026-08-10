@@ -135,6 +135,8 @@ def ingest_csv(
     encoding: str = "utf-8-sig",
     data_classification: str = "internal",
     workbook_csv_basis: str = "csv_registered_artifact",
+    representation_basis: str = "unclear_mixed_scope",
+    representation_basis_status: str = "review_required",
     checksum_revision_approval: ChecksumRevisionApproval | Mapping[str, object] | None = None,
     checksum_revision_artifact_path: str | None = None,
     designated_reviewers: Iterable[str] = (),
@@ -154,6 +156,12 @@ def ingest_csv(
         raise ConfigError(f"Source encoding is not supported: {encoding!r}")
     if data_classification not in KNOWN_DATA_CLASSIFICATIONS:
         raise ConfigError(f"Source data classification is not supported: {data_classification!r}")
+    if representation_basis not in KNOWN_REPRESENTATION_BASES:
+        raise ConfigError(
+            f"Source representation basis is not supported: {representation_basis!r}"
+        )
+    if representation_basis_status not in {"reviewed", "review_required"}:
+        raise ConfigError("Source representation-basis status is not supported")
 
     path = Path(source_path).resolve()
     if not path.is_file():
