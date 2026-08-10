@@ -8,6 +8,9 @@ nrc_run_marginal_contrasts <- function(stage) {
     return(nrc_skip_result("PRECOMPUTED_SUPPORT_GATE_REQUIRED"))
   }
   factor_name <- contrast_specification$factor_name
+  treatment <- contrast_specification$treatment
+  comparator <- contrast_specification$comparator
+  exact_estimand <- !is.null(treatment) || !is.null(comparator)
   adjustment <- contrast_specification$adjustment
   if (is.null(adjustment)) {
     adjustment <- "BH"
@@ -19,6 +22,36 @@ nrc_run_marginal_contrasts <- function(stage) {
   if (is.null(factor_name) || !is.character(factor_name) ||
         length(factor_name) != 1L || !factor_name %in% all.vars(model_formula)) {
     return(nrc_skip_result("CONTRAST_FACTOR_REQUIRED"))
+  }
+  if (isTRUE(exact_estimand)) {
+    if (is.null(treatment) || is.null(comparator) ||
+          !is.character(treatment) || !is.character(comparator) ||
+          length(treatment) != 1L || length(comparator) != 1L ||
+          !nzchar(treatment) || !nzchar(comparator) || identical(treatment, comparator)) {
+      return(nrc_skip_result("PRESPECIFIED_MANAGEMENT_CONTRAST_REQUIRED"))
+    }
+    observed_levels <- unique(as.character(stage$data[[factor_name]]))
+    if (!all(c(treatment, comparator) %in% observed_levels)) {
+      return(nrc_skip_result("PRESPECIFIED_CONTRAST_LEVELS_UNAVAILABLE"))
+    }
+    if (isTRUE(contrast_specification$same_context_required)) {
+      dependence_unit <- contrast_specification$dependence_unit
+      if (is.null(dependence_unit) || !is.character(dependence_unit) ||
+            length(dependence_unit) != 1L || !dependence_unit %in% names(stage$data)) {
+        return(nrc_skip_result("VERIFIED_SAME_CONTEXT_ESTIMAND_REQUIRED"))
+      }
+      context_levels <- split(
+        as.character(stage$data[[factor_name]]),
+        as.character(stage$data[[dependence_unit]])
+      )
+      if (!length(context_levels) || any(vapply(
+        context_levels,
+        function(levels) !all(c(treatment, comparator) %in% levels),
+        logical(1)
+      ))) {
+        return(nrc_skip_result("PRESPECIFIED_CONTRAST_PAIR_INCOMPLETE"))
+      }
+    }
   }
 
   model_kind <- specification$model_kind
@@ -73,7 +106,22 @@ nrc_run_marginal_contrasts <- function(stage) {
           fitted,
           specs = stats::as.formula(paste("~", factor_name))
         )
-        raw <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = "none"))
+        if (isTRUE(exact_estimand)) {
+          grid_levels <- as.character(as.data.frame(reference_grid)[[factor_name]])
+          contrast_weights <- rep(0, length(grid_levels))
+          contrast_weights[grid_levels == treatment] <- 1
+          contrast_weights[grid_levels == comparator] <- -1
+          method <- list()
+          contrast_label <- contrast_specification$direction
+          if (is.null(contrast_label) || !is.character(contrast_label) ||
+                length(contrast_label) != 1L || !nzchar(contrast_label)) {
+            contrast_label <- paste(treatment, "minus", comparator)
+          }
+          method[[contrast_label]] <- contrast_weights
+          raw <- broom::tidy(emmeans::contrast(reference_grid, method = method, adjust = "none"))
+        } else {
+          raw <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = "none"))
+        }
         raw$p.value_raw <- raw$p.value
         raw
       } else {
@@ -95,7 +143,11 @@ nrc_run_marginal_contrasts <- function(stage) {
           return(data.frame())
         }
         group_names <- names(groups)
-        comparisons <- utils::combn(group_names, 2L, simplify = FALSE)
+        comparisons <- if (isTRUE(exact_estimand)) {
+          list(c(treatment, comparator))
+        } else {
+          utils::combn(group_names, 2L, simplify = FALSE)
+        }
         if (!length(comparisons)) {
           return(data.frame())
         }
@@ -117,8 +169,19 @@ nrc_run_marginal_contrasts <- function(stage) {
         data.frame(
           contrast = vapply(
             comparisons,
-            function(pair) paste(pair[[1L]], "vs", pair[[2L]]),
+            function(pair) {
+              if (isTRUE(exact_estimand) && !is.null(contrast_specification$direction)) {
+                contrast_specification$direction
+              } else {
+                paste(pair[[1L]], "vs", pair[[2L]])
+              }
+            },
             character(1L)
+          ),
+          estimate = vapply(
+            comparisons,
+            function(pair) mean(groups[[pair[[1L]]]]) - mean(groups[[pair[[2L]]]]),
+            numeric(1L)
           ),
           p.value = raw_p,
           p.value_raw = raw_p,
@@ -149,6 +212,14 @@ nrc_run_marginal_contrasts <- function(stage) {
     row <- as.list(contrasted[index, , drop = FALSE])
     row$factor_name <- factor_name
     row$adjustment <- adjustment
+    if (isTRUE(exact_estimand)) {
+      row$estimand_id <- contrast_specification$estimand_id
+      row$treatment <- treatment
+      row$comparator <- comparator
+      row$direction <- contrast_specification$direction
+      row$target_population <- contrast_specification$target_population
+      row$dependence_unit <- contrast_specification$dependence_unit
+    }
     if (is.null(row$p.value_raw)) {
       row$p.value_raw <- row$p.value
     }
@@ -163,6 +234,8 @@ nrc_run_marginal_contrasts <- function(stage) {
     metadata = list(
       engine = "r",
       factor_name = factor_name,
+      estimand_id = contrast_specification$estimand_id,
+      exact_estimand = exact_estimand,
       multiplicity_method = adjustment,
       multiple_testing_adjustment = "pending_central_reconciliation",
       model_kind = model_kind,
