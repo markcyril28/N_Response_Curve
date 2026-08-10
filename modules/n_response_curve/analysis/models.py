@@ -81,6 +81,14 @@ class ModelAttempt:
     input_snapshot_sha256: str
     model_policy_sha256: str
     model_gate_policy_id: str | None
+    estimator_policy_id: str
+    estimator_name: str
+    estimator_status: str
+    analysis_grain: str
+    weighted_sensitivity_status: str
+    weighted_sensitivity_parameters: Mapping[str, float]
+    weighted_sensitivity_objective: float | None
+    weighted_sensitivity_reason_codes: tuple[str, ...]
     status: str
     reason_codes: tuple[str, ...]
     n_observations: int
@@ -107,6 +115,7 @@ class ModelAttempt:
     uncertainty_status: str
     uncertainty_method: str | None
     uncertainty_evidence_basis: tuple[str, ...]
+    feature_variances: Mapping[str, float]
     predictions: tuple[Mapping[str, float], ...]
 
 
