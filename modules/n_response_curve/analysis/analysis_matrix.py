@@ -660,6 +660,8 @@ def _normalize_hypotheses(
             raise ValueError("Prespecified hypothesis identifiers and ownership fields must be nonempty")
         if len(hypothesis.factor_names) != len(set(hypothesis.factor_names)):
             raise ValueError("Prespecified hypothesis factor_names must be unique")
+        if len(hypothesis.grouping) != len(set(hypothesis.grouping)):
+            raise ValueError("Prespecified hypothesis grouping fields must be unique")
         if set(hypothesis.factor_representations) - set(hypothesis.factor_names):
             raise ValueError(
                 "Prespecified hypothesis factor representations must belong to declared factors"
