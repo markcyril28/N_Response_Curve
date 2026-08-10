@@ -983,6 +983,84 @@ def _reported_se_delta_intervals(
     )
 
 
+def _delta_feature_variances(
+    model_name: str,
+    parameters: Mapping[str, float],
+    parameter_covariance: np.ndarray | None,
+    optimum_summary: _OptimumSummary,
+    predictions: Sequence[Mapping[str, float]],
+) -> Mapping[str, float]:
+    """Propagate reviewed first-stage uncertainty to supported numeric features."""
+
+    if parameter_covariance is None:
+        return {}
+    variances: dict[str, float] = {}
+
+    def add(name: str, gradient: Sequence[float]) -> None:
+        vector = np.asarray(gradient, dtype=float)
+        value = float(vector @ parameter_covariance @ vector)
+        if math.isfinite(value) and value > 0.0:
+            variances[name] = value
+
+    bounded_predictions = [
+        row
+        for row in predictions
+        if isinstance(row.get("fitted_mean_se_t_ha"), (int, float))
+        and math.isfinite(float(row["fitted_mean_se_t_ha"]))
+    ]
+    if bounded_predictions:
+        peak = max(
+            bounded_predictions,
+            key=lambda row: float(row["predicted_yield_t_ha"]),
+        )
+        peak_variance = float(peak["fitted_mean_se_t_ha"]) ** 2
+        if math.isfinite(peak_variance) and peak_variance > 0.0:
+            variances["predicted_observed_domain_peak_yield_t_ha"] = peak_variance
+
+    if model_name == "quadratic":
+        slope = float(parameters["slope"])
+        curvature = float(parameters["curvature"])
+        if curvature != 0.0 and optimum_summary.agronomic_optimum_n_kg_ha is not None:
+            add(
+                "agronomic_optimum_n_kg_ha",
+                (0.0, -1.0 / (2.0 * curvature), slope / (2.0 * curvature**2)),
+            )
+            finite_gradient = (
+                1.0,
+                -slope / (2.0 * curvature),
+                slope**2 / (4.0 * curvature**2),
+            )
+            if optimum_summary.finite_maximum_yield_t_ha is not None:
+                add("finite_maximum_yield_t_ha", finite_gradient)
+    elif model_name == "linear_plateau":
+        slope = float(parameters["slope"])
+        onset = float(parameters["plateau_onset"])
+        if optimum_summary.plateau_onset_n_kg_ha is not None:
+            add("plateau_onset_n_kg_ha", (0.0, 0.0, 1.0))
+            add("agronomic_optimum_n_kg_ha", (0.0, 0.0, 1.0))
+        if optimum_summary.finite_maximum_yield_t_ha is not None:
+            add("finite_maximum_yield_t_ha", (1.0, onset, slope))
+    elif model_name == "quadratic_plateau":
+        if optimum_summary.plateau_onset_n_kg_ha is not None:
+            add("plateau_onset_n_kg_ha", (0.0, 0.0, 1.0))
+            add("agronomic_optimum_n_kg_ha", (0.0, 0.0, 1.0))
+        if optimum_summary.finite_maximum_yield_t_ha is not None:
+            add("finite_maximum_yield_t_ha", (1.0, 1.0, 0.0))
+    elif model_name == "mitscherlich":
+        if optimum_summary.fitted_asymptote_yield_t_ha is not None:
+            add("fitted_asymptote_yield_t_ha", (1.0, 0.0, 0.0))
+
+    if "finite_maximum_yield_t_ha" in variances:
+        variances["predicted_max_yield_t_ha"] = variances[
+            "finite_maximum_yield_t_ha"
+        ]
+        if optimum_summary.supported_max_yield_t_ha is not None:
+            variances["supported_max_yield_t_ha"] = variances[
+                "finite_maximum_yield_t_ha"
+            ]
+    return variances
+
+
 def _optimum_summary(
     model_name: str,
     parameters: Mapping[str, float],
