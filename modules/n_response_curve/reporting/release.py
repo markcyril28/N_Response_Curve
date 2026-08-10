@@ -475,6 +475,89 @@ def _promote_stage(
     return archived_package
 
 
+def _write_promotion_state(history_entry: Path, target: Path, state: str) -> None:
+    """Durably journal replacement promotion so a hard-exit can be recovered."""
+
+    payload = {
+        "schema_version": "release-promotion-v1",
+        "target_name": target.name,
+        "target_path_sha256": _target_path_sha256(target),
+        "state": state,
+    }
+    state_path = history_entry / "promotion_state.json"
+    temporary = history_entry / ".promotion_state.tmp"
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, state_path)
+    try:
+        directory_fd = os.open(history_entry, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        # Some mounted filesystems do not support directory fsync; the file itself
+        # is still flushed and atomically replaced.
+        pass
+
+
+def _recover_interrupted_promotion(target: Path) -> None:
+    """Restore or finish the sole journaled replacement interrupted by hard exit."""
+
+    history_root = target.parent / ".release_history" / target.name
+    if not history_root.is_dir():
+        return
+    pending: list[tuple[Path, str]] = []
+    for history_entry in sorted(path for path in history_root.iterdir() if path.is_dir()):
+        state_path = history_entry / "promotion_state.json"
+        if not state_path.is_file():
+            continue
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ReportingError("Release-promotion recovery journal is unreadable") from exc
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("schema_version") != "release-promotion-v1"
+            or payload.get("target_name") != target.name
+            or payload.get("target_path_sha256") != _target_path_sha256(target)
+            or payload.get("state") not in {"prepared", "prior_archived", "complete"}
+        ):
+            raise ReportingError("Release-promotion recovery journal is malformed or misbound")
+        if payload["state"] != "complete":
+            pending.append((history_entry, str(payload["state"])))
+    if not pending:
+        return
+    if len(pending) != 1:
+        raise ReportingError("Multiple interrupted release promotions require manual review")
+    history_entry, state = pending[0]
+    archived_package = history_entry / "package"
+    if target.exists() and archived_package.exists():
+        try:
+            verify_release_package(target)
+        except ReportingError:
+            failed_target = history_entry / "failed_replacement_package"
+            os.replace(target, failed_target)
+            verify_release_package(archived_package)
+            os.replace(archived_package, target)
+            shutil.rmtree(history_entry)
+        else:
+            _write_promotion_state(history_entry, target, "complete")
+        return
+    if not target.exists() and archived_package.exists():
+        verify_release_package(archived_package)
+        os.replace(archived_package, target)
+        shutil.rmtree(history_entry)
+        return
+    if target.exists() and not archived_package.exists() and state == "prepared":
+        shutil.rmtree(history_entry)
+        return
+    raise ReportingError("Interrupted release promotion cannot be recovered automatically")
+
+
 def verify_release_package(target_path: str | Path) -> ReleasePackage:
     """Verify every promoted artifact against its immutable checksum ledger."""
 
@@ -584,6 +667,8 @@ def write_release_package(
         raise ReportingError("Run manifest input must be a mapping")
     target = Path(target_path).resolve()
     _assert_safe_target(target, source_roots)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_promotion(target)
     initial_manifest = dict(_json_value(manifest))
     initial_profile = initial_manifest.get("output_profile")
     if isinstance(initial_profile, Mapping) and (
