@@ -14,7 +14,28 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 }
 # shellcheck source=modules/n_response_curve/logging/run_logging.sh
 . "$LOG_HELPER"
+preflight_die() {
+  printf 'script.sh: %s\n' "$*" >&2
+  exit 2
+}
+
+[[ -f "$CONFIG_FILE" ]] || preflight_die "missing configuration: $CONFIG_FILE"
+[[ -f "$MODULE_SCRIPT" ]] || preflight_die "missing pipeline entry point: $MODULE_SCRIPT"
+
+if [[ "$PYTHON_BIN" == */* ]]; then
+  [[ -x "$PYTHON_BIN" ]] || preflight_die "PYTHON_BIN is not executable: $PYTHON_BIN"
+else
+  command -v "$PYTHON_BIN" >/dev/null 2>&1 || preflight_die "Python interpreter not found: $PYTHON_BIN"
+fi
+
 LAUNCHER_RUN_ID="n_response_launcher_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+export N_RESPONSE_LAUNCHER_RUN_ID="$LAUNCHER_RUN_ID"
+"$PYTHON_BIN" -c 'import tomllib' >/dev/null 2>&1 || preflight_die "Python must provide tomllib"
+
+export PYTHONDONTWRITEBYTECODE=1
+cd -- "$PROJECT_ROOT"
+"$PYTHON_BIN" "$MODULE_SCRIPT" --config "$CONFIG_FILE" --governance-preflight
+
 if ! nrc_setup_logging "$PROJECT_ROOT" "pipeline_launcher" "$LAUNCHER_RUN_ID" "INFO" "$LOG_ROOT"; then
   printf 'script.sh: failed to initialize logging under: %s\n' "$LOG_ROOT" >&2
   exit 2
