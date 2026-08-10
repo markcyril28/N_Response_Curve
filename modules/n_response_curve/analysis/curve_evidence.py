@@ -838,17 +838,6 @@ def _economic_optimum_rows(
             )
             if optimum is None:
                 continue
-            maximum_net_return = max(row["net_return_per_ha"] for row in evaluated)
-            tolerance = max(abs(maximum_net_return), 1.0) * 1e-12
-            optimum = min(
-                (
-                    row
-                    for row in evaluated
-                    if abs(row["net_return_per_ha"] - maximum_net_return)
-                    <= tolerance
-                ),
-                key=lambda row: row["n_rate_kg_ha"],
-            )
             scenario_payload = dict(scenario)
             scenario_sha256 = stable_json_sha256(scenario_payload)
             row_identity = {
