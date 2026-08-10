@@ -1336,13 +1336,30 @@ def fit_candidate_model(
         )
     observed_min, observed_max = _observed_bounds(x)
     distinct_levels = len(set(float(value) for value in x))
+    evidence_rows = tuple(observation_evidence or ())
+    estimator_status = _estimator_grain_status(evidence_rows, n_observations)
+    if distinct_levels != n_observations:
+        return _attempt(
+            response_series_uid=response_series_uid,
+            model_name=model_name,
+            identity_payload=identity_payload,
+            status="unsupported",
+            reason_codes=(
+                "ONE_REVIEWED_TREATMENT_MEAN_PER_DISTINCT_N_LEVEL_REQUIRED",
+            ),
+            n_observations=n_observations,
+            distinct_n_level_count=distinct_levels,
+            observed_n_min_kg_ha=observed_min,
+            observed_n_max_kg_ha=observed_max,
+            estimator_status="unsupported_analysis_grain",
+        )
     try:
         minimum_yield, maximum_yield, minimum_n, maximum_n, minimum_residual_df, tolerance = _policy_bounds(policy)
     except ValueError:
         raise
     uncertainty_status, uncertainty_method, uncertainty_basis, uncertainty_reasons = _uncertainty_gate(
         policy,
-        tuple(observation_evidence or ()),
+        evidence_rows,
     )
     if observed_min < minimum_n - tolerance or observed_max > maximum_n + tolerance:
         return _attempt(
