@@ -2820,6 +2820,15 @@ def load_curve_model_policy(
         economic_table_version,
         economic_scenarios,
     ) = _economic_policy(raw["economic_scenarios"])
+    efficiency_metric = _efficiency_metric_policy(raw.get("efficiency_metric"))
+    efficiency_operating_point = _efficiency_operating_point_policy(
+        raw.get("efficiency_operating_point")
+    )
+    asymptote_reporting = _asymptote_reporting_policy(
+        raw.get("asymptote_reporting")
+    )
+    asymptote_support = _asymptote_support_policy(raw.get("asymptote_support"))
+    model_credibility = _model_credibility_policy(raw.get("model_credibility"))
 
     return (
         authority,
@@ -2827,6 +2836,7 @@ def load_curve_model_policy(
             policy_id=policy_id,
             restricted_fit_models=restricted_models,
             model_gates=model_gates,
+            model_credibility_policy=model_credibility,
             baseline_policy_id=baseline_policy_id,
             baseline_response_policy=baseline_mode,
             baseline_classes=baseline_classes,
@@ -2851,6 +2861,10 @@ def load_curve_model_policy(
             economic_table_id=economic_table_id,
             economic_table_version=economic_table_version,
             economic_scenarios=economic_scenarios,
+            efficiency_metric_policy=efficiency_metric,
+            efficiency_operating_point_policy=efficiency_operating_point,
+            asymptote_reporting_policy=asymptote_reporting,
+            asymptote_support_policy=asymptote_support,
         ),
     )
 
