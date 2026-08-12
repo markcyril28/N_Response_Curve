@@ -1023,17 +1023,57 @@ def _reconcile_multiplicity_families(
             if candidate_status_rows[0].get("status") != "completed":
                 family_reasons.add("MULTIPLICITY_CANDIDATE_NOT_COMPLETED")
                 continue
+            metadata = candidate_status_rows[0].get("metadata")
+            diagnostics_reason = r_completed_diagnostics_reason(
+                metadata if isinstance(metadata, Mapping) else {}
+            )
+            if diagnostics_reason is not None:
+                family_reasons.add(diagnostics_reason)
+                continue
             candidate_results = r_result_rows.get(candidate_id)
             if not candidate_results:
                 family_reasons.add("MULTIPLICITY_RESULT_ROWS_MISSING")
                 continue
+            expected_test_ids = tuple(
+                str(value)
+                for value in candidate.model_specification.get(
+                    "multiplicity_test_ids",
+                    (),
+                )
+            )
+            if not expected_test_ids or len(expected_test_ids) != len(
+                set(expected_test_ids)
+            ):
+                family_reasons.add("MULTIPLICITY_EXPECTED_TEST_REGISTRY_INVALID")
+                continue
+            observed_test_ids: list[str] = []
             for occurrence, raw_row in enumerate(candidate_results):
                 row_reasons: set[str] = set()
+                test_id: str | None = None
                 if not isinstance(raw_row, Mapping):
                     result_id = f"invalid_result_{occurrence:06d}"
                     raw_p_value = None
                     row_reasons.add("MULTIPLICITY_RESULT_ROW_INVALID")
                 else:
+                    membership = raw_row.get("multiplicity_included")
+                    if membership is False:
+                        continue
+                    if membership is not True:
+                        family_reasons.add(
+                            "MULTIPLICITY_TEST_MEMBERSHIP_MISSING"
+                        )
+                        continue
+                    test_id = raw_row.get("multiplicity_test_id")
+                    if not isinstance(test_id, str) or not test_id.strip():
+                        test_id = ""
+                        row_reasons.add("MULTIPLICITY_TEST_ID_MISSING")
+                    else:
+                        test_id = test_id.strip()
+                        observed_test_ids.append(test_id)
+                        if test_id not in expected_test_ids:
+                            row_reasons.add(
+                                "MULTIPLICITY_TEST_NOT_IN_REGISTRY"
+                            )
                     try:
                         result_id = _multiplicity_result_id(candidate_id, raw_row)
                     except (TypeError, ValueError):
@@ -1042,6 +1082,9 @@ def _reconcile_multiplicity_families(
                     raw_p_value, raw_reason = _raw_probability(raw_row)
                     if raw_reason is not None:
                         row_reasons.add(raw_reason)
+                    endpoint_reason = _inferential_endpoint_reason(raw_row)
+                    if endpoint_reason is not None:
+                        row_reasons.add(endpoint_reason)
                 if result_id in seen_result_ids:
                     row_reasons.add("MULTIPLICITY_RESULT_ID_DUPLICATE")
                 seen_result_ids.add(result_id)
@@ -1058,6 +1101,9 @@ def _reconcile_multiplicity_families(
                         "candidate_id": candidate_id,
                         "hypothesis_id": candidate.hypothesis_id,
                         "result_id": result_id,
+                        "multiplicity_test_id": (
+                            test_id if isinstance(raw_row, Mapping) else None
+                        ),
                         "engine_result": (
                             dict(raw_row)
                             if isinstance(raw_row, Mapping)
@@ -1066,6 +1112,7 @@ def _reconcile_multiplicity_families(
                         "raw_p_value": raw_p_value,
                         "adjusted_p_value": None,
                         "method": family.method,
+                        "decision_alpha": family.alpha,
                         "family_size": None,
                         "family_complete": False,
                         "status": "not_interpretable",
@@ -1073,6 +1120,10 @@ def _reconcile_multiplicity_families(
                     }
                 )
                 family_reasons.update(row_reasons)
+            if sorted(observed_test_ids) != sorted(expected_test_ids):
+                family_reasons.add(
+                    "MULTIPLICITY_EXPECTED_TEST_RESULTS_INCOMPLETE"
+                )
         if not collected:
             family_reasons.add("MULTIPLICITY_FAMILY_HAS_NO_RAW_RESULTS")
         family_complete = not family_reasons
@@ -1108,7 +1159,12 @@ def _reconcile_multiplicity_families(
             }
         family_key = hashlib.sha256(
             json.dumps(
-                [family.family_id, family.method, list(expected_candidate_ids)],
+                [
+                    family.family_id,
+                    family.method,
+                    family.alpha,
+                    list(expected_candidate_ids),
+                ],
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -1118,6 +1174,7 @@ def _reconcile_multiplicity_families(
                 "family_key": "family_" + family_key,
                 "family_id": family.family_id,
                 "method": family.method,
+                "decision_alpha": family.alpha,
                 "status": family_status,
                 "complete": family_complete,
                 "reason_codes": [] if family_complete else sorted(family_reasons),
