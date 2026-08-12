@@ -1880,6 +1880,48 @@ def load_source_data_policy_manifest(
         artifacts["restricted_policy"],
         secrets=secrets,
     )
+    source_scope = _source_scope(artifacts["source_scope"])
+    source_maps = _source_maps(artifacts["source_maps"])
+    category_lookups, source_category_lookups = _category_lookups(
+        artifacts["category_lookups"],
+        known_source_names=source_scope,
+    )
+    duplicate_rules = _duplicate_rules(
+        artifacts["duplicate_rules"],
+        known_source_names=source_scope,
+    )
+    final_cleaning_policies = _final_cleaning_policies(
+        artifacts["final_cleaning_policy"],
+        designated_reviewers=designated_reviewers,
+    )
+    _validate_final_cleaning_policy_targets(
+        final_cleaning_policies,
+        source_maps,
+    )
+    literature_source_names: tuple[str, ...] = ()
+    literature_policy: VerificationSamplingPolicy | None = None
+    literature_results: tuple[VerificationResult, ...] = ()
+    if "literature_verification" in artifacts:
+        (
+            literature_source_names,
+            literature_policy,
+            literature_results,
+        ) = _literature_verification(
+            artifacts["literature_verification"],
+            designated_reviewers=designated_reviewers,
+        )
+        unknown_sources = sorted(set(literature_source_names) - set(source_scope))
+        inactive_sources = sorted(
+            source_name
+            for source_name in literature_source_names
+            if source_name in source_scope
+            and source_scope[source_name].activation_status != "approved_active"
+        )
+        if unknown_sources or inactive_sources:
+            raise SourceDataPolicyError(
+                "Literature-verification source scope is not approved and active: "
+                f"unknown={unknown_sources}; inactive={inactive_sources}"
+            )
     return SourceDataPolicyBundle(
         manifest_authority=manifest_authority,
         artifact_authorities=MappingProxyType(authorities),
