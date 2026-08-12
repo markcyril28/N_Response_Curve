@@ -409,6 +409,12 @@ def _approval_timestamp(value: Any) -> str:
     return normalized
 
 
+def _approval_calendar_date(value: str) -> date:
+    if "T" in value:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    return date.fromisoformat(value)
+
+
 def _approval_text(value: Any, *, field: str) -> str:
     if (
         not isinstance(value, str)
