@@ -969,6 +969,15 @@ def _finalize_canonical_record(
         representation_reasons.append("N_RATE_UNIT_UNSUPPORTED")
     if canonical_unit(configured_yield_unit, "yield") is None:
         representation_reasons.append("YIELD_UNIT_UNSUPPORTED")
+    for field_name, reason in (
+        ("inorganic_n_rate", "N_RATE_UNIT_BASIS_REVIEW_REQUIRED"),
+        ("recommended_n_rate", "RECOMMENDED_N_RATE_UNIT_BASIS_REVIEW_REQUIRED"),
+        ("inorganic_p_rate", "P_RATE_UNIT_BASIS_REVIEW_REQUIRED"),
+        ("inorganic_k_rate", "K_RATE_UNIT_BASIS_REVIEW_REQUIRED"),
+    ):
+        parsed_value = nutrient_values[field_name]
+        if parsed_value is not None and field_name not in nutrient_unit_controls:
+            representation_reasons.append(reason)
     if record.get("workbook_csv_basis") == "parallel_workbook_csv_unresolved":
         representation_reasons.append("WORKBOOK_CSV_BASIS_UNRESOLVED")
     basis_raw = _optional_field(record, "yield_basis")
