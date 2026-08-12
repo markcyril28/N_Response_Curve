@@ -98,13 +98,19 @@ class SourceDataPolicyBundle:
     source_scope: Mapping[str, SourceScopeRecord]
     source_maps: Mapping[str, ReviewedSourceMap]
     category_lookups: Mapping[str, ReviewedLookupTable]
+    source_category_lookups: Mapping[
+        str, Mapping[str, ReviewedLookupTable]
+    ]
     restricted_policy: RestrictedDataPolicy
     restricted_secret_reference: str
-    duplicate_rules: DuplicateRuleSet
+    duplicate_rules: tuple[DuplicateRuleSet, ...]
     final_cleaning_policies: Mapping[str, SourceCleaningPolicy]
     checksum_revision_approvals: Mapping[str, ChecksumRevisionApproval]
     duplicate_adjudications: tuple[DuplicateAdjudication, ...]
     repeat_adjudications: tuple[RepeatAdjudication, ...]
+    literature_verification_source_names: tuple[str, ...]
+    literature_verification_policy: VerificationSamplingPolicy | None
+    literature_verification_results: tuple[VerificationResult, ...]
     designated_reviewers: tuple[str, ...]
 
     @property
