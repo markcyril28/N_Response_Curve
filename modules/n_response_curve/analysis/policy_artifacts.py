@@ -3061,7 +3061,7 @@ def load_analysis_policy_manifest(
         raise PolicyArtifactError("Analysis policy manifest must be inside the project root")
     if manifest_path.suffix.casefold() != ".json":
         raise PolicyArtifactError("Analysis policy manifest must use the JSON format")
-    _, payload = _load_artifact(
+    manifest_authority, payload = _load_artifact(
         manifest_path,
         expected_sha256=expected_sha256,
         expected_type="analysis_policy_bundle",
