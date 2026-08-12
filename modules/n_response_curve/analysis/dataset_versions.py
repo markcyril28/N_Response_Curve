@@ -74,13 +74,19 @@ def _membership_hash(
     authority_status: str,
     authority_reason_codes: Sequence[str],
     membership_diagnostics: Sequence[DatasetMembershipDiagnostic],
+    membership_rule_id: str | None = None,
+    configuration_sha256: str | None = None,
+    input_dataset_sha256: str | None = None,
 ) -> str:
     payload = {
         "authority_reason_codes": list(authority_reason_codes),
         "authority_status": authority_status,
+        "configuration_sha256": configuration_sha256,
+        "input_dataset_sha256": input_dataset_sha256,
         "membership_diagnostics": [
             asdict(diagnostic) for diagnostic in membership_diagnostics
         ],
+        "membership_rule_id": membership_rule_id,
         "reason_codes": list(reason_codes),
         "record_uids": list(record_uids),
         "status": status,
