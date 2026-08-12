@@ -265,6 +265,7 @@ class CurveModelPolicy:
     policy_id: str
     restricted_fit_models: tuple[str, ...]
     model_gates: Mapping[str, CurveModelGate]
+    model_credibility_policy: Mapping[str, Any]
     baseline_policy_id: str
     baseline_response_policy: str
     baseline_classes: tuple[str, ...]
@@ -287,6 +288,10 @@ class CurveModelPolicy:
     economic_table_id: str | None
     economic_table_version: str | None
     economic_scenarios: tuple[Mapping[str, Any], ...]
+    efficiency_metric_policy: Mapping[str, Any]
+    efficiency_operating_point_policy: Mapping[str, Any]
+    asymptote_reporting_policy: Mapping[str, Any]
+    asymptote_support_policy: Mapping[str, Any]
 
     @property
     def effective_controls(self) -> Mapping[str, Any]:
@@ -318,6 +323,7 @@ class CurveModelPolicy:
                         "models": MappingProxyType(models),
                     }
                 ),
+                "model_credibility_policy": self.model_credibility_policy,
                 "baseline_response_policy": self.baseline_response_policy,
                 "baseline_response_classes": self.baseline_classes,
                 "baseline_response_policy_id": self.baseline_policy_id,
@@ -363,6 +369,12 @@ class CurveModelPolicy:
                         "scenarios": self.economic_scenarios,
                     }
                 ),
+                "efficiency_policy": self.efficiency_metric_policy,
+                "efficiency_operating_point_policy": (
+                    self.efficiency_operating_point_policy
+                ),
+                "asymptote_reporting_policy": self.asymptote_reporting_policy,
+                "asymptote_support_policy": self.asymptote_support_policy,
             }
         )
 
