@@ -547,6 +547,11 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
     print(f"tier_D={tier_counts['D']}")
     print(f"critical_records={len(phase_two.qc.critical_record_uids)}")
     print(f"qc_reconciles={'true' if phase_two.qc.reconciles else 'false'}")
+    verification = phase_two.literature_verification
+    print(
+        "literature_verification_status="
+        + (verification.status if verification is not None else "not_configured")
+    )
     print("stages=config_validation,source_integrity,position_safe_ingestion,canonical_curation,response_series_resolution,eligibility_qc")
 
 
@@ -560,6 +565,12 @@ def _preflight_runtime(
     source_data_policy = _load_source_data_policy(config)
     model_policy = build_effective_model_policy(config, analysis_policy)
     policy_snapshot = validate_runtime_policy(config)
+    if policy_snapshot.authority_matrix is not None:
+        validate_policy_authority_bindings(
+            policy_snapshot.authority_matrix,
+            source_data_policy=source_data_policy,
+            analysis_policy=analysis_policy,
+        )
     return (
         config,
         analysis_policy,
