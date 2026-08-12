@@ -97,17 +97,6 @@ class PhaseFiveResult:
     reused_existing_package: bool
 
 
-_INFERENTIAL_ANALYSIS_FAMILIES = frozenset(
-    {
-        "all_supported_interactions",
-        "marginal_contrasts",
-        "multivariable_mixed_effects",
-        "observation_level_curve_modification",
-        "one_factor_inferential",
-    }
-)
-
-
 def _code_fingerprint() -> str:
     module_root = Path(__file__).resolve().parents[1]
     project_root = module_root.parent
