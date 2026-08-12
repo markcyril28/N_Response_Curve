@@ -937,41 +937,65 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
 
 def _category_lookups(
     payload: Mapping[str, Any],
-) -> Mapping[str, ReviewedLookupTable]:
+    *,
+    known_source_names: Iterable[str],
+) -> tuple[
+    Mapping[str, ReviewedLookupTable],
+    Mapping[str, Mapping[str, ReviewedLookupTable]],
+]:
+    known_sources = {
+        str(source_name).strip()
+        for source_name in known_source_names
+        if str(source_name).strip()
+    }
     lookups: dict[str, ReviewedLookupTable] = {}
+    source_lookups: dict[str, dict[str, ReviewedLookupTable]] = {
+        source_name: {} for source_name in known_sources
+    }
     for index, record in enumerate(_records(payload, where="category lookups")):
         where = f"category lookups record {index}"
         field = _nonempty_text(record.get("field"), where=f"{where}.field")
-        if field in lookups:
-            raise SourceDataPolicyError("Category lookup fields must be unique")
-        raw_aliases = record.get("aliases")
-        if not isinstance(raw_aliases, Mapping) or not raw_aliases:
-            raise SourceDataPolicyError(f"{where}.aliases must be a nonempty object")
-        aliases = {
-            _nonempty_text(key, where=f"{where}.aliases key"): _string_tuple(
-                value,
-                where=f"{where}.aliases.{key}",
-            )
-            for key, value in raw_aliases.items()
-        }
-        lookups[field] = ReviewedLookupTable(
-            map_version=_version(
-                record.get("map_version"),
-                where=f"{where}.map_version",
-            ),
-            review_id=_nonempty_text(
-                record.get("review_id"),
-                where=f"{where}.review_id",
-            ),
-            aliases=MappingProxyType(aliases),
-        )
+        lookup = _reviewed_lookup_from_object(record, where=where)
         try:
-            validate_reviewed_lookup_table(lookups[field])
+            validate_reviewed_lookup_table(lookup)
         except ValueError as exc:
             raise SourceDataPolicyError(
                 f"{where} is not a valid reviewed lookup: {exc}"
             ) from exc
-    return MappingProxyType(lookups)
+        raw_source_names = record.get("source_names")
+        if raw_source_names is None:
+            if field in lookups:
+                raise SourceDataPolicyError(
+                    "Global category lookup fields must be unique"
+                )
+            lookups[field] = lookup
+            continue
+        source_names = _string_tuple(
+            raw_source_names,
+            where=f"{where}.source_names",
+        )
+        unknown_sources = sorted(set(source_names) - known_sources)
+        if unknown_sources:
+            raise SourceDataPolicyError(
+                "Source-specific category lookup references unknown source(s): "
+                + ", ".join(unknown_sources)
+            )
+        for source_name in source_names:
+            if field in source_lookups[source_name]:
+                raise SourceDataPolicyError(
+                    "Source-specific category lookup fields must be unique per source"
+                )
+            source_lookups[source_name][field] = lookup
+    return (
+        MappingProxyType(lookups),
+        MappingProxyType(
+            {
+                source_name: MappingProxyType(values)
+                for source_name, values in source_lookups.items()
+                if values
+            }
+        ),
+    )
 
 
 def _restricted_policy(
