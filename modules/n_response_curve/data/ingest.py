@@ -371,6 +371,9 @@ def ingest_configured_sources(
         str, ChecksumRevisionApproval | Mapping[str, object]
     ] | None = None,
     source_representation_bases: Mapping[str, str] | None = None,
+    source_workbook_reconciliations: Mapping[
+        str, WorkbookCsvReconciliation
+    ] | None = None,
     designated_reviewers: Iterable[str] = (),
 ) -> IngestionResult:
     """Verify the intake package and read every enabled source without writing it."""
@@ -378,6 +381,7 @@ def ingest_configured_sources(
     configured_specs = dict(adapter_specs or {})
     revision_approvals = dict(checksum_revision_approvals or {})
     representation_bases = dict(source_representation_bases or {})
+    workbook_reconciliations = dict(source_workbook_reconciliations or {})
     unexpected_revision_sources = set(revision_approvals) - set(config.enabled_sources)
     if unexpected_revision_sources:
         raise ConfigError(
@@ -391,6 +395,14 @@ def ingest_configured_sources(
         raise ConfigError(
             "Representation basis supplied for a disabled or unknown source: "
             + ", ".join(sorted(unexpected_representation_sources))
+        )
+    unexpected_reconciliation_sources = set(workbook_reconciliations) - set(
+        config.enabled_sources
+    )
+    if unexpected_reconciliation_sources:
+        raise ConfigError(
+            "Workbook/CSV reconciliation supplied for a disabled or unknown source: "
+            + ", ".join(sorted(unexpected_reconciliation_sources))
         )
     for source_name in config.enabled_sources:
         adapter = str(config.sources[source_name]["shape_adapter_version"])
