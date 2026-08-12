@@ -1945,8 +1945,26 @@ def _strict_review_gate_stage_writer(
             sorted(Counter(row["issue_state"] for row in classified_issues).items())
         )
         payload = {
-            "schema_version": _REVIEW_GATE_SCHEMA_VERSION,
-            "policy_id": _REVIEW_GATE_POLICY_ID,
+            "schema_version": (
+                _REVIEW_GATE_AMENDED_SCHEMA_VERSION
+                if review_gate_policy is not None
+                else _REVIEW_GATE_SCHEMA_VERSION
+            ),
+            "policy_id": (
+                review_gate_policy.policy_id
+                if review_gate_policy is not None
+                else _REVIEW_GATE_POLICY_ID
+            ),
+            "prospective_effective_version": (
+                review_gate_policy.prospective_effective_version
+                if review_gate_policy is not None
+                else None
+            ),
+            "review_gate_policy_sha256": (
+                review_gate_policy.artifact_sha256
+                if review_gate_policy is not None
+                else None
+            ),
             "mode": config.run_mode,
             "run_identity_sha256": manifest.get("run_identity_sha256"),
             "policy_content_sha256": (
@@ -1957,9 +1975,11 @@ def _strict_review_gate_stage_writer(
             "expected_ledgers": list(_REVIEW_GATE_EXPECTED_LEDGERS),
             "observed_ledgers": observed_ledgers,
             "evidence_complete": evidence_complete,
-            "issue_count": len(issues),
+            "issue_count": len(classified_issues),
+            "permitted_disposition_count": len(permitted_issues),
+            "blocking_issue_count": len(blocking_issues),
             "issue_state_counts": state_counts,
-            "issues": issues,
+            "issues": classified_issues,
             "decision": decision,
             "authoritative_release_allowed": (
                 config.run_mode == "full" and decision == "pass"
@@ -1978,7 +1998,8 @@ def _strict_review_gate_stage_writer(
         if config.run_mode in {"validate", "full"} and decision != "pass":
             raise ReportingError(
                 "OPS-03 complete review gate failed: "
-                f"decision={decision}; issues={len(issues)}"
+                f"decision={decision}; blocking_issues={len(blocking_issues)}; "
+                f"permitted_dispositions={len(permitted_issues)}"
             )
         return (path,)
 
