@@ -796,6 +796,102 @@ def _exact_object(
     return value
 
 
+def _reviewed_model_specification(
+    value: object,
+    *,
+    factor_names: tuple[str, ...],
+    required: bool,
+    where: str,
+) -> Mapping[str, Any]:
+    """Validate one frozen inferential model and scientific-test contract."""
+
+    if not required and value is None:
+        return MappingProxyType({})
+    raw = _exact_object(
+        value,
+        required_keys={
+            "outcome_kind",
+            "model_kind",
+            "dependence_structure",
+            "link_function",
+            "focal_factor_names",
+            "adjustment_factor_names",
+            "multiplicity_test_ids",
+            "interval_method",
+        },
+        where=where,
+    )
+    outcome_kind = _nonempty_text(
+        raw["outcome_kind"],
+        where=f"{where}.outcome_kind",
+    )
+    model_kind = _nonempty_text(raw["model_kind"], where=f"{where}.model_kind")
+    dependence_structure = _nonempty_text(
+        raw["dependence_structure"],
+        where=f"{where}.dependence_structure",
+    )
+    link_function = _nonempty_text(
+        raw["link_function"],
+        where=f"{where}.link_function",
+    )
+    supported_models = {
+        ("continuous", "lmer", "identity"),
+        ("categorical", "glmmTMB", "logit"),
+    }
+    if (outcome_kind, model_kind, link_function) not in supported_models:
+        raise PolicyArtifactError(
+            f"{where} declares an unsupported outcome/model/link combination"
+        )
+    if dependence_structure not in {
+        "random_intercept",
+        "nested_random_intercept",
+    }:
+        raise PolicyArtifactError(
+            f"{where}.dependence_structure has no executable runtime path"
+        )
+    focal = _string_tuple(
+        raw["focal_factor_names"],
+        where=f"{where}.focal_factor_names",
+    )
+    adjustments = _string_tuple(
+        raw["adjustment_factor_names"],
+        where=f"{where}.adjustment_factor_names",
+        allow_empty=True,
+    )
+    if set(focal) & set(adjustments) or set(focal) | set(adjustments) != set(
+        factor_names
+    ):
+        raise PolicyArtifactError(
+            f"{where} focal and adjustment factors must partition factor_names"
+        )
+    test_ids = _string_tuple(
+        raw["multiplicity_test_ids"],
+        where=f"{where}.multiplicity_test_ids",
+    )
+    if len(test_ids) != len(set(test_ids)):
+        raise PolicyArtifactError(f"{where}.multiplicity_test_ids must be unique")
+    interval_method = _nonempty_text(
+        raw["interval_method"],
+        where=f"{where}.interval_method",
+    )
+    if interval_method != "wald_95":
+        raise PolicyArtifactError(
+            f"{where}.interval_method must name the implemented wald_95 method"
+        )
+    return MappingProxyType(
+        {
+            "outcome_kind": outcome_kind,
+            "model_kind": model_kind,
+            "dependence_structure": dependence_structure,
+            "link_function": link_function,
+            "focal_factor_names": focal,
+            "adjustment_factor_names": adjustments,
+            "multiplicity_test_ids": test_ids,
+            "interval_method": interval_method,
+        }
+    )
+
+
 def _review_status(value: object, *, where: str) -> str:
     status = _nonempty_text(value, where=where)
     if status not in {"approved", "withheld"}:
