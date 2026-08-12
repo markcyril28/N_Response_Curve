@@ -1496,12 +1496,6 @@ def _delta_feature_variances(
         return {}
     variances: dict[str, float] = {}
 
-    def add(name: str, gradient: Sequence[float]) -> None:
-        vector = np.asarray(gradient, dtype=float)
-        value = float(vector @ parameter_covariance @ vector)
-        if math.isfinite(value) and value > 0.0:
-            variances[name] = value
-
     bounded_predictions = [
         row
         for row in predictions
