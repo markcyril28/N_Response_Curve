@@ -2088,16 +2088,34 @@ def fit_candidate_model(
             uncertainty_method=uncertainty_method,
             uncertainty_evidence_basis=uncertainty_basis,
         )
-    if (
-        not model_gate.allow_boundary_parameters
+    effective_bounds, _ = _effective_parameter_bounds(model_name, x, model_gate)
+    effective_lower, effective_upper = (
+        effective_bounds if effective_bounds is not None else (None, None)
+    )
+    at_effective_boundary = _at_reviewed_parameter_boundary(
+        parameters,
+        model_gate,
+        lower_bounds=effective_lower,
+        upper_bounds=effective_upper,
+    )
+    # Separate the two ways a fit can rest on a constraint. A reviewed-bound hit
+    # means the policy rejected the shape; an observed-domain hit means the
+    # plateau onset ran to the edge of the data and the candidate has degenerated
+    # into a lower-order model. Reporting both under one code reproduces the
+    # confusion this check exists to remove.
+    boundary_reason = (
+        "PARAMETER_AT_DISALLOWED_REVIEWED_BOUNDARY"
+        if at_effective_boundary
         and _at_reviewed_parameter_boundary(parameters, model_gate)
-    ):
+        else "PLATEAU_ONSET_AT_OBSERVED_DOMAIN_CONSTRAINT"
+    )
+    if not model_gate.allow_boundary_parameters and at_effective_boundary:
         return _attempt(
             response_series_uid=response_series_uid,
             model_name=model_name,
             identity_payload=identity_payload,
             status="failed",
-            reason_codes=("PARAMETER_AT_DISALLOWED_REVIEWED_BOUNDARY",),
+            reason_codes=(boundary_reason,),
             n_observations=n_observations,
             distinct_n_level_count=distinct_levels,
             observed_n_min_kg_ha=observed_min,
