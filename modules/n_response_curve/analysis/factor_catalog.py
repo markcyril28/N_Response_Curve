@@ -64,6 +64,9 @@ _REPRESENTATION_DATA_TYPE_ALIASES = {
     "categorical_factor": "categorical",
     "ordered_factor": "categorical",
 }
+_REPRESENTATION_ROLE_ALIASES = {
+    "contextual_explanatory": "candidate_explanatory",
+}
 
 
 def _missing(value: object, data_type: str) -> bool:
