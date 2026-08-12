@@ -276,6 +276,904 @@ def _partial_factor_productivity_rows(
     return tuple(sorted(rows, key=lambda row: str(row["record_uid"])))
 
 
+def _approved_efficiency_operating_point_policy(
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    raw = policy.get("efficiency_operating_point_policy")
+    if not isinstance(raw, Mapping):
+        return None
+    retention = finite_number(raw.get("yield_retention_fraction"))
+    marginal_gain = finite_number(
+        raw.get("maximum_marginal_gain_t_ha_per_kg_n")
+    )
+    concordance = finite_number(
+        raw.get("model_concordance_tolerance_n_kg_ha")
+    )
+    grid_points = raw.get("prediction_grid_points")
+    configured_grid_points = policy.get("plot_grid_points")
+    uncertainty_policy = policy.get("uncertainty_policy")
+    uncertainty_method = (
+        uncertainty_policy.get("method")
+        if isinstance(uncertainty_policy, Mapping)
+        else None
+    )
+    uncertainty_contract = (
+        uncertainty_policy.get("method_contract")
+        if isinstance(uncertainty_policy, Mapping)
+        else None
+    )
+    uncertainty_evidence_basis = (
+        uncertainty_policy.get("evidence_basis")
+        if isinstance(uncertainty_policy, Mapping)
+        else None
+    )
+    uncertainty_method_key = (
+        uncertainty_method if isinstance(uncertainty_method, str) else ""
+    )
+    expected_uncertainty_contract = UNCERTAINTY_METHOD_SPECS.get(
+        uncertainty_method_key,
+    )
+    required_uncertainty_evidence = UNCERTAINTY_METHOD_REQUIRED_EVIDENCE.get(
+        uncertainty_method_key,
+        (),
+    )
+    if "authority" in raw or (
+        isinstance(uncertainty_policy, Mapping)
+        and "authority" in uncertainty_policy
+    ):
+        return None
+    authority = _approved_scientific_policy_authority(policy)
+    if authority is None:
+        return None
+    if (
+        raw.get("review_status") != "approved"
+        or not isinstance(raw.get("policy_id"), str)
+        or not str(raw["policy_id"]).strip()
+        or retention is None
+        or not 0.0 < retention <= 1.0
+        or marginal_gain is None
+        or marginal_gain < 0.0
+        or concordance is None
+        or concordance < 0.0
+        or not isinstance(grid_points, int)
+        or isinstance(grid_points, bool)
+        or grid_points < 3
+        or configured_grid_points != grid_points
+        or raw.get("prediction_grid_domain") != "observed_n_domain"
+        or raw.get("prediction_grid_spacing")
+        != "linear_inclusive_endpoints"
+        or raw.get("uncertainty_decision_rule")
+        != "point_estimate_thresholds_with_validated_fitted_mean_interval_reporting"
+        or not isinstance(uncertainty_policy, Mapping)
+        or uncertainty_policy.get("review_status") != "approved"
+        or not isinstance(uncertainty_policy.get("policy_id"), str)
+        or not str(uncertainty_policy["policy_id"]).strip()
+        or not uncertainty_method_key
+        or expected_uncertainty_contract is None
+        or not isinstance(uncertainty_contract, Mapping)
+        or dict(uncertainty_contract) != dict(expected_uncertainty_contract)
+        or not isinstance(uncertainty_evidence_basis, (tuple, list))
+        or not all(
+            isinstance(item, str) and bool(item.strip())
+            for item in uncertainty_evidence_basis
+        )
+        or not set(required_uncertainty_evidence).issubset(
+            set(uncertainty_evidence_basis)
+        )
+        or raw.get("marginal_gain_method")
+        != "adjacent_prediction_grid_difference"
+        or raw.get("zero_n_disposition")
+        != "exclude_from_operating_point_search"
+        or raw.get("uncertainty_disposition")
+        != "require_available_for_all_credible_models"
+    ):
+        return None
+    return {
+        **dict(raw),
+        "authority": authority,
+        "uncertainty_policy_id": uncertainty_policy["policy_id"],
+        "uncertainty_method": uncertainty_method_key,
+        "uncertainty_confidence_level": (
+            UNCERTAINTY_METHOD_CONFIDENCE_LEVELS[uncertainty_method_key]
+        ),
+        "uncertainty_required_evidence": required_uncertainty_evidence,
+    }
+
+
+def _efficiency_operating_point_rows(
+    credible_attempts: Iterable[ModelAttempt],
+    *,
+    policy: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Apply reviewed EFF-03 thresholds without supplying scientific defaults."""
+
+    operating_policy = _approved_efficiency_operating_point_policy(policy)
+    if operating_policy is None:
+        return ()
+    grouped: dict[str, list[ModelAttempt]] = {}
+    for attempt in credible_attempts:
+        grouped.setdefault(attempt.response_series_uid, []).append(attempt)
+    rows: list[dict[str, Any]] = []
+    retention = float(operating_policy["yield_retention_fraction"])
+    maximum_gain = float(
+        operating_policy["maximum_marginal_gain_t_ha_per_kg_n"]
+    )
+    concordance = float(
+        operating_policy["model_concordance_tolerance_n_kg_ha"]
+    )
+    expected_grid_points = int(operating_policy["prediction_grid_points"])
+    required_uncertainty_method = str(operating_policy["uncertainty_method"])
+    required_confidence_level = float(
+        operating_policy["uncertainty_confidence_level"]
+    )
+    required_interval_critical_value = statistics.NormalDist().inv_cdf(
+        0.5 + required_confidence_level / 2.0
+    )
+    required_uncertainty_evidence = set(
+        operating_policy["uncertainty_required_evidence"]
+    )
+    for series_uid, attempts in sorted(grouped.items()):
+        model_rates: dict[str, float] = {}
+        qualifying_rates_by_model: dict[str, set[float]] = {}
+        model_uncertainty_statuses: dict[str, str] = {}
+        model_uncertainty_methods: dict[str, str | None] = {}
+        model_attempt_uids: dict[str, str | None] = {}
+        model_input_snapshot_sha256s: dict[str, str | None] = {}
+        model_policy_sha256s: dict[str, str | None] = {}
+        model_prediction_grids: dict[str, tuple[float, ...]] = {}
+        model_prediction_evidence_sha256s: dict[str, str] = {}
+        model_prediction_intervals: dict[
+            str, dict[float, dict[str, float]]
+        ] = {}
+        reason_codes: set[str] = set()
+        for attempt in sorted(attempts, key=lambda item: item.model_name):
+            model_name = attempt.model_name
+            uncertainty_status = getattr(attempt, "uncertainty_status", "")
+            uncertainty_method = getattr(attempt, "uncertainty_method", None)
+            model_uncertainty_statuses[model_name] = uncertainty_status
+            model_uncertainty_methods[model_name] = uncertainty_method
+            model_attempt_uid = getattr(attempt, "model_attempt_uid", None)
+            input_snapshot_sha256 = getattr(attempt, "input_snapshot_sha256", None)
+            model_policy_sha256 = getattr(attempt, "model_policy_sha256", None)
+            model_attempt_uids[model_name] = (
+                model_attempt_uid if isinstance(model_attempt_uid, str) else None
+            )
+            model_input_snapshot_sha256s[model_name] = (
+                input_snapshot_sha256
+                if isinstance(input_snapshot_sha256, str)
+                else None
+            )
+            model_policy_sha256s[model_name] = (
+                model_policy_sha256
+                if isinstance(model_policy_sha256, str)
+                else None
+            )
+            expected_model_attempt_uid = (
+                stable_identifier(
+                    "model",
+                    (
+                        series_uid,
+                        model_name,
+                        input_snapshot_sha256,
+                        model_policy_sha256,
+                    ),
+                )
+                if _is_sha256(input_snapshot_sha256)
+                and _is_sha256(model_policy_sha256)
+                else None
+            )
+            if (
+                not isinstance(model_attempt_uid, str)
+                or not model_attempt_uid.strip()
+                or not _is_sha256(input_snapshot_sha256)
+                or not _is_sha256(model_policy_sha256)
+                or model_attempt_uid != expected_model_attempt_uid
+            ):
+                reason_codes.add("MODEL_ATTEMPT_PROVENANCE_UNAVAILABLE")
+                continue
+            if (
+                not isinstance(uncertainty_method, str)
+                or not uncertainty_method.strip()
+                or uncertainty_method != required_uncertainty_method
+                or uncertainty_status != f"available_{uncertainty_method}"
+            ):
+                reason_codes.add("CREDIBLE_MODEL_UNCERTAINTY_UNAVAILABLE")
+                continue
+            evidence_basis = getattr(attempt, "uncertainty_evidence_basis", ())
+            if (
+                not isinstance(evidence_basis, (tuple, list))
+                or not evidence_basis
+                or not all(
+                    isinstance(item, str) and bool(item.strip())
+                    for item in evidence_basis
+                )
+                or not required_uncertainty_evidence.issubset(set(evidence_basis))
+            ):
+                reason_codes.add("CREDIBLE_MODEL_UNCERTAINTY_EVIDENCE_INVALID")
+                continue
+            supported_maximum = finite_number(attempt.supported_max_yield_t_ha)
+            predictions: list[
+                tuple[float, float, float, float, float, float]
+            ] = []
+            invalid_prediction_evidence = False
+            for prediction in attempt.predictions:
+                rate = finite_number(prediction.get("n_rate_kg_ha"))
+                predicted_yield = finite_number(
+                    prediction.get("predicted_yield_t_ha")
+                )
+                standard_error = finite_number(
+                    prediction.get("fitted_mean_se_t_ha")
+                )
+                lower = finite_number(
+                    prediction.get("confidence_lower_95pct_t_ha")
+                )
+                upper = finite_number(
+                    prediction.get("confidence_upper_95pct_t_ha")
+                )
+                confidence_level = finite_number(
+                    prediction.get("confidence_level")
+                )
+                if (
+                    rate is None
+                    or predicted_yield is None
+                    or standard_error is None
+                    or standard_error < 0.0
+                    or lower is None
+                    or upper is None
+                    or lower > predicted_yield
+                    or upper < predicted_yield
+                    or not math.isclose(
+                        predicted_yield - lower,
+                        required_interval_critical_value * standard_error,
+                        rel_tol=1.0e-9,
+                        abs_tol=1.0e-12,
+                    )
+                    or not math.isclose(
+                        upper - predicted_yield,
+                        required_interval_critical_value * standard_error,
+                        rel_tol=1.0e-9,
+                        abs_tol=1.0e-12,
+                    )
+                    or confidence_level is None
+                    or not math.isclose(
+                        confidence_level,
+                        required_confidence_level,
+                        rel_tol=0.0,
+                        abs_tol=1.0e-12,
+                    )
+                ):
+                    invalid_prediction_evidence = True
+                    break
+                predictions.append(
+                    (
+                        rate,
+                        predicted_yield,
+                        standard_error,
+                        lower,
+                        upper,
+                        confidence_level,
+                    )
+                )
+            predictions.sort(key=lambda item: item[0])
+            prediction_grid = tuple(item[0] for item in predictions)
+            if invalid_prediction_evidence:
+                reason_codes.add("CREDIBLE_MODEL_UNCERTAINTY_EVIDENCE_INVALID")
+                continue
+            observed_n_min = finite_number(
+                getattr(attempt, "observed_n_min_kg_ha", None)
+            )
+            observed_n_max = finite_number(
+                getattr(attempt, "observed_n_max_kg_ha", None)
+            )
+            if (
+                len(predictions) != expected_grid_points
+                or len(set(prediction_grid)) != expected_grid_points
+                or observed_n_min is None
+                or observed_n_max is None
+                or observed_n_max <= observed_n_min
+            ):
+                reason_codes.add("CREDIBLE_MODEL_PREDICTION_GRID_DEFINITION_INVALID")
+                continue
+            expected_prediction_grid = tuple(
+                observed_n_min
+                + index
+                * (observed_n_max - observed_n_min)
+                / (expected_grid_points - 1)
+                for index in range(expected_grid_points)
+            )
+            if not all(
+                math.isclose(
+                    actual,
+                    expected,
+                    rel_tol=1.0e-12,
+                    abs_tol=1.0e-9,
+                )
+                for actual, expected in zip(
+                    prediction_grid,
+                    expected_prediction_grid,
+                )
+            ):
+                reason_codes.add("CREDIBLE_MODEL_PREDICTION_GRID_DEFINITION_INVALID")
+                continue
+            model_prediction_grids[model_name] = prediction_grid
+            model_prediction_intervals[model_name] = {
+                rate: {
+                    "predicted_yield_t_ha": predicted_yield,
+                    "fitted_mean_se_t_ha": standard_error,
+                    "confidence_lower_95pct_t_ha": lower,
+                    "confidence_upper_95pct_t_ha": upper,
+                    "confidence_level": confidence_level,
+                }
+                for (
+                    rate,
+                    predicted_yield,
+                    standard_error,
+                    lower,
+                    upper,
+                    confidence_level,
+                ) in predictions
+            }
+            model_prediction_evidence_sha256s[model_name] = stable_json_sha256(
+                {
+                    "model_attempt_uid": model_attempt_uid,
+                    "supported_max_yield_t_ha": supported_maximum,
+                    "observed_n_min_kg_ha": observed_n_min,
+                    "observed_n_max_kg_ha": observed_n_max,
+                    "uncertainty_status": uncertainty_status,
+                    "uncertainty_method": uncertainty_method,
+                    "uncertainty_evidence_basis": tuple(evidence_basis),
+                    "predictions": tuple(
+                        {
+                            "n_rate_kg_ha": rate,
+                            "predicted_yield_t_ha": predicted_yield,
+                            "fitted_mean_se_t_ha": standard_error,
+                            "confidence_lower_95pct_t_ha": lower,
+                            "confidence_upper_95pct_t_ha": upper,
+                            "confidence_level": confidence_level,
+                        }
+                        for (
+                            rate,
+                            predicted_yield,
+                            standard_error,
+                            lower,
+                            upper,
+                            confidence_level,
+                        ) in predictions
+                    ),
+                }
+            )
+            candidate_rate: float | None = None
+            qualifying_rates: set[float] = set()
+            if supported_maximum is None or supported_maximum <= 0.0:
+                reason_codes.add("SUPPORTED_MAXIMUM_UNAVAILABLE")
+                continue
+            for previous, current in zip(predictions, predictions[1:]):
+                previous_rate, previous_yield = previous[:2]
+                current_rate, current_yield = current[:2]
+                if (
+                    current_rate <= previous_rate
+                    or current_rate <= 0.0
+                ):
+                    continue
+                gain = (current_yield - previous_yield) / (
+                    current_rate - previous_rate
+                )
+                if (
+                    current_yield >= retention * supported_maximum
+                    and gain <= maximum_gain
+                ):
+                    qualifying_rates.add(current_rate)
+                    if candidate_rate is None:
+                        candidate_rate = current_rate
+            qualifying_rates_by_model[model_name] = qualifying_rates
+            if candidate_rate is None:
+                reason_codes.add("NO_IN_DOMAIN_RATE_SATISFIES_REVIEWED_THRESHOLDS")
+            else:
+                model_rates[model_name] = candidate_rate
+        status = "unavailable"
+        operating_rate: float | None = None
+        prediction_grid: tuple[float, ...] | None = None
+        common_input_snapshot = (
+            len(model_input_snapshot_sha256s) == len(attempts)
+            and len(set(model_input_snapshot_sha256s.values())) == 1
+        )
+        if not common_input_snapshot:
+            reason_codes.add("CREDIBLE_MODEL_INPUT_SNAPSHOT_MISMATCH")
+        common_model_policy = (
+            len(model_policy_sha256s) == len(attempts)
+            and len(set(model_policy_sha256s.values())) == 1
+        )
+        if not common_model_policy:
+            reason_codes.add("CREDIBLE_MODEL_POLICY_SNAPSHOT_MISMATCH")
+        if len(model_prediction_grids) == len(attempts) and model_prediction_grids:
+            distinct_grids = set(model_prediction_grids.values())
+            if len(distinct_grids) == 1:
+                prediction_grid = next(iter(distinct_grids))
+            else:
+                reason_codes.add("CREDIBLE_MODEL_PREDICTION_GRID_MISMATCH")
+        prediction_grid_sha256 = (
+            stable_json_sha256(
+                {
+                    "response_series_uid": series_uid,
+                    "n_rates_kg_ha": prediction_grid,
+                }
+            )
+            if prediction_grid is not None
+            else None
+        )
+        if (
+            prediction_grid is not None
+            and len(model_rates) == len(attempts)
+            and model_rates
+            and common_input_snapshot
+            and common_model_policy
+        ):
+            rate_values = tuple(model_rates.values())
+            if max(rate_values) - min(rate_values) <= concordance:
+                common_rates = set.intersection(
+                    *(qualifying_rates_by_model[model_name] for model_name in model_rates)
+                )
+                if common_rates:
+                    status = "available"
+                    operating_rate = min(common_rates)
+                else:
+                    reason_codes.add(
+                        "NO_COMMON_RATE_SATISFIES_ALL_CREDIBLE_MODELS"
+                    )
+            else:
+                reason_codes.add("CREDIBLE_MODEL_OPERATING_POINT_DISAGREEMENT")
+        selected_prediction_intervals = (
+            {
+                model_name: intervals[operating_rate]
+                for model_name, intervals in sorted(
+                    model_prediction_intervals.items()
+                )
+            }
+            if operating_rate is not None
+            else {}
+        )
+        identity = {
+            "response_series_uid": series_uid,
+            "efficiency_operating_point_policy_id": operating_policy["policy_id"],
+            "efficiency_operating_point_policy_sha256": operating_policy["authority"][
+                "artifact_sha256"
+            ],
+            "uncertainty_policy_id": operating_policy["uncertainty_policy_id"],
+            "uncertainty_method": required_uncertainty_method,
+            "prediction_grid_sha256": prediction_grid_sha256,
+            "model_attempt_uids": dict(sorted(model_attempt_uids.items())),
+            "model_input_snapshot_sha256s": dict(
+                sorted(model_input_snapshot_sha256s.items())
+            ),
+            "model_policy_sha256s": dict(sorted(model_policy_sha256s.items())),
+            "model_prediction_evidence_sha256s": dict(
+                sorted(model_prediction_evidence_sha256s.items())
+            ),
+            "status": status,
+            "operating_point_n_kg_ha": operating_rate,
+            "model_prediction_intervals_at_operating_point": (
+                selected_prediction_intervals
+            ),
+            "reason_codes": tuple(sorted(reason_codes)),
+        }
+        rows.append(
+            {
+                "efficiency_operating_point_uid": stable_identifier(
+                    "efficiency-operating-point",
+                    identity,
+                ),
+                **identity,
+                "basis": (
+                    "smallest_prediction_grid_rate_satisfying_all_credible_models"
+                ),
+                "yield_retention_fraction": retention,
+                "maximum_marginal_gain_t_ha_per_kg_n": maximum_gain,
+                "marginal_gain_method": operating_policy["marginal_gain_method"],
+                "model_concordance_tolerance_n_kg_ha": concordance,
+                "prediction_grid_points": expected_grid_points,
+                "prediction_grid_domain": operating_policy[
+                    "prediction_grid_domain"
+                ],
+                "prediction_grid_spacing": operating_policy[
+                    "prediction_grid_spacing"
+                ],
+                "uncertainty_disposition": operating_policy[
+                    "uncertainty_disposition"
+                ],
+                "uncertainty_decision_rule": operating_policy[
+                    "uncertainty_decision_rule"
+                ],
+                "model_specific_operating_points_n_kg_ha": dict(
+                    sorted(model_rates.items())
+                ),
+                "model_uncertainty_statuses": dict(
+                    sorted(model_uncertainty_statuses.items())
+                ),
+                "model_uncertainty_methods": dict(
+                    sorted(model_uncertainty_methods.items())
+                ),
+            }
+        )
+    return tuple(rows)
+
+
+def _approved_asymptote_support_policy(
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    raw = policy.get("asymptote_support_policy")
+    if not isinstance(raw, Mapping):
+        return None
+    numeric_fields = (
+        "minimum_in_domain_attainment_fraction",
+        "maximum_asymptote_relative_se",
+        "maximum_influence_relative_shift",
+        "maximum_credible_model_relative_difference",
+    )
+    values = {field: finite_number(raw.get(field)) for field in numeric_fields}
+    fold_count = raw.get("minimum_influence_fold_count")
+    authority = policy.get("scientific_policy_authority")
+    artifact_sha256 = (
+        authority.get("artifact_sha256")
+        if isinstance(authority, Mapping)
+        else None
+    )
+    if (
+        raw.get("review_status") != "approved"
+        or not isinstance(raw.get("policy_id"), str)
+        or not str(raw["policy_id"]).strip()
+        or values["minimum_in_domain_attainment_fraction"] is None
+        or not 0.0 < float(values["minimum_in_domain_attainment_fraction"]) <= 1.0
+        or any(
+            values[field] is None or float(values[field]) < 0.0
+            for field in numeric_fields[1:]
+        )
+        or not isinstance(fold_count, int)
+        or isinstance(fold_count, bool)
+        or fold_count < 1
+        or raw.get("maximum_associated_n_basis")
+        != "smallest_prediction_grid_rate_meeting_attainment_threshold"
+        or not isinstance(authority, Mapping)
+        or not isinstance(authority.get("approved_by"), str)
+        or not str(authority["approved_by"]).strip()
+        or not isinstance(authority.get("approved_on"), str)
+        or not str(authority["approved_on"]).strip()
+        or not isinstance(artifact_sha256, str)
+        or len(artifact_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in artifact_sha256
+        )
+    ):
+        return None
+    return {**dict(raw), **values, "authority": authority}
+
+
+def _asymptote_support_rows(
+    credible_attempts: Iterable[ModelAttempt],
+    *,
+    policy: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Evaluate every reviewed MOD-08 support criterion for asymptotic fits."""
+
+    support_policy = _approved_asymptote_support_policy(policy)
+    if support_policy is None:
+        return ()
+    grouped: dict[str, list[ModelAttempt]] = {}
+    for attempt in credible_attempts:
+        grouped.setdefault(attempt.response_series_uid, []).append(attempt)
+    rows: list[dict[str, Any]] = []
+    for series_uid, attempts in sorted(grouped.items()):
+        asymptotic = next(
+            (attempt for attempt in attempts if attempt.model_name == "mitscherlich"),
+            None,
+        )
+        if asymptotic is None:
+            continue
+        reasons: set[str] = set()
+        asymptote = finite_number(asymptotic.fitted_asymptote_yield_t_ha)
+        observed_peak = finite_number(
+            asymptotic.predicted_observed_domain_peak_yield_t_ha
+        )
+        attainment = (
+            observed_peak / asymptote
+            if observed_peak is not None and asymptote not in {None, 0.0}
+            else None
+        )
+        if (
+            attainment is None
+            or attainment
+            < float(support_policy["minimum_in_domain_attainment_fraction"])
+        ):
+            reasons.add("ASYMPTOTE_IN_DOMAIN_ATTAINMENT_INSUFFICIENT")
+        variance = finite_number(
+            asymptotic.feature_variances.get("fitted_asymptote_yield_t_ha")
+        )
+        relative_se = (
+            math.sqrt(variance) / abs(asymptote)
+            if variance is not None
+            and variance > 0.0
+            and asymptote not in {None, 0.0}
+            else None
+        )
+        if (
+            relative_se is None
+            or relative_se > float(support_policy["maximum_asymptote_relative_se"])
+        ):
+            reasons.add("ASYMPTOTE_PARAMETER_UNCERTAINTY_UNSUPPORTED")
+        influence_shift = finite_number(
+            asymptotic.asymptote_influence_max_relative_shift
+        )
+        if (
+            influence_shift is None
+            or asymptotic.asymptote_influence_fold_count
+            < int(support_policy["minimum_influence_fold_count"])
+            or influence_shift
+            > float(support_policy["maximum_influence_relative_shift"])
+        ):
+            reasons.add("ASYMPTOTE_INFLUENCE_UNSTABLE")
+        comparator_maxima = tuple(
+            value
+            for attempt in attempts
+            if attempt.model_name != "mitscherlich"
+            if (value := finite_number(attempt.supported_max_yield_t_ha)) is not None
+        )
+        concordance = (
+            max(abs(value - asymptote) / abs(asymptote) for value in comparator_maxima)
+            if comparator_maxima and asymptote not in {None, 0.0}
+            else None
+        )
+        if (
+            concordance is None
+            or concordance
+            > float(
+                support_policy["maximum_credible_model_relative_difference"]
+            )
+        ):
+            reasons.add("CREDIBLE_MODEL_ASYMPTOTE_CONCORDANCE_UNSUPPORTED")
+        associated_prediction: Mapping[str, Any] | None = None
+        if asymptote is not None:
+            threshold = (
+                float(support_policy["minimum_in_domain_attainment_fraction"])
+                * asymptote
+            )
+            associated_prediction = next(
+                (
+                    row
+                    for row in sorted(
+                        asymptotic.predictions,
+                        key=lambda row: float(row["n_rate_kg_ha"]),
+                    )
+                    if float(row["predicted_yield_t_ha"]) >= threshold
+                ),
+                None,
+            )
+        if associated_prediction is None:
+            reasons.add("MAXIMUM_ASSOCIATED_N_UNAVAILABLE")
+        status = "supported" if not reasons else "unsupported"
+        identity = {
+            "response_series_uid": series_uid,
+            "model_attempt_uid": asymptotic.model_attempt_uid,
+            "asymptote_support_policy_id": support_policy["policy_id"],
+            "asymptote_support_policy_sha256": support_policy["authority"][
+                "artifact_sha256"
+            ],
+        }
+        rows.append(
+            {
+                "asymptote_support_uid": stable_identifier(
+                    "asymptote-support",
+                    tuple(identity.values()),
+                ),
+                **identity,
+                "status": status,
+                "attainable_yield_t_ha": (
+                    float(associated_prediction["predicted_yield_t_ha"])
+                    if status == "supported" and associated_prediction is not None
+                    else None
+                ),
+                "attainable_yield_basis": "in_domain_fitted_attainment_threshold",
+                "maximum_associated_n_kg_ha": (
+                    float(associated_prediction["n_rate_kg_ha"])
+                    if status == "supported" and associated_prediction is not None
+                    else None
+                ),
+                "maximum_associated_n_basis": support_policy[
+                    "maximum_associated_n_basis"
+                ],
+                "in_domain_attainment_fraction": attainment,
+                "asymptote_relative_se": relative_se,
+                "asymptote_influence_max_relative_shift": influence_shift,
+                "asymptote_influence_fold_count": (
+                    asymptotic.asymptote_influence_fold_count
+                ),
+                "credible_model_maximum_relative_difference": concordance,
+                "reason_codes": tuple(sorted(reasons)),
+            }
+        )
+    return tuple(rows)
+
+
+def _promote_supported_asymptotes(
+    credible_attempts: Iterable[ModelAttempt],
+    support_rows: Iterable[Mapping[str, Any]],
+) -> tuple[ModelAttempt, ...]:
+    """Apply positive MOD-08 results without weakening the conservative hold."""
+
+    supported_ids = {
+        str(row.get("model_attempt_uid") or "")
+        for row in support_rows
+        if row.get("status") == "supported"
+    }
+    promoted: list[ModelAttempt] = []
+    for attempt in credible_attempts:
+        if attempt.model_attempt_uid not in supported_ids:
+            promoted.append(attempt)
+            continue
+        promoted.append(
+            replace(
+                attempt,
+                supported_max_yield_t_ha=attempt.fitted_asymptote_yield_t_ha,
+                maximum_reference_basis="supported_attainable_asymptote",
+                maximum_proximity_status="SUPPORTED_ASYMPTOTE",
+                reason_codes=tuple(
+                    sorted(
+                        (
+                            set(attempt.reason_codes)
+                            - {"ASYMPTOTE_SUPPORT_GATE_NOT_APPROVED"}
+                        )
+                        | {"ASYMPTOTE_SUPPORT_APPROVED"}
+                    )
+                ),
+            )
+        )
+    return tuple(promoted)
+
+
+def _approved_asymptote_reporting_policy(
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    raw = policy.get("asymptote_reporting_policy")
+    if not isinstance(raw, Mapping):
+        return None
+    fraction = finite_number(raw.get("asymptote_fraction"))
+    authority = policy.get("scientific_policy_authority")
+    artifact_sha256 = (
+        authority.get("artifact_sha256")
+        if isinstance(authority, Mapping)
+        else None
+    )
+    if (
+        raw.get("review_status") != "approved"
+        or not isinstance(raw.get("policy_id"), str)
+        or not str(raw["policy_id"]).strip()
+        or fraction is None
+        or not 0.0 < fraction < 1.0
+        or raw.get("reference_quantity") not in {"ceiling_level", "response_range"}
+        or raw.get("rate_label") != "N at q% of asymptote"
+        or not isinstance(raw.get("uncertainty_method"), str)
+        or not str(raw["uncertainty_method"]).strip()
+        or raw.get("scope") != "supported_mitscherlich_asymptote"
+        or not isinstance(authority, Mapping)
+        or not isinstance(authority.get("approved_by"), str)
+        or not str(authority["approved_by"]).strip()
+        or not isinstance(authority.get("approved_on"), str)
+        or not str(authority["approved_on"]).strip()
+        or not isinstance(artifact_sha256, str)
+        or len(artifact_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in artifact_sha256
+        )
+    ):
+        return None
+    return {**dict(raw), "authority": authority}
+
+
+def _asymptote_reporting_rows(
+    credible_attempts: Iterable[ModelAttempt],
+    *,
+    policy: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Materialize MOD-07 only after MOD-08 support and uncertainty are present."""
+
+    reporting_policy = _approved_asymptote_reporting_policy(policy)
+    if reporting_policy is None:
+        return ()
+    fraction = float(reporting_policy["asymptote_fraction"])
+    reference_quantity = str(reporting_policy["reference_quantity"])
+    rows: list[dict[str, Any]] = []
+    for attempt in sorted(
+        (item for item in credible_attempts if item.model_name == "mitscherlich"),
+        key=lambda item: item.response_series_uid,
+    ):
+        reasons: set[str] = set()
+        candidate_rate: float | None = None
+        asymptote = finite_number(attempt.fitted_asymptote_yield_t_ha)
+        supported = finite_number(attempt.supported_max_yield_t_ha)
+        amplitude = finite_number(attempt.parameters.get("amplitude"))
+        rate = finite_number(attempt.parameters.get("rate"))
+        observed_min = finite_number(attempt.observed_n_min_kg_ha)
+        observed_max = finite_number(attempt.observed_n_max_kg_ha)
+        if supported is None or asymptote is None:
+            reasons.add("MOD08_SUPPORTED_ASYMPTOTE_REQUIRED")
+        elif (
+            amplitude is None
+            or amplitude <= 0.0
+            or rate is None
+            or rate <= 0.0
+            or observed_min is None
+            or observed_max is None
+        ):
+            reasons.add("ASYMPTOTE_FRACTION_RATE_UNIDENTIFIABLE")
+        else:
+            # `ceiling_level` solves mu(N) = q * (l + A); `response_range` solves
+            # A * (1 - exp(-rN)) = q * A, which reduces to the scale-free
+            # -ln(1 - q) / r and cannot degenerate.
+            ratio = (
+                asymptote * (1.0 - fraction) / amplitude
+                if reference_quantity == "ceiling_level"
+                else 1.0 - fraction
+            )
+            if ratio <= 0.0:
+                reasons.add("ASYMPTOTE_FRACTION_RATE_UNIDENTIFIABLE")
+            else:
+                solved_rate = -math.log(ratio) / rate
+                # Both domain edges refuse. Clamping the lower edge up to
+                # observed_min would publish the domain floor as though the
+                # criterion had been solved there, paired with the standard
+                # error of the unclamped solution -- an interval that does not
+                # cover the quantity actually reported.
+                if solved_rate < observed_min:
+                    reasons.add("ASYMPTOTE_FRACTION_ALREADY_ATTAINED_AT_DOMAIN_FLOOR")
+                elif solved_rate > observed_max:
+                    reasons.add("ASYMPTOTE_FRACTION_NOT_REACHED_IN_DOMAIN")
+                else:
+                    candidate_rate = solved_rate
+        variance = finite_number(
+            attempt.feature_variances.get(
+                "asymptote_fraction_reporting_n_kg_ha"
+            )
+        )
+        if variance is None or variance <= 0.0:
+            reasons.add("ASYMPTOTE_FRACTION_RATE_UNCERTAINTY_UNAVAILABLE")
+        status = "available" if candidate_rate is not None and not reasons else "unavailable"
+        identity = {
+            "response_series_uid": attempt.response_series_uid,
+            "model_attempt_uid": attempt.model_attempt_uid,
+            "asymptote_reporting_policy_id": reporting_policy["policy_id"],
+            "asymptote_reporting_policy_sha256": reporting_policy["authority"][
+                "artifact_sha256"
+            ],
+        }
+        rows.append(
+            {
+                "asymptote_reporting_uid": stable_identifier(
+                    "asymptote-reporting",
+                    tuple(identity.values()),
+                ),
+                **identity,
+                "status": status,
+                "rate_label": reporting_policy["rate_label"],
+                "asymptote_fraction": fraction,
+                "asymptote_reference_quantity": reference_quantity,
+                "asymptote_fraction_n_kg_ha": (
+                    candidate_rate if status == "available" else None
+                ),
+                "asymptote_fraction_n_se_kg_ha": (
+                    math.sqrt(variance)
+                    if status == "available" and variance is not None
+                    else None
+                ),
+                "uncertainty_method": reporting_policy["uncertainty_method"],
+                "fitted_asymptote_yield_t_ha": asymptote,
+                "supported_max_yield_t_ha": supported,
+                "basis": "analytic_mitscherlich_fraction_of_asymptote",
+                "reason_codes": tuple(sorted(reasons)),
+            }
+        )
+    return tuple(rows)
+
+
 def _environmental_risk_rows(
     records: Iterable[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
