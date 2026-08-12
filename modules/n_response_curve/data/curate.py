@@ -851,6 +851,58 @@ def validate_reviewed_curation_controls(
                 )
 
 
+def validate_restricted_column_coverage(
+    ingestion: IngestionResult,
+    *,
+    source_maps: Mapping[str, ReviewedSourceMap],
+    restricted_policy: RestrictedDataPolicy | None,
+) -> None:
+    """Require the restricted policy to classify every restricted column of every restricted source.
+
+    Decided `SRC-08` Option A releases only approved aggregated geography and runs an
+    automated disclosure scan. Both depend on the policy's `identifier_fields`,
+    `precise_location_fields`, and `detailed_location_fields`, which are self-declared:
+    a restricted column omitted from all three is invisible to them. This reconciles
+    those lists against the reviewed source map, so an omission fails when the policy is
+    bound instead of surfacing only if a projection happens to name the column.
+    """
+
+    for source in ingestion.sources:
+        if source.data_classification != "restricted":
+            continue
+        source_map = source_maps.get(source.source_name)
+        if source_map is None:
+            continue
+        restricted_fields = {
+            disposition.canonical_field.strip()
+            for disposition in source_map.dispositions
+            if disposition.role == "restricted"
+            and isinstance(disposition.canonical_field, str)
+            and disposition.canonical_field.strip()
+        }
+        if not restricted_fields:
+            continue
+        if restricted_policy is None:
+            raise ValueError(
+                f"Source {source.source_name!r} is restricted and dispositions restricted "
+                "column(s), but no reviewed restricted-data policy is bound: "
+                + ", ".join(sorted(restricted_fields))
+            )
+        classified = {
+            *restricted_policy.identifier_fields,
+            *restricted_policy.precise_location_fields,
+            *restricted_policy.detailed_location_fields,
+        }
+        unclassified = sorted(restricted_fields - classified)
+        if unclassified:
+            raise ValueError(
+                "Restricted-data policy does not classify every restricted column of "
+                f"source {source.source_name!r}; the reviewer must place each in an "
+                "identifier, precise-location, or detailed-location list: "
+                + ", ".join(unclassified)
+            )
+
+
 def _legacy_source_map(source: IngestedSource, config: Any) -> ReviewedSourceMap:
     schema = config.raw["schema"]
     schema_fields: Mapping[str, Mapping[str, Any]] = schema["fields"]
