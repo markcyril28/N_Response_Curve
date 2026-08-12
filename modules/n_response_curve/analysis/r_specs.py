@@ -679,6 +679,7 @@ def prepare_r_analysis(
                 {},
                 normalized,
                 stable_key,
+                membership_rows,
             )
     minimum_rows = 8 if observation_level else max(4, len(candidate.factor_names) + 3)
     if len(normalized) < minimum_rows:
@@ -688,6 +689,7 @@ def prepare_r_analysis(
             {},
             normalized,
             stable_key,
+            membership_rows,
         )
     studies = {str(row["study_uid"]) for row in normalized}
     minimum_studies = 3 if observation_level else 2
