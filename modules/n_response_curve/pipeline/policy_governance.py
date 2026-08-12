@@ -965,14 +965,42 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
         if not bool(config.raw["outputs"]["row_level_qc"]):
             raise ConfigError("Writing modes require complete machine-readable row-level QC")
 
-    content = _policy_content(config)
-    content_hash = stable_json_sha256(content)
-    enablement = dict(content["effective_enablement"])
+    snapshot_path: Path | None = None
+    if config.run_mode == "full":
+        snapshot_path = (
+            config.paths["run_metadata_root"]
+            / "approvals"
+            / "policy_snapshots"
+            / "full.json"
+        ).resolve()
+        if not snapshot_path.is_relative_to(config.project_root):
+            raise ConfigError("Approved policy snapshot path escapes the project root")
+        if not snapshot_path.is_file():
+            raise ConfigError(
+                "The requested authoritative operation requires a standalone approved policy snapshot"
+            )
+
+    review_gate_path = _review_gate_policy_path(config)
     authority_matrix = None
-    if _enabled_restricted_sources(config):
+    if (
+        config.run_mode == "full"
+        or _enabled_restricted_sources(config)
+        or review_gate_path.is_file()
+    ):
         authority_matrix = load_approval_authority_matrix(
             _authority_matrix_path(config)
         )
+    review_gate_policy = (
+        load_review_gate_policy(
+            review_gate_path,
+            authority_matrix=authority_matrix,
+        )
+        if review_gate_path.is_file() and authority_matrix is not None
+        else None
+    )
+    content = _policy_content(config, review_gate_policy, authority_matrix)
+    content_hash = stable_json_sha256(content)
+    enablement = dict(content["effective_enablement"])
     if config.run_mode != "full":
         return RuntimePolicySnapshot(
             mode=config.run_mode,
