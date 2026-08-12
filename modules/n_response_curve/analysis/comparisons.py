@@ -196,6 +196,9 @@ def build_management_system_proximity(
     dataset_version_status: str = "not_bound",
     dataset_membership_sha256: str | None = None,
     dataset_record_uids: Iterable[str] | None = None,
+    membership_status_field: str = "recommendation_set_membership_status",
+    verified_membership_status: str = "verified_context_comparable",
+    membership_review_id_field: str = "recommendation_set_review_id",
 ) -> tuple[ManagementSystemProximity, ...]:
     """Build system-specific maximum and recommendation-target gaps.
 
@@ -243,17 +246,32 @@ def build_management_system_proximity(
     for context_uid in sorted(rows_by_context):
         context_records = rows_by_context[context_uid]
         verified_context = context_uid in verified_context_ids
+        context_review_ids = {
+            str(record.get(membership_review_id_field) or "").strip()
+            for record in context_records
+            if record.get(membership_status_field) == verified_membership_status
+            and str(record.get(membership_review_id_field) or "").strip()
+        }
+        review_authority_conflict = len(context_review_ids) > 1
         rcm_targets = sorted(
             {
                 value
                 for record in context_records
                 if record.get("treatment_text_class") == "RCM"
+                and _has_verified_comparability(
+                    record,
+                    membership_status_field=membership_status_field,
+                    verified_membership_status=verified_membership_status,
+                    membership_review_id_field=membership_review_id_field,
+                )
                 and (value := finite_number(record.get("target_yield_t_ha"))) is not None
             }
         )
 
         for system_class in MANAGEMENT_SYSTEM_CLASSES:
             reasons: set[str] = set()
+            if review_authority_conflict:
+                reasons.add("COMPARABILITY_REVIEW_AUTHORITY_CONFLICT")
             if not verified_context:
                 reasons.add("COMPARISON_SET_UID_REQUIRED")
             if dataset_version_id is None or dataset_version_status != "available":
@@ -271,6 +289,21 @@ def build_management_system_proximity(
                 and finite_number(record.get("n_rate_kg_ha")) is not None
                 and finite_number(record.get("yield_t_ha")) is not None
             ]
+            comparable_system_records = [
+                record
+                for record in system_records
+                if _has_verified_comparability(
+                    record,
+                    membership_status_field=membership_status_field,
+                    verified_membership_status=verified_membership_status,
+                    membership_review_id_field=membership_review_id_field,
+                )
+            ]
+            comparability_verified = bool(system_records) and len(
+                comparable_system_records
+            ) == len(system_records) and not review_authority_conflict
+            if system_records and not comparability_verified:
+                reasons.add("COMPARABILITY_EVIDENCE_REQUIRED")
             system_series_uids = sorted(
                 {
                     str(record.get("response_series_uid") or "")
@@ -307,22 +340,33 @@ def build_management_system_proximity(
             if not system_records:
                 status = "unavailable"
                 source_record_uid = None
+                treatment_uid = None
                 system_n_rate = None
                 system_yield = None
                 yield_basis = "unavailable"
                 reasons.add("MANAGEMENT_SYSTEM_NOT_OBSERVED")
-            elif len(system_records) > 1:
+            elif not comparability_verified:
                 status = "unavailable"
                 source_record_uid = None
+                treatment_uid = None
+                system_n_rate = None
+                system_yield = None
+                yield_basis = "unavailable"
+            elif len(comparable_system_records) > 1:
+                status = "unavailable"
+                source_record_uid = None
+                treatment_uid = None
                 system_n_rate = None
                 system_yield = None
                 yield_basis = "unavailable"
                 reasons.add("MANAGEMENT_SYSTEM_OBSERVATION_AMBIGUOUS")
             else:
                 status = "available"
-                source_record_uid = str(system_records[0].get("record_uid") or "") or None
-                system_n_rate = finite_number(system_records[0].get("n_rate_kg_ha"))
-                system_yield = finite_number(system_records[0].get("yield_t_ha"))
+                selected_record = comparable_system_records[0]
+                source_record_uid = str(selected_record.get("record_uid") or "") or None
+                treatment_uid = str(selected_record.get("treatment_uid") or "") or None
+                system_n_rate = finite_number(selected_record.get("n_rate_kg_ha"))
+                system_yield = finite_number(selected_record.get("yield_t_ha"))
                 yield_basis = "observed_within_comparison_set"
 
             if system_yield is not None and supported_max is not None:
@@ -376,6 +420,7 @@ def build_management_system_proximity(
                     system_class=system_class,
                     status=status,
                     source_record_uid=source_record_uid,
+                    treatment_uid=treatment_uid,
                     system_n_rate_kg_ha=system_n_rate,
                     n_rate_unit="kg N/ha",
                     yield_at_system_rate_t_ha=system_yield,
@@ -396,9 +441,17 @@ def build_management_system_proximity(
                     target_gap_direction=target_gap_direction,
                     target_population=MANAGEMENT_SYSTEM_TARGET_POPULATION,
                     same_context_status=(
-                        "verified_comparison_set_uid"
-                        if verified_context
-                        else "unavailable_missing_comparison_set_uid"
+                        "unavailable_missing_comparison_set_uid"
+                        if not verified_context
+                        else (
+                            "unavailable_unverified_comparability"
+                            if system_records and not comparability_verified
+                            else (
+                                "verified_comparison_set_and_treatment_identity"
+                                if system_records
+                                else "verified_comparison_set_uid"
+                            )
+                        )
                     ),
                     reason_codes=tuple(sorted(reasons)),
                 )
