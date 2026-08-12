@@ -181,6 +181,7 @@ class SupportRule:
     minimum_residual_df: int
     maximum_missing_fraction: float
     maximum_factor_cardinality: int
+    maximum_loso_studies: int
     sensitivity_checks: tuple[Mapping[str, Any], ...]
 
 
@@ -232,6 +233,7 @@ class EffectiveHypothesis:
     analysis_family: str
     factor_names: tuple[str, ...]
     grouping: tuple[str, ...]
+    model_specification: Mapping[str, Any]
     support_rule_id: str
     engine: str
     multiplicity_family_id: str
