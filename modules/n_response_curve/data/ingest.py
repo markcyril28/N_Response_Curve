@@ -565,8 +565,10 @@ def ingest_configured_sources(
                     if source_name in representation_bases
                     else "review_required"
                 ),
-                checksum_revision_approval=revision_approvals.get(source_name),
+                checksum_revision_approval=revision_approval,
                 checksum_revision_artifact_path=manifest_relative_path,
+                candidate_workbook_path=candidate_workbook_path,
+                candidate_sheet=candidate_sheet,
                 designated_reviewers=designated_reviewers,
             )
         )
