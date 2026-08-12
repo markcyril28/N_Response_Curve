@@ -499,6 +499,47 @@ def run_phase_three(
     )
 
 
+def _validate_source_combination_authority(
+    source_combinations: Sequence[Any],
+    *,
+    enabled_sources: Sequence[str],
+    hypothesis_specifications: Sequence[Any] | None,
+    analysis_policy_bound: bool,
+) -> None:
+    """Keep deferred source sensitivities inert unless a reviewed snapshot names them."""
+
+    complete_source_set = tuple(
+        sorted({str(source) for source in enabled_sources if str(source)})
+    )
+    deferred_combinations = tuple(
+        combination
+        for combination in source_combinations
+        if tuple(combination.source_families) != complete_source_set
+    )
+    if not deferred_combinations:
+        return
+    approved_ids = {
+        str(
+            specification.get("source_combination_id")
+            if isinstance(specification, Mapping)
+            else getattr(specification, "source_combination_id", "")
+        )
+        for specification in (hypothesis_specifications or ())
+    }
+    unauthorized_ids = sorted(
+        combination.combination_id
+        for combination in deferred_combinations
+        if not analysis_policy_bound
+        or combination.combination_id not in approved_ids
+    )
+    if unauthorized_ids:
+        raise ConfigError(
+            "ANA-02 defers source-family sensitivity views until a hash-bound "
+            "hypothesis snapshot explicitly names them; unauthorized source "
+            f"combination(s): {', '.join(unauthorized_ids)}"
+        )
+
+
 def run_phase_four(
     config: ValidatedConfig,
     phase_two: Any,
