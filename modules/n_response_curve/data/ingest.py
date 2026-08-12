@@ -234,6 +234,9 @@ def ingest_csv(
             artifact_path=checksum_revision_artifact_path,
             prior_encoding=encoding,
             candidate_encoding=encoding,
+            candidate_data_classification=data_classification,
+            candidate_workbook_path=candidate_workbook_path,
+            candidate_sheet=candidate_sheet,
             designated_reviewers=designated_reviewers,
         )
         revision_comparison_sha256 = comparison.comparison_sha256
@@ -443,6 +446,7 @@ def ingest_configured_sources(
     for source_name in config.enabled_sources:
         source_path = _configured_source_path(config, source_name)
         source_config = config.sources[source_name]
+        revision_approval = revision_approvals.get(source_name)
         schema_map_path = (config.project_root / str(source_config["schema_map"])).resolve()
         if not schema_map_path.is_file():
             raise ConfigError(f"Schema map for enabled source does not exist: {schema_map_path}")
@@ -510,6 +514,13 @@ def ingest_configured_sources(
                     f"Configured CSV for {source_name!r} differs from the reviewed CSV checksum"
                 )
             workbook_csv_basis = "parallel_workbook_csv_verified_equivalent"
+        candidate_workbook_path = None
+        workbook_value = source_config.get("workbook")
+        if isinstance(workbook_value, str) and workbook_value.strip():
+            candidate_workbook_path = (config.project_root / workbook_value).resolve()
+        candidate_sheet = source_config.get("sheet")
+        if candidate_sheet is not None and not isinstance(candidate_sheet, str):
+            raise ConfigError(f"Configured sheet for {source_name!r} must be text")
         adapter_version = str(source_config["shape_adapter_version"])
         if adapter_version in configured_specs:
             adapter_spec = configured_specs[adapter_version]
