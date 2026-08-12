@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 import json
 import math
@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from ..data.provenance import sha256_file
+from .analysis_matrix import INFERENTIAL_ANALYSIS_FAMILIES
 from .claims import validate_claim_policy
 from .reviewed_methods import (
     ECONOMIC_DECISION_RULE,
