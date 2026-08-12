@@ -9,6 +9,7 @@ import re
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
+from .config import KNOWN_FILL_DOWN_FIELDS
 from .ingest import (
     KNOWN_REPRESENTATION_BASES,
     IngestedSource,
