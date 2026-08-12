@@ -1184,6 +1184,13 @@ def resolve_response_series(
                 status = "repeat_review_required"
                 reason = "REPEAT_CLASSIFICATION_REQUIRED"
             elif adjudication.classification == "exchangeable_replicates":
+                if _shared_duplicate_group_uids(
+                    same_n_records,
+                    relationship="exact_duplicate_distinct",
+                ):
+                    raise ValueError(
+                        "Records adjudicated as distinct trials cannot be aggregated as replicates"
+                    )
                 if different_management:
                     raise ValueError(
                         "Exchangeable replicate adjudication spans different management"
