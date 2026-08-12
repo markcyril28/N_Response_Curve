@@ -487,7 +487,29 @@ def apply_final_cleaning(
         source_name = record.get("source_name")
         if not isinstance(record_uid, str) or not record_uid:
             raise ValueError("Final cleaning requires a stable record_uid on every record")
-        policy = policies.get(str(source_name))
+        prepared.append(record)
+
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for record in prepared:
+        by_source.setdefault(str(record.get("source_name")), []).append(record)
+    grouped_outcomes: dict[tuple[str, str], dict[str, str]] = {}
+    for source_name, source_records in by_source.items():
+        policy = policies.get(source_name)
+        if policy is None:
+            continue
+        for rule in policy.rules:
+            if rule.rule_type in _GROUPED_RULE_TYPES:
+                grouped_outcomes[(source_name, rule.rule_id)] = _grouped_rule_outcomes(
+                    source_records,
+                    rule,
+                )
+
+    cleaned: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
+    for record in prepared:
+        record_uid = str(record["record_uid"])
+        source_name = str(record.get("source_name"))
+        policy = policies.get(source_name)
         if policy is None:
             record.update(
                 {
@@ -495,7 +517,9 @@ def apply_final_cleaning(
                     "cleaning_review_id": None,
                     "cleaning_reviewer": None,
                     "cleaning_reviewed_on": None,
+                    "cleaning_prespecification_status": None,
                     "cleaning_rule_ids": (),
+                    "cleaning_unevaluable_rule_ids": (),
                     "cleaning_reason_codes": ("FINAL_CLEANING_POLICY_REQUIRED",),
                     "cleaning_review_status": "review_required",
                     "final_analytical_membership_status": "review_required",
@@ -503,12 +527,29 @@ def apply_final_cleaning(
                 }
             )
         else:
-            matches = tuple(rule for rule in policy.rules if _rule_matches(record, rule))
+            matches: list[FinalCleaningRule] = []
+            unevaluable_rule_ids: set[str] = set()
+            unevaluable_reasons: set[str] = set()
+            for rule in policy.rules:
+                outcomes = grouped_outcomes.get((source_name, rule.rule_id))
+                if outcomes is None:
+                    if _rule_matches(record, rule):
+                        matches.append(rule)
+                    continue
+                outcome = outcomes.get(record_uid, _RULE_NOT_MATCHED)
+                if outcome == _RULE_MATCHED:
+                    matches.append(rule)
+                elif outcome != _RULE_NOT_MATCHED:
+                    unevaluable_rule_ids.add(rule.rule_id)
+                    unevaluable_reasons.add(outcome)
             actions = {rule.action for rule in matches}
             if "exclude_primary" in actions:
                 membership = "excluded"
                 review_status = "resolved_excluded"
                 record["analytical_record_status"] = "excluded_by_final_cleaning"
+            elif unevaluable_reasons:
+                membership = "review_required"
+                review_status = "review_required"
             elif "flag_only" in actions:
                 membership = "included_flagged"
                 review_status = "resolved_flagged"
@@ -521,9 +562,13 @@ def apply_final_cleaning(
                     "cleaning_review_id": policy.review_id,
                     "cleaning_reviewer": policy.reviewed_by,
                     "cleaning_reviewed_on": policy.reviewed_on,
+                    "cleaning_prespecification_status": policy.prespecification_status,
                     "cleaning_rule_ids": tuple(sorted(rule.rule_id for rule in matches)),
+                    "cleaning_unevaluable_rule_ids": tuple(sorted(unevaluable_rule_ids)),
                     "cleaning_reason_codes": tuple(
-                        sorted(rule.reason_code for rule in matches)
+                        sorted(
+                            {rule.reason_code for rule in matches} | unevaluable_reasons
+                        )
                     ),
                     "cleaning_review_status": review_status,
                     "final_analytical_membership_status": membership,
