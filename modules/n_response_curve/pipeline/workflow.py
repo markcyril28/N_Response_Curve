@@ -3275,6 +3275,8 @@ def _report_sections(
             f"Observed-to-maximum proximity distribution: {_format_counts(maximum_counts)}.",
             f"Evidence-strength distribution: {_format_counts(evidence_strength_counts)}; two-level contrasts remain weaker evidence rather than fitted curves.",
             f"Management-system proximity rows: {_format_counts(management_status_counts)}; target-gap statuses: {_format_counts(management_target_counts)}.",
+            f"N-efficiency evidence statuses: {_format_counts(efficiency_status_counts)}; operating-point statuses: {_format_counts(operating_point_status_counts)}.",
+            f"Asymptote-support statuses: {_format_counts(asymptote_support_status_counts)}; fraction-rate reporting statuses: {_format_counts(asymptote_reporting_status_counts)}.",
             _economic_report_line(phase_three.evidence.economic_optimum_rows),
             "Context-stratified series coverage: "
             + ("; ".join(context_parts) if context_parts else "no comparison dimensions configured")
