@@ -13,19 +13,36 @@ from typing import Any, Iterable, Mapping
 _CONTEXT_FIELD_ALIASES = {
     "water_regime": "water_regime_normalized",
     "season": "season_normalized",
-    "variety": "rice_variety",
+    "region": "region_normalized",
+    "province": "province_normalized",
+    "variety": "rice_variety_normalized",
     "recommendation_class": "treatment_text_class",
+}
+_RAW_CONTEXT_FIELD_ALIASES = {
+    "variety": "rice_variety",
+    "recommendation_class": "treatment",
 }
 _MISSING_CONTEXT_VALUES = {"", "na", "n/a", "not stated", "none", "unresolved"}
 _MIXED_CONTEXT_SEPARATOR = re.compile(r"[,;/]|\b(?:and|or)\b", re.IGNORECASE)
+_INTRINSIC_SERIES_IDENTITY_DIMENSIONS = (
+    "site_uid",
+    "experimental_design",
+    "p_rate_kg_p2o5_ha",
+    "k_rate_kg_k2o_ha",
+    "organic_fertilizer_present",
+    "biofertilizer_present",
+    "n_timing_pattern",
+    "n_split",
+)
 _DUPLICATE_STATUS_PRIORITY = {
     "exact_duplicate_noncanonical": 0,
     "probable_duplicate_noncanonical": 1,
     "probable_duplicate_review": 2,
     "exact_duplicate_canonical": 3,
     "probable_duplicate_canonical": 4,
-    "unique": 5,
-    "not_assessed": 6,
+    "exact_duplicate_distinct": 5,
+    "unique": 6,
+    "not_assessed": 7,
 }
 _REPEAT_CLASSIFICATIONS = {
     "exchangeable_replicates",
