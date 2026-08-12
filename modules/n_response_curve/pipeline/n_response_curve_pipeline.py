@@ -170,6 +170,99 @@ def _load_source_data_policy(
         raise ConfigError(f"Source-data policy validation failed: {exc}") from exc
 
 
+def _plan_literature_verification(
+    source_data_policy: SourceDataPolicyBundle,
+    records: tuple[dict[str, Any], ...] | list[dict[str, Any]] | Any,
+) -> VerificationRound | None:
+    """Execute the authenticated SRC-07 sampling policy for its exact source scope."""
+
+    policy = getattr(source_data_policy, "literature_verification_policy", None)
+    if policy is None:
+        return None
+    source_names = set(
+        getattr(source_data_policy, "literature_verification_source_names", ())
+    )
+    scoped_records = tuple(
+        record
+        for record in records
+        if str(record.get("source_name") or "") in source_names
+    )
+    if not scoped_records:
+        raise ConfigError(
+            "Literature-verification policy matched no records in the curated inventory"
+        )
+    try:
+        return plan_literature_verification_round(
+            scoped_records,
+            policy=policy,
+            completed_results=(
+                getattr(source_data_policy, "literature_verification_results", ())
+            ),
+            designated_reviewers=source_data_policy.designated_reviewers,
+        )
+    except ConfigError as exc:
+        raise ConfigError(f"Literature-verification planning failed: {exc}") from exc
+
+
+def _reviewed_source_adapter_specs(
+    config: ValidatedConfig,
+    source_data_policy: SourceDataPolicyBundle,
+) -> dict[str, SourceAdapterSpec]:
+    """Materialize versioned ingest contracts from approved source maps."""
+
+    specs: dict[str, SourceAdapterSpec] = {}
+    for source_name in config.enabled_sources:
+        source_map = source_data_policy.source_maps[source_name]
+        positions = [disposition.position for disposition in source_map.dispositions]
+        maximum_position = max(positions, default=0)
+        if (
+            maximum_position < 1
+            or len(positions) != maximum_position
+            or set(positions) != set(range(1, maximum_position + 1))
+        ):
+            raise ConfigError(
+                f"Reviewed source map for {source_name!r} must cover every physical column exactly once"
+            )
+        adapter_version = config.sources[source_name].get("shape_adapter_version")
+        if (
+            not isinstance(adapter_version, str)
+            or not adapter_version.strip()
+            or adapter_version == "unassigned"
+        ):
+            raise ConfigError(
+                f"Enabled source {source_name!r} lacks an assigned shape adapter version"
+            )
+        builtin_spec = BUILTIN_ADAPTER_SPECS.get(adapter_version)
+        if builtin_spec is not None and (
+            maximum_position != builtin_spec.expected_physical_columns
+            or any(
+                source_map.expected_headers.get(position) != expected_header
+                for position, expected_header in builtin_spec.expected_headers.items()
+            )
+        ):
+            raise ConfigError(
+                f"Reviewed source map for {source_name!r} conflicts with built-in adapter {adapter_version!r}"
+            )
+        spec = SourceAdapterSpec(
+            version=adapter_version,
+            expected_physical_columns=maximum_position,
+            expected_headers=source_map.expected_headers,
+            map_version=source_map.map_version,
+            expected_header_sha256=(
+                builtin_spec.expected_header_sha256
+                if builtin_spec is not None
+                else None
+            ),
+        )
+        existing = specs.get(adapter_version)
+        if existing is not None and existing != spec:
+            raise ConfigError(
+                f"Shape adapter version {adapter_version!r} resolves to conflicting reviewed source maps"
+            )
+        specs[adapter_version] = spec
+    return specs
+
+
 def run_phase_two(
     config: ValidatedConfig,
     *,
