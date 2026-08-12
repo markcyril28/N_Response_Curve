@@ -351,7 +351,10 @@ def run_phase_two(
     final_cleaning: FinalCleaningResult | None = None
     if source_data_policy is not None:
         final_cleaning = apply_final_cleaning(
-            (*resolution.records, *resolution.aggregate_records),
+            (
+                *untrimmed_resolution.records,
+                *untrimmed_resolution.aggregate_records,
+            ),
             source_data_policy.final_cleaning_policies,
         )
         cleaned_by_uid = {
