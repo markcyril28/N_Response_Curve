@@ -5,6 +5,7 @@ from datetime import date, datetime
 import json
 from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from n_response_curve.analysis.analysis_matrix import build_source_combinations
@@ -14,14 +15,25 @@ from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 
 _POLICY_SNAPSHOT_SCHEMA_VERSION = 1
 _AUTHORITY_MATRIX_SCHEMA_VERSION = 1
+_REVIEW_GATE_POLICY_SCHEMA_VERSION = 1
+_RELEASE_APPROVAL_SCHEMA_VERSION = 1
 _APPROVED_STATUS = "APPROVED"
 _SAFE_APPROVAL_TEXT = re.compile(r"^[^\x00-\x1f\x7f]+$")
+_FATAL_REVIEW_ISSUE_STATES = ("structural", "unresolved", "warning")
 _AUTHORITY_GATES = (
     "source_integrity",
     "restricted_data",
     "scientific_methods",
     "runtime_integrity",
     "release_promotion",
+)
+_AUTHORITY_POLICY_VALUES = MappingProxyType(
+    {
+        "role_combination_policy": "accountable_parties_must_be_distinct",
+        "substitution_policy": "no_substitution",
+        "recusal_policy": "matrix_approval_preclears_assigned_parties",
+        "dual_approval_policy": "single_accountable_party_approval",
+    }
 )
 
 
