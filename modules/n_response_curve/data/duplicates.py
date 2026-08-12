@@ -830,6 +830,66 @@ def _validated_repeat_adjudications(
     return indexed
 
 
+def _apply_reviewed_management_splits(
+    candidate_groups: Mapping[tuple[object, ...], list[dict[str, Any]]],
+    comparison_keys: Mapping[tuple[object, ...], tuple[object, ...]],
+    reviewed_repeats: Mapping[tuple[str, ...], RepeatAdjudication],
+) -> tuple[
+    dict[tuple[object, ...], list[dict[str, Any]]],
+    dict[tuple[object, ...], tuple[object, ...]],
+    set[tuple[str, ...]],
+]:
+    split_groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
+    split_comparison_keys: dict[tuple[object, ...], tuple[object, ...]] = {}
+    used_adjudications: set[tuple[str, ...]] = set()
+    management_adjudications = tuple(
+        adjudication
+        for adjudication in reviewed_repeats.values()
+        if adjudication.classification == "management_variant"
+        and adjudication.management_split_assignments
+    )
+    for key, group in candidate_groups.items():
+        group_uids = {str(record["record_uid"]) for record in group}
+        applicable = tuple(
+            adjudication
+            for adjudication in management_adjudications
+            if set(adjudication.record_uids).issubset(group_uids)
+            and set(adjudication.management_split_assignments or {}) == group_uids
+        )
+        if not applicable:
+            split_groups[key] = group
+            split_comparison_keys[key] = comparison_keys[key]
+            continue
+        assignment_signatures = {
+            tuple(sorted((adjudication.management_split_assignments or {}).items()))
+            for adjudication in applicable
+        }
+        if len(assignment_signatures) != 1:
+            raise ValueError(
+                "Management-variant adjudications define conflicting complete-series splits"
+            )
+        adjudication = applicable[0]
+        assignments = adjudication.management_split_assignments or {}
+        for record in group:
+            split_id = assignments[str(record["record_uid"])]
+            split_key = (
+                *key,
+                "reviewed_management_split",
+                adjudication.review_id,
+                split_id,
+            )
+            split_groups.setdefault(split_key, []).append(record)
+            split_comparison_keys[split_key] = comparison_keys[key]
+            record["management_split_id"] = split_id
+            record["management_split_review_id"] = adjudication.review_id
+            record["management_split_reviewer"] = adjudication.reviewer
+            record["management_split_reviewed_on"] = adjudication.reviewed_on
+        used_adjudications.update(
+            tuple(sorted(item.record_uids)) for item in applicable
+        )
+    return split_groups, split_comparison_keys, used_adjudications
+
+
 def _repeat_aggregate(
     records: list[dict[str, Any]],
     *,
