@@ -369,6 +369,18 @@ def validate_reviewed_lookup_table(lookup: ReviewedLookupTable) -> None:
     _reviewed_lookup_alias_owners(lookup)
 
 
+def validate_reviewed_missing_state_table(lookup: ReviewedLookupTable) -> None:
+    """Restrict field-specific maps to the approved missing-state vocabulary."""
+
+    validate_reviewed_lookup_table(lookup)
+    unknown_states = set(lookup.aliases) - KNOWN_MISSING_STATE_CLASSES
+    if unknown_states:
+        raise ValueError(
+            "Missing-state lookup contains unsupported canonical state(s): "
+            + ", ".join(sorted(unknown_states))
+        )
+
+
 def normalize_category_with_evidence(
     value: str | None,
     lookup: ReviewedLookupTable,
