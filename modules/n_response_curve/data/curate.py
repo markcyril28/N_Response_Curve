@@ -1103,6 +1103,7 @@ def _finalize_canonical_record(
     )
     treatment_lookup = category_lookups.get("treatment_class")
     if treatment_lookup is None:
+        treatment_normalization = None
         record["treatment_class_normalization_status"] = (
             "review_required_unversioned"
         )
@@ -1114,6 +1115,11 @@ def _finalize_canonical_record(
         record["treatment_class_normalization_status"] = (
             treatment_normalization.status
         )
+    record["treatment_class_normalized"] = (
+        treatment_normalization.canonical_value
+        if treatment_normalization is not None
+        else None
+    )
     record["treatment_class_map_version"] = (
         treatment_lookup.map_version if treatment_lookup is not None else None
     )
