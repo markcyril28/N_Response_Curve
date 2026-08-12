@@ -181,6 +181,7 @@ class RuntimePolicySnapshot:
     artifact_path: Path | None
     artifact_sha256: str | None
     authority_matrix: ApprovalAuthorityMatrix | None = None
+    review_gate_policy: ReviewGatePolicy | None = None
 
     def manifest_payload(self, *, project_root: Path) -> dict[str, Any]:
         artifact_relative: str | None = None
@@ -201,6 +202,11 @@ class RuntimePolicySnapshot:
             "approval_authority_matrix": (
                 self.authority_matrix.manifest_payload(project_root=project_root)
                 if self.authority_matrix is not None
+                else None
+            ),
+            "review_gate_policy": (
+                self.review_gate_policy.manifest_payload(project_root=project_root)
+                if self.review_gate_policy is not None
                 else None
             ),
         }
