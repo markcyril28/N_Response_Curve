@@ -938,18 +938,11 @@ def _fit_parameters(
     y_min = float(np.min(y))
     y_max = float(np.max(y))
     safe_y_span = max(maximum_yield - minimum_yield, y_max - y_min, 1e-6)
-    interior_lower = x_min + x_span * 1e-6
-    interior_upper = x_max - x_span * 1e-6
-    if interior_lower >= interior_upper:
-        return None, ("INSUFFICIENT_N_RATE_RANGE",)
 
-    lower = gate.lower_bounds.copy()
-    upper = gate.upper_bounds.copy()
-    if model_name in {"linear_plateau", "quadratic_plateau"}:
-        lower[2] = max(lower[2], interior_lower)
-        upper[2] = min(upper[2], interior_upper)
-        if lower[2] >= upper[2]:
-            return None, ("NO_REVIEWED_INTERIOR_PLATEAU_DOMAIN",)
+    effective_bounds, bounds_reason = _effective_parameter_bounds(model_name, x, gate)
+    if effective_bounds is None:
+        return None, (bounds_reason or "NO_REVIEWED_INTERIOR_PLATEAU_DOMAIN",)
+    lower, upper = effective_bounds
 
     if model_name == "linear_plateau":
         initial_slope = max((y[-1] - y[0]) / x_span, safe_y_span / (1000.0 * x_span))
