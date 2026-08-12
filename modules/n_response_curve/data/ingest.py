@@ -16,6 +16,7 @@ from .provenance import (
     ChecksumRevisionApproval,
     SourceIntegrityReport,
     sha256_file,
+    stable_json_sha256,
     validate_checksum_revision_approval,
     verify_source_integrity,
 )
