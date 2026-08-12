@@ -138,6 +138,7 @@ class SourceDataPolicyBundle:
             {
                 "source_maps": self.source_maps,
                 "category_lookups": self.category_lookups,
+                "source_category_lookups": self.source_category_lookups,
                 "restricted_policy": self.restricted_policy,
                 "require_reviewed_controls": True,
             }
