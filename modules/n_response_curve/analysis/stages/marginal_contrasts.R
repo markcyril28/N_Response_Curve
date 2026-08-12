@@ -119,93 +119,41 @@ nrc_run_marginal_contrasts <- function(stage) {
 
   contrasted <- tryCatch(
     {
-      if (requireNamespace("emmeans", quietly = TRUE)) {
-        reference_grid <- emmeans::emmeans(
-          fitted,
-          specs = stats::as.formula(paste("~", factor_name))
-        )
-        if (isTRUE(exact_estimand)) {
-          grid_levels <- as.character(as.data.frame(reference_grid)[[factor_name]])
-          contrast_weights <- rep(0, length(grid_levels))
-          contrast_weights[grid_levels == treatment] <- 1
-          contrast_weights[grid_levels == comparator] <- -1
-          method <- list()
-          contrast_label <- contrast_specification$direction
-          if (is.null(contrast_label) || !is.character(contrast_label) ||
-                length(contrast_label) != 1L || !nzchar(contrast_label)) {
-            contrast_label <- paste(treatment, "minus", comparator)
-          }
-          method[[contrast_label]] <- contrast_weights
-          raw <- broom::tidy(emmeans::contrast(reference_grid, method = method, adjust = "none"))
-        } else {
-          raw <- broom::tidy(emmeans::contrast(reference_grid, method = "pairwise", adjust = "none"))
+      reference_grid <- emmeans::emmeans(
+        fitted,
+        specs = stats::as.formula(paste("~", factor_name))
+      )
+      if (isTRUE(exact_estimand)) {
+        grid_levels <- as.character(as.data.frame(reference_grid)[[factor_name]])
+        contrast_weights <- rep(0, length(grid_levels))
+        contrast_weights[grid_levels == treatment] <- 1
+        contrast_weights[grid_levels == comparator] <- -1
+        method <- list()
+        contrast_label <- contrast_specification$direction
+        if (is.null(contrast_label) || !is.character(contrast_label) ||
+              length(contrast_label) != 1L || !nzchar(contrast_label)) {
+          contrast_label <- paste(treatment, "minus", comparator)
         }
-        raw$p.value_raw <- raw$p.value
-        raw
+        method[[contrast_label]] <- contrast_weights
+        contrast_result <- emmeans::contrast(
+          reference_grid,
+          method = method,
+          adjust = "none"
+        )
       } else {
-        if (!identical(outcome_kind, "continuous") || !identical(model_kind, "lm")) {
-          nrc_abort("Fallback contrast estimation currently supports only continuous lm models without emmeans")
-        }
-        outcome_name <- all.vars(model_formula)[[1L]]
-        analysis_frame <- stats::na.omit(stats::model.frame(fitted))
-        factor_values <- analysis_frame[[factor_name]]
-        outcome_values <- analysis_frame[[outcome_name]]
-        if (!is.factor(factor_values)) {
-          factor_values <- as.factor(factor_values)
-        }
-        if (!is.numeric(outcome_values)) {
-          nrc_abort("Fallback contrast estimation requires a numeric outcome")
-        }
-        groups <- split(outcome_values, factor_values)
-        if (length(groups) < 2L) {
-          return(data.frame())
-        }
-        group_names <- names(groups)
-        comparisons <- if (isTRUE(exact_estimand)) {
-          list(c(treatment, comparator))
-        } else {
-          utils::combn(group_names, 2L, simplify = FALSE)
-        }
-        if (!length(comparisons)) {
-          return(data.frame())
-        }
-        raw_p <- vapply(
-          comparisons,
-          function(pair) {
-            test <- tryCatch(
-              stats::t.test(groups[[pair[[1L]]]], groups[[pair[[2L]]]]),
-              error = function(error) error
-            )
-            if (inherits(test, "error") || !is.finite(as.numeric(test$p.value))) {
-              NaN
-            } else {
-              as.numeric(test$p.value)
-            }
-          },
-          numeric(1)
-        )
-        data.frame(
-          contrast = vapply(
-            comparisons,
-            function(pair) {
-              if (isTRUE(exact_estimand) && !is.null(contrast_specification$direction)) {
-                contrast_specification$direction
-              } else {
-                paste(pair[[1L]], "vs", pair[[2L]])
-              }
-            },
-            character(1L)
-          ),
-          estimate = vapply(
-            comparisons,
-            function(pair) mean(groups[[pair[[1L]]]]) - mean(groups[[pair[[2L]]]]),
-            numeric(1L)
-          ),
-          p.value = raw_p,
-          p.value_raw = raw_p,
-          stringsAsFactors = FALSE
+        contrast_result <- emmeans::contrast(
+          reference_grid,
+          method = "pairwise",
+          adjust = "none"
         )
       }
+      raw <- as.data.frame(summary(
+        contrast_result,
+        infer = c(TRUE, TRUE),
+        adjust = "none"
+      ))
+      raw$p.value_raw <- raw$p.value
+      raw
     },
     error = function(error) error
   )
