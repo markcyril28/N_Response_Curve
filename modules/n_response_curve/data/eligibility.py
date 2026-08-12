@@ -169,7 +169,11 @@ def _tier_and_reasons(
         reasons.add(_reason_for_parse_status("YIELD", record.get("yield_parse_status")))
     if record.get("yield_unit_status") == "conflict":
         reasons.add("YIELD_UNIT_CONFLICT")
-    if record.get("n_rate_unit_status", "canonical") != "canonical":
+    if record.get("n_rate_unit_status", "canonical") not in {
+        "canonical",
+        "canonical_reviewed",
+        "converted_reviewed",
+    }:
         reasons.add("N_RATE_UNIT_CONFLICT")
     if n_rate is not None and not policy["n_rate_min_kg_ha"] <= n_rate <= policy["n_rate_max_kg_ha"]:
         reasons.add("N_RATE_OUT_OF_RANGE")
