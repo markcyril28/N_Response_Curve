@@ -499,6 +499,101 @@ def _source_scope(
     return MappingProxyType(dict(sorted(scope.items())))
 
 
+def _reviewed_lookup_from_object(
+    value: object,
+    *,
+    where: str,
+) -> ReviewedLookupTable:
+    if not isinstance(value, Mapping):
+        raise SourceDataPolicyError(f"{where} must be an object")
+    raw_aliases = value.get("aliases")
+    if not isinstance(raw_aliases, Mapping) or not raw_aliases:
+        raise SourceDataPolicyError(f"{where}.aliases must be a nonempty object")
+    aliases = {
+        _nonempty_text(key, where=f"{where}.aliases key"): _string_tuple(
+            raw_values,
+            where=f"{where}.aliases.{key}",
+        )
+        for key, raw_values in raw_aliases.items()
+    }
+    return ReviewedLookupTable(
+        map_version=_version(
+            value.get("map_version"),
+            where=f"{where}.map_version",
+        ),
+        review_id=_nonempty_text(
+            value.get("review_id"),
+            where=f"{where}.review_id",
+        ),
+        aliases=MappingProxyType(aliases),
+    )
+
+
+def _nutrient_unit_controls(
+    value: object,
+    *,
+    where: str,
+) -> Mapping[str, ReviewedNutrientUnitControl]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        raise SourceDataPolicyError(f"{where} must be an object")
+    controls: dict[str, ReviewedNutrientUnitControl] = {}
+    for raw_field, raw_control in value.items():
+        field_name = _nonempty_text(raw_field, where=f"{where} key")
+        if field_name not in NUTRIENT_CANONICAL_UNITS:
+            raise SourceDataPolicyError(
+                f"{where}.{field_name} targets an unsupported nutrient field"
+            )
+        control = _exact_object(
+            raw_control,
+            required_keys={
+                "source_unit",
+                "source_basis",
+                "canonical_unit",
+                "conversion_factor",
+                "conversion_rule",
+                "review_id",
+            },
+            where=f"{where}.{field_name}",
+        )
+        factor = control["conversion_factor"]
+        if (
+            isinstance(factor, bool)
+            or not isinstance(factor, (int, float))
+            or not math.isfinite(float(factor))
+            or float(factor) <= 0
+        ):
+            raise SourceDataPolicyError(
+                f"{where}.{field_name}.conversion_factor must be finite and positive"
+            )
+        controls[field_name] = ReviewedNutrientUnitControl(
+            canonical_field=field_name,
+            source_unit=_nonempty_text(
+                control["source_unit"],
+                where=f"{where}.{field_name}.source_unit",
+            ),
+            source_basis=_nonempty_text(
+                control["source_basis"],
+                where=f"{where}.{field_name}.source_basis",
+            ),
+            canonical_unit=_nonempty_text(
+                control["canonical_unit"],
+                where=f"{where}.{field_name}.canonical_unit",
+            ),
+            conversion_factor=float(factor),
+            conversion_rule=_nonempty_text(
+                control["conversion_rule"],
+                where=f"{where}.{field_name}.conversion_rule",
+            ),
+            review_id=_nonempty_text(
+                control["review_id"],
+                where=f"{where}.{field_name}.review_id",
+            ),
+        )
+    return MappingProxyType(controls)
+
+
 def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
     maps: dict[str, ReviewedSourceMap] = {}
     for index, record in enumerate(_records(payload, where="source maps")):
