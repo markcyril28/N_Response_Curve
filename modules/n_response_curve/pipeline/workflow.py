@@ -902,6 +902,39 @@ def _raw_probability(row: Mapping[str, Any]) -> tuple[float | None, str | None]:
     return values[0], None
 
 
+def _inferential_endpoint_reason(row: Mapping[str, Any]) -> str | None:
+    """Require a finite estimate and interval before a p-value is callable."""
+
+    values: list[float] = []
+    for key in ("estimate", "effect_estimate", "emmean"):
+        if key not in row or row[key] is None or isinstance(row[key], bool):
+            continue
+        try:
+            value = float(row[key])
+        except (TypeError, ValueError):
+            return "INFERENTIAL_ENDPOINT_NONFINITE"
+        if not math.isfinite(value):
+            return "INFERENTIAL_ENDPOINT_NONFINITE"
+        values.append(value)
+    if not values:
+        return "INFERENTIAL_ENDPOINT_MISSING"
+    bounds: list[float] = []
+    for key in ("conf.low", "conf.high"):
+        value = row.get(key)
+        if value is None or isinstance(value, bool):
+            return "INFERENTIAL_ENDPOINT_MISSING"
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "INFERENTIAL_ENDPOINT_NONFINITE"
+        if not math.isfinite(numeric):
+            return "INFERENTIAL_ENDPOINT_NONFINITE"
+        bounds.append(numeric)
+    if bounds[0] > bounds[1]:
+        return "INFERENTIAL_INTERVAL_INVALID"
+    return None
+
+
 def _multiplicity_result_id(candidate_id: str, row: Mapping[str, Any]) -> str:
     declared = row.get("result_id")
     if isinstance(declared, str) and declared.strip():
