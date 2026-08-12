@@ -34,6 +34,32 @@ _HYPOTHESIS_IDS = frozenset(
     }
 )
 _ANALYSIS_ENGINES = frozenset({"python", "r"})
+_ANA_APPROVED_FACTOR_ROSTER = frozenset(
+    {
+        "water_regime",
+        "season",
+        "planting_year",
+        "region",
+        "province",
+        "variety",
+        "recommendation_scope",
+        "recommendation_class",
+    }
+)
+_ANA03_SECONDARY_OUTCOMES = frozenset(
+    {"yield_at_zero_n_t_ha", "yield_response_above_zero_n_t_ha"}
+)
+_ANA03_PRIMARY_OUTCOMES = frozenset(
+    {
+        "curve_shape_class",
+        "optimum_status",
+        "agronomic_optimum_n_kg_ha",
+        "plateau_onset_n_kg_ha",
+        "predicted_observed_domain_peak_yield_t_ha",
+        "finite_maximum_yield_t_ha",
+        "supported_max_yield_t_ha",
+    }
+)
 _MODEL_ROSTER = (
     "linear",
     "quadratic",
