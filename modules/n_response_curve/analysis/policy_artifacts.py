@@ -391,6 +391,7 @@ class AnalysisPolicyBundle:
     estimands: tuple[Estimand, ...]
     hypotheses: tuple[EffectiveHypothesis, ...]
     curve_model_policy: CurveModelPolicy
+    manifest_authority: ArtifactAuthority | None = None
 
     @property
     def artifact_sha256(self) -> Mapping[str, str]:
@@ -423,6 +424,15 @@ class AnalysisPolicyBundle:
             (item.factor_name, item.engine): item
             for item in self.factor_representations
         }
+        first_stage_uncertainty_policy = MappingProxyType(
+            {
+                **dict(
+                    self.curve_model_policy.
+                    first_stage_contextual_uncertainty_policy
+                ),
+                "authority_sha256": self.model_authority.sha256,
+            }
+        )
         specifications: list[Mapping[str, Any]] = []
         for hypothesis in self.hypotheses:
             if hypothesis.status != "enabled":
@@ -459,6 +469,7 @@ class AnalysisPolicyBundle:
                 )
             support_policy = MappingProxyType(
                 {
+                    "factor_type": support_rule.factor_type,
                     "minimum_independent_series": support_rule.minimum_independent_series,
                     "minimum_observations_per_cell": support_rule.minimum_observations_per_cell,
                     "minimum_class_events_per_parameter": (
@@ -468,6 +479,7 @@ class AnalysisPolicyBundle:
                     "maximum_missing_fraction": support_rule.maximum_missing_fraction,
                     "maximum_factor_cardinality": support_rule.maximum_factor_cardinality,
                     "minimum_independent_studies": support_rule.minimum_independent_studies,
+                    "maximum_loso_studies": support_rule.maximum_loso_studies,
                 }
             )
             contrast_specification = MappingProxyType(
@@ -500,8 +512,11 @@ class AnalysisPolicyBundle:
                         "dataset_version_id": hypothesis.dataset_version_id,
                         "source_combination_id": source_combination_id,
                         "curve_outcome": hypothesis.outcome,
+                        "outcome_role": hypothesis.evidence_role,
                         "factor_names": hypothesis.factor_names,
                         "grouping": hypothesis.grouping,
+                        "model_specification": hypothesis.model_specification,
+                        "alpha": hypothesis.alpha,
                         "contrast_specification": contrast_specification,
                         "analysis_family": hypothesis.analysis_family,
                         "engine": hypothesis.engine,
@@ -511,9 +526,85 @@ class AnalysisPolicyBundle:
                         "factor_representations": MappingProxyType(
                             factor_representations
                         ),
+                        "first_stage_uncertainty_policy": first_stage_uncertainty_policy,
                     }
                 )
             )
+            for check_index, support_sensitivity in enumerate(
+                support_rule.sensitivity_checks,
+                start=1,
+            ):
+                field = str(support_sensitivity["field"])
+                for value_index, value in enumerate(
+                    support_sensitivity["values"],
+                    start=1,
+                ):
+                    if support_policy[field] == value:
+                        continue
+                    sensitivity_id = (
+                        f"support_threshold_{check_index}_{value_index}"
+                    )
+                    sensitivity_policy = dict(support_policy)
+                    sensitivity_policy[field] = value
+                    sensitivity_contrast = dict(contrast_specification)
+                    sensitivity_contrast.update(
+                        {
+                            "evidence_role": "sensitivity",
+                            "sensitivity_type": "support_threshold",
+                            "sensitivity_id": sensitivity_id,
+                            "support_threshold_field": field,
+                            "support_threshold_value": value,
+                            "parent_hypothesis_id": hypothesis.hypothesis_id,
+                            "sensitivities": (),
+                            "claim_policy": MappingProxyType(
+                                {
+                                    "rule_id": (
+                                        f"{hypothesis.hypothesis_id}-{sensitivity_id}"
+                                    ),
+                                    "review_status": "withheld",
+                                    "reason": (
+                                        "support_threshold_sensitivity_not_primary_claim"
+                                    ),
+                                }
+                            ),
+                        }
+                    )
+                    specifications.append(
+                        MappingProxyType(
+                            {
+                                "specification_id": (
+                                    f"{hypothesis.hypothesis_id}:{sensitivity_id}"
+                                ),
+                                "hypothesis_id": hypothesis.hypothesis_id,
+                                "dataset_version_id": hypothesis.dataset_version_id,
+                                "source_combination_id": source_combination_id,
+                                "curve_outcome": hypothesis.outcome,
+                                "outcome_role": hypothesis.evidence_role,
+                                "factor_names": hypothesis.factor_names,
+                                "grouping": hypothesis.grouping,
+                                "model_specification": hypothesis.model_specification,
+                                "alpha": hypothesis.alpha,
+                                "contrast_specification": MappingProxyType(
+                                    sensitivity_contrast
+                                ),
+                                "analysis_family": hypothesis.analysis_family,
+                                "engine": hypothesis.engine,
+                                "multiplicity_family_id": (
+                                    f"{hypothesis.multiplicity_family_id}:support_sensitivity"
+                                ),
+                                "support_rule_id": hypothesis.support_rule_id,
+                                "support_policy": MappingProxyType(
+                                    sensitivity_policy
+                                ),
+                                "factor_representations": MappingProxyType(
+                                    factor_representations
+                                ),
+                                "first_stage_uncertainty_policy": (
+                                    first_stage_uncertainty_policy
+                                ),
+                            }
+                        )
+                    )
             for sensitivity in hypothesis.sensitivity_specifications:
                 sensitivity_id = str(sensitivity["sensitivity_id"])
                 sensitivity_source_view = str(sensitivity["source_view"])
@@ -527,6 +618,7 @@ class AnalysisPolicyBundle:
                 sensitivity_support = support_by_id[str(sensitivity["support_rule_id"])]
                 sensitivity_support_policy = MappingProxyType(
                     {
+                        "factor_type": sensitivity_support.factor_type,
                         "minimum_independent_series": (
                             sensitivity_support.minimum_independent_series
                         ),
@@ -545,6 +637,9 @@ class AnalysisPolicyBundle:
                         ),
                         "minimum_independent_studies": (
                             sensitivity_support.minimum_independent_studies
+                        ),
+                        "maximum_loso_studies": (
+                            sensitivity_support.maximum_loso_studies
                         ),
                     }
                 )
@@ -597,8 +692,13 @@ class AnalysisPolicyBundle:
                             "dataset_version_id": sensitivity["dataset_version_id"],
                             "source_combination_id": sensitivity_source_id,
                             "curve_outcome": hypothesis.outcome,
+                            "outcome_role": hypothesis.evidence_role,
                             "factor_names": sensitivity["factor_names"],
                             "grouping": sensitivity["grouping"],
+                            "model_specification": sensitivity[
+                                "model_specification"
+                            ],
+                            "alpha": hypothesis.alpha,
                             "contrast_specification": MappingProxyType(
                                 sensitivity_contrast
                             ),
@@ -611,6 +711,9 @@ class AnalysisPolicyBundle:
                             "support_policy": sensitivity_support_policy,
                             "factor_representations": MappingProxyType(
                                 sensitivity_representations
+                            ),
+                            "first_stage_uncertainty_policy": (
+                                first_stage_uncertainty_policy
                             ),
                         }
                     )
