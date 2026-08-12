@@ -172,7 +172,7 @@ nrc_run_mixed_models <- function(stage) {
   }
   fit <- nrc_fit_model(
     model_formula,
-    stage$data,
+    analysis_data,
     outcome_kind,
     model_kind,
     "Unsupported R model kind for the declared outcome type",
@@ -188,7 +188,7 @@ nrc_run_mixed_models <- function(stage) {
       list(warning_messages = as.list(unique(warning_messages)))
     ))
   }
-  diagnostics <- nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
+  diagnostics <- nrc_model_diagnostics(fitted, warning_messages, nrow(analysis_data))
   if (!isTRUE(diagnostics$converged)) {
     return(nrc_failed_result(
       "R_MODEL_NONCONVERGENCE",
@@ -199,7 +199,8 @@ nrc_run_mixed_models <- function(stage) {
   if (isTRUE(diagnostics$singular) || isTRUE(diagnostics$boundary_fit)) {
     return(nrc_skip_result("R_MODEL_SINGULAR_OR_BOUNDARY", list(diagnostics = diagnostics)))
   }
-  results <- nrc_apply_multiplicity(nrc_tidy_model(fitted), specification)
+  results <- nrc_apply_interval_metadata(nrc_tidy_model(fitted), specification)
+  results <- nrc_apply_multiplicity(results, specification)
   if (!length(results)) {
     return(nrc_failed_result("R_MODEL_TIDY_RESULT_EMPTY", "R model produced no reportable fixed-effect rows"))
   }
@@ -209,6 +210,10 @@ nrc_run_mixed_models <- function(stage) {
   if (!all(estimates_are_finite)) {
     return(nrc_failed_result("R_MODEL_NONFINITE_ESTIMATE", "R model produced a nonfinite fixed-effect estimate"))
   }
+  multiplicity_reason <- nrc_multiplicity_reason(results, specification)
+  if (!is.null(multiplicity_reason)) {
+    return(nrc_skip_result(multiplicity_reason))
+  }
   list(
     status = "completed",
     results = results,
@@ -216,6 +221,7 @@ nrc_run_mixed_models <- function(stage) {
       engine = "r",
       model_kind = model_kind,
       outcome_kind = outcome_kind,
+      factor_references = represented$factor_references,
       multiplicity = specification$multiplicity,
       diagnostics = diagnostics
     )
