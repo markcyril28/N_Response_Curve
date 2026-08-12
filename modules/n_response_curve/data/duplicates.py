@@ -559,7 +559,6 @@ def _initialize_duplicate_statuses(
         ordered = sorted(duplicates, key=_record_sort_key)
         if len(ordered) == 1:
             continue
-        canonical = ordered[0]
         group_uid = _stable_identifier(
             "duplicate",
             ("exact", rules.version, *signature),
@@ -1095,7 +1094,6 @@ def resolve_response_series(
     }
 
     aggregates: list[dict[str, Any]] = []
-    used_repeat_adjudications: set[tuple[str, ...]] = set()
     for key, group in sorted(
         candidate_groups.items(),
         key=lambda item: tuple(map(str, item[0])),
