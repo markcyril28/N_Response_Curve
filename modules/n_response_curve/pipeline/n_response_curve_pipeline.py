@@ -475,6 +475,36 @@ def _enforce_phase_two_qc_gate(
     )
 
 
+def _enforce_literature_verification_gate(
+    config: ValidatedConfig,
+    phase_two: PhaseTwoResult,
+) -> None:
+    """Prevent authoritative use of literature until the reviewed SRC-07 plan passes."""
+
+    if config.run_mode != "full":
+        return
+    active_literature_sources = tuple(
+        source_name
+        for source_name in config.enabled_sources
+        if config.sources[source_name].get("source_type") == "literature"
+    )
+    if not active_literature_sources:
+        return
+    verification = phase_two.literature_verification
+    if verification is None:
+        raise ConfigError(
+            "Full-mode literature use requires an authenticated SRC-07 verification "
+            "policy, completed results, and terminal pass"
+        )
+    if verification.status != "pass":
+        raise ConfigError(
+            "Full-mode literature verification has not passed: "
+            f"status={verification.status}; round={verification.round_number}; "
+            f"selected={len(verification.selected_record_uids)}; "
+            f"limitations={list(verification.limitation_reasons)}"
+        )
+
+
 def _relative(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
 
