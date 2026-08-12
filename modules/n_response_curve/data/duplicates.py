@@ -307,6 +307,23 @@ def _append_reason(record: dict[str, Any], reason: str) -> None:
     _add_sorted_unique(record, "series_reason_codes", reason)
 
 
+def _shared_duplicate_group_uids(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    relationship: str,
+) -> set[str]:
+    memberships: list[set[str]] = []
+    for record in records:
+        memberships.append(
+            {
+                str(group["duplicate_group_uid"])
+                for group in record.get("duplicate_groups", ())
+                if group.get("relationship") == relationship
+            }
+        )
+    return set.intersection(*memberships) if memberships else set()
+
+
 def _mark_unresolved(record: dict[str, Any], reason: str) -> None:
     record["response_series_uid"] = None
     record["series_status"] = "review"
@@ -499,13 +516,30 @@ def _initialize_duplicate_statuses(
     rules: DuplicateRuleSet | None,
     adjudications: Iterable[DuplicateAdjudication],
     designated_reviewers: Iterable[str],
+    reset_status: bool = True,
 ) -> None:
-    for record in records:
-        record["duplicate_relationships"] = ()
-        record["duplicate_groups"] = ()
-        record["duplicate_status"] = "not_assessed" if rules is None else "unique"
-        record["duplicate_of_record_uid"] = None
-        record["duplicate_rules_version"] = rules.version if rules else None
+    if reset_status:
+        for record in records:
+            record["duplicate_relationships"] = ()
+            record["duplicate_groups"] = ()
+            record["duplicate_status"] = "not_assessed" if rules is None else "unique"
+            record["duplicate_of_record_uid"] = None
+            record["duplicate_rules_version"] = rules.version if rules else None
+            record["duplicate_rules_versions"] = (
+                (rules.version,) if rules is not None else ()
+            )
+    elif rules is not None:
+        for record in records:
+            applied_versions = {
+                str(version)
+                for version in record.get("duplicate_rules_versions", ())
+                if str(version)
+            }
+            existing_version = record.get("duplicate_rules_version")
+            if isinstance(existing_version, str) and existing_version:
+                applied_versions.add(existing_version)
+            applied_versions.add(rules.version)
+            record["duplicate_rules_versions"] = tuple(sorted(applied_versions))
 
     if rules is None:
         return
@@ -530,6 +564,40 @@ def _initialize_duplicate_statuses(
             "duplicate",
             ("exact", rules.version, *signature),
         )
+        adjudication = reviewed.get(group_uid)
+        ordered_uids = {str(record["record_uid"]) for record in ordered}
+        if adjudication is not None and adjudication.disposition == "distinct_trials":
+            for record in ordered:
+                _add_duplicate_relationship(record, "exact_duplicate_distinct")
+                _add_duplicate_group(
+                    record,
+                    duplicate_group_uid=group_uid,
+                    relationship="exact_duplicate_distinct",
+                    confidence="exact",
+                    evidence_codes=tuple(
+                        f"EXACT_KEY:{field}" for field in rules.exact_key_fields
+                    ),
+                    review_status="adjudicated",
+                    canonical_record_uid=None,
+                    rules_version=rules.version,
+                )
+            continue
+        if adjudication is not None:
+            if adjudication.canonical_record_uid not in ordered_uids:
+                raise ValueError(
+                    "Exact duplicate adjudication canonical record is outside its group"
+                )
+            canonical = next(
+                record
+                for record in ordered
+                if str(record["record_uid"])
+                == adjudication.canonical_record_uid
+            )
+            review_status = "adjudicated"
+        else:
+            canonical = ordered[0]
+            review_status = "auto_classified"
+        noncanonical = [record for record in ordered if record is not canonical]
         _add_duplicate_relationship(canonical, "exact_duplicate_canonical")
         _add_duplicate_group(
             canonical,
@@ -537,11 +605,11 @@ def _initialize_duplicate_statuses(
             relationship="exact_duplicate_canonical",
             confidence="exact",
             evidence_codes=tuple(f"EXACT_KEY:{field}" for field in rules.exact_key_fields),
-            review_status="auto_classified",
+            review_status=review_status,
             canonical_record_uid=str(canonical["record_uid"]),
             rules_version=rules.version,
         )
-        for duplicate in ordered[1:]:
+        for duplicate in noncanonical:
             _add_duplicate_relationship(duplicate, "exact_duplicate_noncanonical")
             duplicate["duplicate_of_record_uid"] = canonical["record_uid"]
             duplicate["analytical_record_status"] = "duplicate_noncanonical"
@@ -553,7 +621,7 @@ def _initialize_duplicate_statuses(
                 evidence_codes=tuple(
                     f"EXACT_KEY:{field}" for field in rules.exact_key_fields
                 ),
-                review_status="auto_classified",
+                review_status=review_status,
                 canonical_record_uid=str(canonical["record_uid"]),
                 rules_version=rules.version,
             )
