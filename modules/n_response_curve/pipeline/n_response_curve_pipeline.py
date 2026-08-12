@@ -361,15 +361,32 @@ def run_phase_two(
             str(record["record_uid"]): record
             for record in final_cleaning.records
         }
+        primary_record_uids = set(final_cleaning.primary_record_uids)
+        primary_resolution = resolve_response_series(
+            tuple(
+                cleaned_by_uid[str(record["record_uid"])]
+                for record in untrimmed_resolution.records
+                if str(record["record_uid"]) in primary_record_uids
+            ),
+            series_identity_dimensions=config.series_identity_dimensions,
+            n_level_tolerance_kg_ha=float(
+                config.raw["eligibility"]["n_level_tolerance_kg_ha"]
+            ),
+            **resolution_kwargs,
+        )
+        primary_by_uid = {
+            str(record["record_uid"]): record
+            for record in primary_resolution.records
+        }
         resolution = SeriesResolution(
             records=tuple(
-                cleaned_by_uid[str(record["record_uid"])]
-                for record in resolution.records
+                primary_by_uid.get(
+                    str(record["record_uid"]),
+                    cleaned_by_uid[str(record["record_uid"])],
+                )
+                for record in untrimmed_resolution.records
             ),
-            aggregate_records=tuple(
-                cleaned_by_uid[str(record["record_uid"])]
-                for record in resolution.aggregate_records
-            ),
+            aggregate_records=primary_resolution.aggregate_records,
         )
         cleaning_fields = FINAL_CLEANING_METADATA_FIELDS
         assert untrimmed_analysis_eligibility is not None
@@ -413,6 +430,7 @@ def run_phase_two(
         source_data_policy=source_data_policy,
         final_cleaning=final_cleaning,
         untrimmed_analysis_eligibility=untrimmed_analysis_eligibility,
+        literature_verification=literature_verification,
     )
 
 
