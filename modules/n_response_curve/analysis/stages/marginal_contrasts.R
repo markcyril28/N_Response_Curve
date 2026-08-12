@@ -211,6 +211,7 @@ nrc_run_marginal_contrasts <- function(stage) {
       multiple_testing_adjustment = "pending_central_reconciliation",
       model_kind = model_kind,
       outcome_kind = outcome_kind,
+      factor_references = represented$factor_references,
       diagnostics = diagnostics
     )
   )
