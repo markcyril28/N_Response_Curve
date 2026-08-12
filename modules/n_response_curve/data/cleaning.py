@@ -7,16 +7,42 @@ import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
 
-_RULE_TYPES = frozenset({"numeric_outside_range", "remark_match"})
+# Row-local rule types decide one record from that record alone. Grouped rule
+# types need the whole distribution the record sits in, so they are evaluated
+# once per source before any record is dispositioned.
+_ROW_LOCAL_RULE_TYPES = frozenset({"numeric_outside_range", "remark_match"})
+_GROUPED_RULE_TYPES = frozenset({"distributional_outlier", "influence_outlier"})
+_RULE_TYPES = _ROW_LOCAL_RULE_TYPES | _GROUPED_RULE_TYPES
 _RULE_ACTIONS = frozenset({"exclude_primary", "flag_only", "retain"})
 _DEFAULT_ACTIONS = frozenset({"retain"})
+_DISTRIBUTIONAL_STATISTICS = frozenset({"modified_z_score", "iqr_fence"})
+_INFLUENCE_STATISTICS = frozenset(
+    {"cooks_distance", "leverage", "dffits", "studentized_residual"}
+)
+_GROUPING_SCOPES = frozenset({"source", "response_series"})
+_GROUPING_SCOPE_KEYS = {
+    "source": "source_name",
+    "response_series": "response_series_uid",
+}
+# Thresholds on a distribution are multiples of a robust spread, never a
+# physical quantity, so their declared unit is dimensionless by contract.
+_DIMENSIONLESS_UNIT = "dimensionless"
+# A robust centre and spread are not defined below four values; a smaller group
+# is a review hold rather than a silently retained record.
+_MINIMUM_DISTRIBUTIONAL_GROUP_SIZE = 4
+_PRESPECIFICATION_STATUSES = frozenset({"prespecified_before_fitted_conclusions"})
+_MODIFIED_Z_CONSTANT = 0.6745
+_RULE_MATCHED = "match"
+_RULE_NOT_MATCHED = "no_match"
 _SPACE_RE = re.compile(r"\s+")
 FINAL_CLEANING_METADATA_FIELDS = (
     "cleaning_policy_id",
     "cleaning_review_id",
     "cleaning_reviewer",
     "cleaning_reviewed_on",
+    "cleaning_prespecification_status",
     "cleaning_rule_ids",
+    "cleaning_unevaluable_rule_ids",
     "cleaning_reason_codes",
     "cleaning_review_status",
     "final_analytical_membership_status",
