@@ -29,7 +29,7 @@ _INTERACTION_ORDER_FAMILIES = frozenset(
         "penalized_predictive_models",
     }
 )
-_FITTED_FEATURE_INFERENTIAL_FAMILIES = frozenset(
+INFERENTIAL_ANALYSIS_FAMILIES = frozenset(
     {
         "one_factor_inferential",
         "all_supported_interactions",
@@ -38,6 +38,7 @@ _FITTED_FEATURE_INFERENTIAL_FAMILIES = frozenset(
         "marginal_contrasts",
     }
 )
+_FITTED_FEATURE_INFERENTIAL_FAMILIES = INFERENTIAL_ANALYSIS_FAMILIES
 
 
 def _json_data(value: Any) -> Any:
