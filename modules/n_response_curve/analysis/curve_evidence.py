@@ -202,7 +202,7 @@ def _partial_factor_productivity_rows(
             not in {"consistent", "kg_converted", "t_provided"}
             or record.get("yield_canonical_unit") != CANONICAL_YIELD_UNIT
             or n_rate is None
-            or n_rate <= 0.0
+            or n_rate < 0.0
             or yield_t_ha is None
             or record.get("yield_unit_status") == "conflict"
             or record.get("final_analytical_membership_status")
@@ -212,8 +212,14 @@ def _partial_factor_productivity_rows(
         grain_status = str(
             record.get("analysis_grain_status") or "unreviewed_observed_record"
         )
-        value = yield_t_ha * 1000.0 / n_rate
+        if grain_status != "reviewed_treatment_mean":
+            continue
         identity = {
+            "metric_id": efficiency_policy["metric_id"],
+            "efficiency_policy_id": efficiency_policy["policy_id"],
+            "efficiency_policy_sha256": efficiency_policy["authority"][
+                "artifact_sha256"
+            ],
             "metric_id": "EFF-01-option-a-partial-factor-productivity",
             "record_uid": record_uid,
             "response_series_uid": series_uid,
@@ -221,31 +227,50 @@ def _partial_factor_productivity_rows(
             "yield_t_ha": yield_t_ha,
             "analysis_grain_status": grain_status,
         }
+        common = {
+            "efficiency_metric_uid": stable_identifier(
+                "efficiency",
+                tuple(identity.values()),
+            ),
+            **identity,
+            "source_name": record.get("source_name"),
+            "study_uid": record.get("study_uid"),
+            "treatment_class": record.get("treatment_text_class"),
+            "metric_name": "partial_factor_productivity",
+            "formula": "yield_kg_ha / applied_n_kg_ha",
+            "basis": efficiency_policy["basis"],
+            "aggregation_level": efficiency_policy["aggregation_level"],
+            "unit": "kg_grain_per_kg_n",
+        }
+        if n_rate == 0.0:
+            rows.append(
+                {
+                    **common,
+                    "partial_factor_productivity_kg_grain_per_kg_n": None,
+                    "status": "withheld_zero_n_representation_unapproved",
+                    "reason_codes": (
+                        "EFF02_ZERO_N_REPRESENTATION_UNAPPROVED",
+                    ),
+                }
+            )
+            continue
+        value = yield_t_ha * 1000.0 / n_rate
+        if not math.isfinite(value):
+            rows.append(
+                {
+                    **common,
+                    "partial_factor_productivity_kg_grain_per_kg_n": None,
+                    "status": "withheld_nonfinite_result",
+                    "reason_codes": ("EFF01_NONFINITE_RESULT",),
+                }
+            )
+            continue
         rows.append(
             {
-                "efficiency_metric_uid": stable_identifier(
-                    "efficiency",
-                    tuple(identity.values()),
-                ),
-                **identity,
-                "source_name": record.get("source_name"),
-                "study_uid": record.get("study_uid"),
-                "treatment_class": record.get("treatment_text_class"),
-                "metric_name": "partial_factor_productivity",
-                "formula": "yield_kg_ha / applied_n_kg_ha",
-                "basis": (
-                    "observed_reviewed_treatment_mean"
-                    if grain_status == "reviewed_treatment_mean"
-                    else "observed_record"
-                ),
-                "aggregation_level": "record_by_n_level",
-                "unit": "kg_grain_per_kg_n",
+                **common,
                 "partial_factor_productivity_kg_grain_per_kg_n": value,
-                "status": (
-                    "computed"
-                    if grain_status == "reviewed_treatment_mean"
-                    else "computed_exploratory_unreviewed_grain"
-                ),
+                "status": "computed",
+                "reason_codes": (),
             }
         )
     return tuple(sorted(rows, key=lambda row: str(row["record_uid"])))
