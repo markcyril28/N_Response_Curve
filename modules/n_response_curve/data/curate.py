@@ -1126,17 +1126,46 @@ def _finalize_canonical_record(
     record["treatment_class_review_id"] = (
         treatment_lookup.review_id if treatment_lookup is not None else None
     )
-    for field, lookup in category_lookups.items():
-        if field in {"water_regime", "season", "treatment_class"}:
+    fit_role_is_review_bound = bool(
+        treatment_lookup is not None
+        and treatment_normalization is not None
+        and treatment_normalization.status == "mapped_reviewed"
+        and treatment_normalization.canonical_value
+        == record.get("treatment_text_class")
+        and record.get("treatment_classification_status") == "resolved"
+    )
+    record["treatment_fit_role_provenance_status"] = (
+        "reviewed_lookup_bound" if fit_role_is_review_bound else "review_required"
+    )
+    record["treatment_fit_role_map_version"] = (
+        treatment_lookup.map_version
+        if fit_role_is_review_bound and treatment_lookup is not None
+        else None
+    )
+    record["treatment_fit_role_review_id"] = (
+        treatment_lookup.review_id
+        if fit_role_is_review_bound and treatment_lookup is not None
+        else None
+    )
+    if record.get("treatment_fit_role") == "curve_candidate" and not fit_role_is_review_bound:
+        record["treatment_fit_role"] = "review"
+        review_reasons: set[str] = {
+            str(reason) for reason in record.get("treatment_review_reasons", ())
+        }
+        review_reasons.add("TREATMENT_FIT_ROLE_REVIEW_REQUIRED")
+        record["treatment_review_reasons"] = tuple(sorted(review_reasons))
+        record["treatment_classification_status"] = "review_required"
+    for field_name, lookup in category_lookups.items():
+        if field_name in {"water_regime", "season", "treatment_class"}:
             continue
         normalized = normalize_category_with_evidence(
-            _optional_field(record, field),
+            _optional_field(record, field_name),
             lookup,
         )
-        record[f"{field}_normalized"] = normalized.canonical_value or "unresolved"
-        record[f"{field}_normalization_status"] = normalized.status
-        record[f"{field}_map_version"] = normalized.map_version
-        record[f"{field}_review_id"] = normalized.review_id
+        record[f"{field_name}_normalized"] = normalized.canonical_value or "unresolved"
+        record[f"{field_name}_normalization_status"] = normalized.status
+        record[f"{field_name}_map_version"] = normalized.map_version
+        record[f"{field_name}_review_id"] = normalized.review_id
 
     if source.data_classification != "restricted":
         record["restricted_release_status"] = "not_restricted"
