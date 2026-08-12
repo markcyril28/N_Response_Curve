@@ -3520,6 +3520,32 @@ def _load_replacement_record(
                 "Approved replacement record signer is not the accountable "
                 "release-promotion party in the OPS-08 authority matrix"
             )
+        approved_at = payload.get("approved_at")
+        if not isinstance(approved_at, str) or not approved_at.strip():
+            raise ConfigError(
+                "Approved replacement record has no valid approval timestamp"
+            )
+        normalized_approval = approved_at.strip()
+        try:
+            if "T" in normalized_approval:
+                approval_datetime = datetime.fromisoformat(
+                    normalized_approval.replace("Z", "+00:00")
+                )
+                if approval_datetime.tzinfo is None:
+                    raise ValueError("timezone is required")
+                approval_date = approval_datetime.date()
+            else:
+                approval_date = date.fromisoformat(normalized_approval)
+        except ValueError as exc:
+            raise ConfigError(
+                "Approved replacement timestamp must be an ISO date or "
+                "timezone-qualified datetime"
+            ) from exc
+        if approval_date < date.fromisoformat(authority_matrix.effective_from):
+            raise ConfigError(
+                "Approved replacement record predates the effective OPS-08 "
+                "authority matrix"
+            )
     return dict(payload)
 
 
