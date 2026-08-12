@@ -696,7 +696,69 @@ def validate_reviewed_curation_controls(
                 )
 
     for source in ingestion.sources:
-        _validate_reviewed_source_map(source, source_maps[source.source_name])
+        source_map = source_maps[source.source_name]
+        _validate_reviewed_source_map(source, source_map)
+        physical_canonical_fields = set(source_map.fields)
+        available_canonical_fields = set(physical_canonical_fields)
+        available_canonical_fields.update(source_map.declared_constant_fields)
+        for arm in source_map.arms:
+            physical_canonical_fields.update(arm.field_positions)
+            available_canonical_fields.update(arm.field_positions)
+            available_canonical_fields.update(arm.constants)
+        if (
+            source_map.representation_basis
+            in _CURVE_CAPABLE_REPRESENTATION_BASES
+            and source_map.representation_basis_status == "reviewed"
+        ):
+            missing_roles = sorted(
+                role
+                for role, alternatives in _REQUIRED_CURVE_FIELD_ROLES.items()
+                if not alternatives.intersection(available_canonical_fields)
+            )
+            required_context = effective_identity_dimensions
+            missing_context = sorted(
+                field_name
+                for field_name in required_context
+                if not _SERIES_IDENTITY_FIELD_ALIASES.get(
+                    field_name,
+                    frozenset({field_name}),
+                ).intersection(available_canonical_fields)
+            )
+            if missing_roles or missing_context:
+                raise ValueError(
+                    "Reviewed curve-capable source map lacks required curve-role coverage; "
+                    f"source={source.source_name}; missing_roles={missing_roles}; "
+                    f"missing_context={missing_context}"
+                )
+        mapped_missing_fields = set(source_map.missing_state_maps)
+        missing_state_fields = physical_canonical_fields - mapped_missing_fields
+        unexpected_state_fields = mapped_missing_fields - physical_canonical_fields
+        if missing_state_fields or unexpected_state_fields:
+            missing = ", ".join(sorted(missing_state_fields)) or "none"
+            unexpected = ", ".join(sorted(unexpected_state_fields)) or "none"
+            raise ValueError(
+                "Missing-state maps must cover every physical canonical field; "
+                f"missing={missing}; unexpected={unexpected}"
+            )
+        if not (
+            isinstance(source_map.normalization_map_version, str)
+            and source_map.normalization_map_version.strip()
+            and isinstance(source_map.normalization_review_id, str)
+            and source_map.normalization_review_id.strip()
+        ):
+            raise ValueError(
+                "Reviewed missing-state maps require source normalization version and review evidence"
+            )
+        for field_name, lookup in source_map.missing_state_maps.items():
+            validate_reviewed_missing_state_table(lookup)
+            if (
+                lookup.map_version != source_map.normalization_map_version
+                or lookup.review_id != source_map.normalization_review_id
+            ):
+                raise ValueError(
+                    "Missing-state map evidence does not match the source normalization contract: "
+                    + field_name
+                )
 
 
 def _legacy_source_map(source: IngestedSource, config: Any) -> ReviewedSourceMap:
