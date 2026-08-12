@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from .config import KNOWN_FILL_DOWN_FIELDS
 from .ingest import (
+    COMBINED_NOPT_RCM_ADAPTER_SPEC,
     KNOWN_REPRESENTATION_BASES,
     IngestedSource,
     IngestionResult,
