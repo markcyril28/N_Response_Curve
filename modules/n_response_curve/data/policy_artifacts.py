@@ -1925,9 +1925,10 @@ def load_source_data_policy_manifest(
     return SourceDataPolicyBundle(
         manifest_authority=manifest_authority,
         artifact_authorities=MappingProxyType(authorities),
-        source_scope=_source_scope(artifacts["source_scope"]),
-        source_maps=_source_maps(artifacts["source_maps"]),
-        category_lookups=_category_lookups(artifacts["category_lookups"]),
+        source_scope=source_scope,
+        source_maps=source_maps,
+        category_lookups=category_lookups,
+        source_category_lookups=source_category_lookups,
         restricted_policy=restricted_policy,
         restricted_secret_reference=secret_reference,
         duplicate_rules=_duplicate_rules(artifacts["duplicate_rules"]),
