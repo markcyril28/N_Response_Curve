@@ -1854,6 +1854,8 @@ def _strict_review_gate_stage_writer(
     phase_three: PhaseThreeResult | Any,
     manifest: dict[str, Any],
     terminal_state: Mapping[str, Any],
+    *,
+    review_gate_policy: ReviewGatePolicy | None = None,
 ):
     def write_review_gate(stage_root: Path) -> tuple[Path, ...]:
         issues = _collect_review_issues(
@@ -1861,6 +1863,58 @@ def _strict_review_gate_stage_writer(
             phase_three,
             manifest,
             terminal_state,
+        )
+        analysis_record_uids = {
+            str(row.get("record_uid"))
+            for row in tuple(getattr(phase_three, "input_records", ()))
+            if row.get("record_uid")
+        }
+        analytical_curve_series = {
+            str(row.get("response_series_uid"))
+            for row in tuple(getattr(phase_three.evidence, "curve_rows", ()))
+            if row.get("response_series_uid")
+        }
+        classified_issues: list[dict[str, Any]] = []
+        for issue in issues:
+            policy_permits = (
+                review_gate_policy is not None
+                and review_gate_policy.permits(issue)
+            )
+            leakage_detected = policy_permits and (
+                (
+                    issue["stage"] == "phase_2"
+                    and issue["subject_id"] in analysis_record_uids
+                )
+                or (
+                    issue["stage"] == "phase_3"
+                    and issue["subject_id"] in analytical_curve_series
+                )
+            )
+            permitted = policy_permits and not leakage_detected
+            classified_issues.append(
+                {
+                    **issue,
+                    "gate_classification": (
+                        "permitted_resolved_disposition"
+                        if permitted
+                        else "blocking"
+                    ),
+                    "blocking_reason_codes": (
+                        ["ANALYTICAL_LEAKAGE_DETECTED"]
+                        if leakage_detected
+                        else []
+                    ),
+                }
+            )
+        permitted_issues = tuple(
+            issue
+            for issue in classified_issues
+            if issue["gate_classification"] == "permitted_resolved_disposition"
+        )
+        blocking_issues = tuple(
+            issue
+            for issue in classified_issues
+            if issue["gate_classification"] == "blocking"
         )
         observed_ledgers: list[str] = []
         if hasattr(phase_two.qc, "review_rows"):
@@ -1873,6 +1927,10 @@ def _strict_review_gate_stage_writer(
             observed_ledgers.append("runtime_warnings")
         if "rows" in terminal_state and terminal_state.get("reconciles") is True:
             observed_ledgers.append("analysis_terminal_statuses")
+        if "multiplicity_reconciliation" in manifest:
+            observed_ledgers.append("multiplicity_reconciliation")
+        if "claim_classification" in manifest:
+            observed_ledgers.append("claim_classification")
         evidence_complete = tuple(observed_ledgers) == _REVIEW_GATE_EXPECTED_LEDGERS
         decision = (
             "fail_incomplete_evidence"
