@@ -176,6 +176,7 @@ def ingest_csv(
     source_name: str,
     expected_physical_columns: int,
     expected_headers: Mapping[int, str] | None = None,
+    expected_header_sha256: str | None = None,
     expected_sha256: str | None = None,
     source_type: str = "unknown",
     source_family: str | None = None,
