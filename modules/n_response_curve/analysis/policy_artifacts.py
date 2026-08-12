@@ -2911,6 +2911,10 @@ def load_analysis_policy_bundle(
         (representation.factor_name, representation.engine)
         for representation in factor_representations
     }
+    representation_by_key = {
+        (representation.factor_name, representation.engine): representation
+        for representation in factor_representations
+    }
     for hypothesis in hypotheses:
         if hypothesis.support_rule_id not in support_ids:
             raise PolicyArtifactError(
@@ -2930,6 +2934,18 @@ def load_analysis_policy_bundle(
         if estimand.outcome != hypothesis.outcome:
             raise PolicyArtifactError(
                 f"{hypothesis.hypothesis_id} has inconsistent estimand and hypothesis outcomes"
+            )
+        if (
+            hypothesis.status == "enabled"
+            and hypothesis.outcome == "target_yield_gap_t_ha"
+            and (
+                hypothesis.hypothesis_id != "target_yield_contrast"
+                or estimand.direction != "target_yield_minus_actual_rcm_yield"
+            )
+        ):
+            raise PolicyArtifactError(
+                f"{hypothesis.hypothesis_id} ANA-03 target-yield-gap evidence requires "
+                "the dedicated ANA-15 target-yield estimand and direction"
             )
         support_rule = support_by_id[hypothesis.support_rule_id]
         if (
@@ -2951,6 +2967,21 @@ def load_analysis_policy_bundle(
                 )
                 raise PolicyArtifactError(
                     f"{hypothesis.hypothesis_id} lacks factor representations: {formatted}"
+                )
+            representation_types = {
+                representation_by_key[(factor_name, hypothesis.engine)].data_type
+                for factor_name in hypothesis.factor_names
+            }
+            if (
+                support_rule.factor_type == "mixed"
+                and len(representation_types) < 2
+            ) or (
+                support_rule.factor_type != "mixed"
+                and representation_types != {support_rule.factor_type}
+            ):
+                raise PolicyArtifactError(
+                    f"{hypothesis.hypothesis_id} support factor type does not "
+                    "match its reviewed factor representations"
                 )
             for sensitivity in hypothesis.sensitivity_specifications:
                 sensitivity_id = str(sensitivity["sensitivity_id"])
@@ -2982,6 +3013,24 @@ def load_analysis_policy_bundle(
                     raise PolicyArtifactError(
                         f"{hypothesis.hypothesis_id} sensitivity {sensitivity_id} "
                         f"lacks factor representations: {formatted}"
+                    )
+                sensitivity_types = {
+                    representation_by_key[
+                        (factor_name, str(sensitivity["engine"]))
+                    ].data_type
+                    for factor_name in sensitivity["factor_names"]
+                }
+                if (
+                    sensitivity_support.factor_type == "mixed"
+                    and len(sensitivity_types) < 2
+                ) or (
+                    sensitivity_support.factor_type != "mixed"
+                    and sensitivity_types != {sensitivity_support.factor_type}
+                ):
+                    raise PolicyArtifactError(
+                        f"{hypothesis.hypothesis_id} sensitivity {sensitivity_id} "
+                        "support factor type does not match its reviewed factor "
+                        "representations"
                     )
     return AnalysisPolicyBundle(
         support_authority=support_authority,
