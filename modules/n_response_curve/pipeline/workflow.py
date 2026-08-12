@@ -16,7 +16,12 @@ import sys
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from n_response_curve.analysis.analysis_matrix import AnalysisRegistry, build_analysis_registry, build_source_combinations
+from n_response_curve.analysis.analysis_matrix import (
+    INFERENTIAL_ANALYSIS_FAMILIES,
+    AnalysisRegistry,
+    build_analysis_registry,
+    build_source_combinations,
+)
 from n_response_curve.analysis.claims import (
     build_runtime_claim_evidence,
     classify_claim_evidence,
