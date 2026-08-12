@@ -192,7 +192,12 @@ nrc_run_marginal_contrasts <- function(stage) {
     row$multiple_testing_adjustment <- "pending_central_reconciliation"
     row
   })
+  results <- nrc_apply_interval_metadata(results, specification)
   results <- nrc_apply_multiplicity(results, specification)
+  multiplicity_reason <- nrc_multiplicity_reason(results, specification)
+  if (!is.null(multiplicity_reason)) {
+    return(nrc_skip_result(multiplicity_reason))
+  }
 
   list(
     status = "completed",
