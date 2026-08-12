@@ -137,7 +137,12 @@ def _normalized_text(value: str | None) -> str:
     return (value or "").strip()
 
 
-def classify_missing(value: str | None, missing_values: Mapping[str, Any]) -> str:
+def classify_missing(
+    value: str | None,
+    missing_values: Mapping[str, Any],
+    *,
+    missing_state_lookup: ReviewedLookupTable | None = None,
+) -> str:
     """Classify a raw cell without replacing its original text."""
 
     normalized = _normalized_text(value)
