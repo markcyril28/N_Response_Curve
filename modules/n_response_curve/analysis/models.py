@@ -382,6 +382,43 @@ def _inverse_variance_sensitivity_weights(
     return 1.0 / np.square(values), ()
 
 
+def _replication_balance(
+    n_rates: np.ndarray,
+    evidence: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[tuple[float, int], ...], str]:
+    """Pair each N level with its reviewed replicate count and judge balance.
+
+    The MOD-09 primary estimator weights every reviewed treatment mean equally.
+    That is exact only when the means rest on equal replication: with unequal
+    replication Var(mean_i) = sigma^2 / n_i, so residuals are heteroscedastic
+    and nominal standard errors understate uncertainty at the thinly replicated
+    levels. Recording the counts now makes that check possible for the reviewer
+    who binds the estimator authority; it is far cheaper than reconstructing
+    replication after the fact.
+    """
+
+    if not evidence or len(evidence) != len(n_rates):
+        return (), "unavailable_no_reviewed_replicate_evidence"
+    counts: list[tuple[float, int]] = []
+    for rate, row in zip(n_rates.tolist(), evidence, strict=True):
+        replicate_count = row.get("replicate_count")
+        if (
+            not isinstance(replicate_count, int)
+            or isinstance(replicate_count, bool)
+            or replicate_count < 1
+            or row.get("replication_status") != "verified"
+        ):
+            return (), "unavailable_no_reviewed_replicate_evidence"
+        counts.append((float(rate), int(replicate_count)))
+    ordered = tuple(sorted(counts))
+    balanced = len({count for _, count in ordered}) == 1
+    return ordered, (
+        "balanced_equal_replication"
+        if balanced
+        else "unbalanced_unequal_replication"
+    )
+
+
 def _observed_bounds(n_rates: np.ndarray) -> tuple[float, float]:
     return float(np.min(n_rates)), float(np.max(n_rates))
 
