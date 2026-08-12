@@ -69,7 +69,9 @@ UNCERTAINTY_METHOD_SPECS = MappingProxyType(
             {
                 "method_spec_version": "1.0.0",
                 "linkage_rule": "row_aligned_reported_mean_standard_error",
-                "point_estimation_weighting": "unweighted_least_squares",
+                "point_estimation_weighting": MOD09_ESTIMATOR_SPECIFICATION[
+                    "primary_estimator_name"
+                ],
                 "likelihood": "none_delta_covariance_propagation",
                 "observation_error_covariance": (
                     "diagonal_reported_mean_se_squared"
