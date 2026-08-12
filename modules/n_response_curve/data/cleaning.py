@@ -130,6 +130,10 @@ class SourceCleaningPolicy:
             raise ValueError("Final cleaning policies must retain records that match no reviewed rule")
         if not self.untrimmed_sensitivity_required:
             raise ValueError("ELG-12 policies must preserve an untrimmed sensitivity membership")
+        if not self.rules:
+            raise ValueError(
+                "Final cleaning policies require at least one reviewed rule"
+            )
         rule_ids = tuple(rule.rule_id for rule in self.rules)
         if len(rule_ids) != len(set(rule_ids)):
             raise ValueError("Final cleaning rule identifiers must be unique within a source policy")
