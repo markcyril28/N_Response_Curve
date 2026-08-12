@@ -428,10 +428,39 @@ def _validate_reviewed_source_map(
         raise ValueError(
             "Reviewed source map workbook/CSV basis differs from the ingested source basis"
         )
+    if source_map.workbook_csv_basis == "parallel_workbook_csv_unresolved":
+        raise ValueError(
+            "Parallel workbook/CSV source lacks reviewed workbook/CSV reconciliation"
+        )
+    if source_map.workbook_csv_basis == "parallel_workbook_csv_verified_equivalent":
+        reconciliation_values = (
+            source_map.workbook_sha256,
+            source_map.csv_sha256,
+            source_map.workbook_csv_reconciliation_review_id,
+        )
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in reconciliation_values
+        ):
+            raise ValueError(
+                "Verified workbook/CSV equivalence requires both digests and review evidence"
+            )
+        if any(
+            re.fullmatch(r"[0-9a-f]{64}", str(digest).strip().lower()) is None
+            for digest in (source_map.workbook_sha256, source_map.csv_sha256)
+        ):
+            raise ValueError("Workbook/CSV reconciliation digests must be SHA-256 values")
+        if source_map.csv_sha256 != source.source_sha256:
+            raise ValueError(
+                "Workbook/CSV reconciliation is not bound to the ingested CSV bytes"
+            )
     if source_map.representation_basis not in KNOWN_REPRESENTATION_BASES:
         raise ValueError("Reviewed source map has an unsupported representation basis")
     if source_map.representation_basis_status not in {"reviewed", "review_required"}:
         raise ValueError("Reviewed source map has an unsupported representation-basis status")
+    validate_reviewed_fill_down_policy(source_map)
+    if source_map.representation_basis_status == "reviewed":
+        validate_reviewed_nutrient_unit_controls(source_map)
     if (
         source.representation_basis_status == "reviewed"
         and source_map.representation_basis != source.representation_basis
@@ -456,6 +485,63 @@ def _validate_reviewed_source_map(
         if disposition.role in {"descriptive", "held", "restricted"} and not disposition.variable_family:
             raise ValueError(
                 f"Physical column {disposition.position} lacks a variable-family disposition"
+            )
+        if (
+            source_map.approved_variable_families
+            and disposition.variable_family
+            and disposition.variable_family not in source_map.approved_variable_families
+        ):
+            raise ValueError(
+                f"Physical column {disposition.position} variable family "
+                f"{disposition.variable_family!r} is not approved by the source map"
+            )
+        for value, allowed, label in (
+            (disposition.source_value_type, _SOURCE_VALUE_TYPES, "source value type"),
+            (
+                disposition.provider_semantics_status,
+                _PROVIDER_SEMANTICS_STATUSES,
+                "provider semantics status",
+            ),
+            (disposition.leakage_class, _LEAKAGE_CLASSES, "leakage class"),
+            (
+                disposition.additional_use_status,
+                _ADDITIONAL_USE_STATUSES,
+                "additional-use status",
+            ),
+        ):
+            if value is not None and value not in allowed:
+                raise ValueError(
+                    f"Physical column {disposition.position} has an unknown {label}"
+                )
+        if disposition.date_conversion_rule is not None and not str(
+            disposition.date_conversion_rule
+        ).strip():
+            raise ValueError(
+                f"Physical column {disposition.position} has an empty date conversion rule"
+            )
+    if source.source_name == "ph_combined_nopt_rcm":
+        incomplete_semantic_positions = tuple(
+            disposition.position
+            for disposition in source_map.dispositions
+            if any(
+                value is None
+                for value in (
+                    disposition.source_value_type,
+                    disposition.provider_semantics_status,
+                    disposition.leakage_class,
+                    disposition.additional_use_status,
+                )
+            )
+            or (
+                disposition.source_value_type == "date"
+                and disposition.date_conversion_rule is None
+            )
+        )
+        if not source_map.approved_variable_families or incomplete_semantic_positions:
+            raise ValueError(
+                "Combined source requires a complete semantic disposition and approved "
+                "variable-family allowlist for every physical column; "
+                f"incomplete_positions={incomplete_semantic_positions or 'none'}"
             )
     mapped_positions: dict[int, str] = {}
     for canonical_name, position in source_map.fields.items():
