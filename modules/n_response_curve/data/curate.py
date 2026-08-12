@@ -33,16 +33,92 @@ from .schema import (
     parse_numeric,
     sensitive_path_alias,
     validate_reviewed_lookup_table,
+    validate_reviewed_missing_state_table,
 )
 
 
 _COLUMN_ROLES = frozenset(
     {"canonical", "descriptive", "held", "restricted", "source_metadata", "blank"}
 )
+_SOURCE_VALUE_TYPES = frozenset(
+    {"numeric", "text", "date", "mixed", "identifier", "blank"}
+)
+_PROVIDER_SEMANTICS_STATUSES = frozenset(
+    {"verified", "unverified", "not_applicable"}
+)
+_LEAKAGE_CLASSES = frozenset(
+    {
+        "approved_predictor",
+        "outcome",
+        "identifier",
+        "post_outcome",
+        "economic",
+        "descriptive",
+        "held",
+        "not_applicable",
+    }
+)
+_ADDITIONAL_USE_STATUSES = frozenset(
+    {
+        "canonical_current_scope",
+        "descriptive_only",
+        "held_pending_separate_approval",
+        "restricted",
+        "blank",
+    }
+)
 REQUIRED_REVIEWED_LOOKUP_FIELDS = (
     "water_regime",
     "season",
     "treatment_class",
+)
+_SERIES_IDENTITY_LOOKUP_FIELDS = MappingProxyType(
+    {
+        "water_regime": "water_regime",
+        "season": "season",
+        "region": "region",
+        "province": "province",
+        "variety": "rice_variety",
+        "experimental_design": "experimental_design",
+        "soil_texture": "soil_texture",
+    }
+)
+_CURVE_CAPABLE_REPRESENTATION_BASES = frozenset(
+    {"observation_level", "treatment_mean"}
+)
+_REQUIRED_CURVE_FIELD_ROLES = MappingProxyType(
+    {
+        "study": frozenset({"study_id"}),
+        "trial": frozenset({"trial_id"}),
+        "treatment": frozenset({"treatment", "treatment_id"}),
+        "n_rate": frozenset({"n_rate_kg_ha", "inorganic_n_rate"}),
+        "yield": frozenset({"yield_t_ha", "yield_kg_ha"}),
+    }
+)
+_SERIES_IDENTITY_FIELD_ALIASES = MappingProxyType(
+    {
+        "site": frozenset({"site", "site_id", "location", "location_id"}),
+        "experimental_design": frozenset(
+            {"experimental_design", "design", "trial_design"}
+        ),
+        "management_context": frozenset(
+            {
+                "inorganic_p_rate",
+                "inorganic_k_rate",
+                "organic_fertilizer",
+                "biofertilizer",
+                "n_timing_pattern",
+                "n_split_pattern",
+            }
+        ),
+        "variety": frozenset({"variety", "rice_variety"}),
+        "recommendation_class": frozenset(
+            {"recommendation_class", "treatment", "treatment_id"}
+        ),
+    }
+)
+_MANDATORY_SERIES_IDENTITY_DIMENSIONS = frozenset(
+    {"site", "experimental_design", "management_context"}
 )
 _KNOWN_TREATMENT_LOOKUP_CLASSES = frozenset(
     {
@@ -59,6 +135,18 @@ _KNOWN_TREATMENT_LOOKUP_CLASSES = frozenset(
 _REQUIRED_TREATMENT_LOOKUP_CLASSES = frozenset(
     {"zero_n", "absolute_control", "RCM", "FP", "NOPT_NPK"}
 )
+_FILL_DOWN_CANONICAL_FIELDS = frozenset(
+    {"study_id", "trial_id", "source", "authors", "publication_year"}
+)
+NUTRIENT_CANONICAL_UNITS = MappingProxyType(
+    {
+        "inorganic_n_rate": CANONICAL_N_RATE_UNIT,
+        "recommended_n_rate": CANONICAL_N_RATE_UNIT,
+        "inorganic_p_rate": "kg P2O5 ha-1",
+        "inorganic_k_rate": "kg K2O ha-1",
+    }
+)
+_OPTIONAL_CANONICAL_SOURCE_FIELDS = frozenset({"recommended_n_rate"})
 
 
 @dataclass(frozen=True)
