@@ -10,12 +10,16 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from .curate import (
+    NUTRIENT_CANONICAL_UNITS,
     PhysicalColumnDisposition,
     REQUIRED_REVIEWED_LOOKUP_FIELDS,
     RestrictedDataPolicy,
+    ReviewedNutrientUnitControl,
     ReviewedSourceMap,
     SourceArmMap,
     validate_reviewed_curation_controls,
+    validate_reviewed_fill_down_policy,
+    validate_reviewed_nutrient_unit_controls,
 )
 from .config import ConfigError
 from .duplicates import (
@@ -25,12 +29,22 @@ from .duplicates import (
 )
 from .provenance import (
     ChecksumRevisionApproval,
+    VerificationResult,
+    VerificationSamplingPolicy,
     parse_checksum_revision_approval,
     sha256_file,
 )
-from .schema import ReviewedLookupTable, validate_reviewed_lookup_table
+from .schema import (
+    ReviewedLookupTable,
+    validate_reviewed_lookup_table,
+    validate_reviewed_missing_state_table,
+)
 from .ingest import KNOWN_REPRESENTATION_BASES, IngestionResult
-from .cleaning import FinalCleaningRule, SourceCleaningPolicy
+from .cleaning import (
+    FinalCleaningRule,
+    SourceCleaningPolicy,
+    validate_numeric_rule_unit,
+)
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
