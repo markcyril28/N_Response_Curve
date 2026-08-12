@@ -59,6 +59,19 @@ from n_response_curve.pipeline.workflow import (
 )
 
 
+_FACTOR_ANALYSIS_FAMILIES = frozenset(
+    {
+        "one_factor_descriptive",
+        "one_factor_inferential",
+        "all_supported_interactions",
+        "multivariable_mixed_effects",
+        "observation_level_curve_modification",
+        "penalized_predictive_models",
+        "marginal_contrasts",
+    }
+)
+
+
 @dataclass(frozen=True)
 class PhaseTwoResult:
     ingestion: IngestionResult
