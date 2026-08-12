@@ -964,7 +964,7 @@ def resolve_response_series(
     context_dimensions: tuple[str, ...] | list[str] | None = None,
     series_identity_dimensions: tuple[str, ...] | list[str] | None = None,
     n_level_tolerance_kg_ha: float = 1e-8,
-    duplicate_rules: DuplicateRuleSet | None = None,
+    duplicate_rules: DuplicateRuleSet | tuple[DuplicateRuleSet, ...] | None = None,
     duplicate_adjudications: Iterable[DuplicateAdjudication] = (),
     repeat_adjudications: Iterable[RepeatAdjudication] = (),
     designated_reviewers: Iterable[str] = (),
@@ -988,6 +988,15 @@ def resolve_response_series(
         raise ValueError("Series identity dimensions must be unique")
     if n_level_tolerance_kg_ha <= 0:
         raise ValueError("N-level tolerance must be positive")
+    dimensions = (
+        *dimensions,
+        *(
+            dimension
+            for dimension in _INTRINSIC_SERIES_IDENTITY_DIMENSIONS
+            if dimension not in dimensions
+            and any(_context_value(record, dimension) is not None for record in ledger)
+        ),
+    )
 
     for record in ledger:
         record["response_series_uid"] = None
@@ -997,7 +1006,7 @@ def resolve_response_series(
         record["same_n_status"] = "not_assessed"
         record["repeat_group_uid"] = None
         record["analytical_record_status"] = "included"
-    _initialize_duplicate_statuses(
+    _initialize_dispatched_duplicate_statuses(
         ledger,
         rules=duplicate_rules,
         adjudications=duplicate_adjudications,
