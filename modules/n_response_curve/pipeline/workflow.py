@@ -3859,6 +3859,36 @@ def release_phases_three_to_five(
             == "separate_verified_classes"
         ),
         "curve_feature_row_count": len(phase_three.evidence.curve_rows),
+        "n_efficiency_summary": {
+            "row_count": len(phase_three.evidence.efficiency_rows),
+            "status_counts": _field_counts(
+                phase_three.evidence.efficiency_rows,
+                "status",
+            ),
+        },
+        "efficiency_operating_point_summary": {
+            "row_count": len(
+                phase_three.evidence.efficiency_operating_point_rows
+            ),
+            "status_counts": _field_counts(
+                phase_three.evidence.efficiency_operating_point_rows,
+                "status",
+            ),
+        },
+        "asymptote_support_summary": {
+            "row_count": len(phase_three.evidence.asymptote_support_rows),
+            "status_counts": _field_counts(
+                phase_three.evidence.asymptote_support_rows,
+                "status",
+            ),
+        },
+        "asymptote_reporting_summary": {
+            "row_count": len(phase_three.evidence.asymptote_reporting_rows),
+            "status_counts": _field_counts(
+                phase_three.evidence.asymptote_reporting_rows,
+                "status",
+            ),
+        },
         "series_evidence_summary": {
             "row_count": len(series_evidence_rows),
             "evidence_status_counts": _field_counts(series_evidence_rows, "evidence_status"),
@@ -3923,6 +3953,19 @@ def release_phases_three_to_five(
                 and isinstance(existing_policy, Mapping)
                 and existing_policy.get("policy_content_sha256")
                 == policy_snapshot.policy_content_sha256
+                and (
+                    release_approval is None
+                    or (
+                        isinstance(
+                            existing_manifest.get("release_approval"),
+                            Mapping,
+                        )
+                        and existing_manifest["release_approval"].get(
+                            "artifact_sha256"
+                        )
+                        == release_approval.artifact_sha256
+                    )
+                )
                 and _review_gate_allows_reuse(
                     existing_manifest,
                     run_identity_sha256=run_identity_sha256,
