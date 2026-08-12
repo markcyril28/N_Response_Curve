@@ -247,7 +247,17 @@ class ReviewedSourceMap:
     arms: tuple[SourceArmMap, ...] = ()
     normalization_map_version: str | None = None
     normalization_review_id: str | None = None
+    missing_state_maps: Mapping[str, ReviewedLookupTable] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    nutrient_unit_controls: Mapping[str, ReviewedNutrientUnitControl] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    approved_variable_families: frozenset[str] = frozenset()
     declared_constant_fields: tuple[str, ...] = ()
+    workbook_sha256: str | None = None
+    csv_sha256: str | None = None
+    workbook_csv_reconciliation_review_id: str | None = None
 
 
 @dataclass(frozen=True)
