@@ -1721,6 +1721,15 @@ def _project_public_records(
     public: list[dict[str, Any]] = []
     for source_record in records:
         record = dict(source_record)
+        restricted_role_fields = _restricted_role_canonical_fields(record)
+        contradicted = sorted(restricted_role_fields & allowed_fields)
+        if contradicted:
+            raise ValueError(
+                "Restricted-data policy and reviewed source map disagree: the public "
+                "allowlist names column(s) the source map dispositions as restricted, "
+                "which the reviewer must reconcile before any projection: "
+                + ", ".join(contradicted)
+            )
         if record.get("data_classification") != "restricted":
             record.pop("source_path", None)
             record.pop("schema_map_path", None)
