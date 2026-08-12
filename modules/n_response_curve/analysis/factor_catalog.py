@@ -125,7 +125,12 @@ def _reviewed_factor_value(
         raise ValueError("Reviewed factor representation data type conflicts with the catalog")
     if representation.get("unit") != metadata.get("unit"):
         raise ValueError("Reviewed factor representation unit conflicts with the catalog")
-    if representation.get("role") != metadata["role"]:
+    representation_role = str(representation.get("role") or "")
+    canonical_role = _REPRESENTATION_ROLE_ALIASES.get(
+        representation_role,
+        representation_role,
+    )
+    if canonical_role != metadata["role"]:
         raise ValueError("Reviewed factor representation role conflicts with the catalog")
     if (
         representation.get("missingness_rule")
