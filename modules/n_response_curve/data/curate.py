@@ -1748,6 +1748,7 @@ def _project_public_records(
             if key in allowed_fields
             and key not in prohibited_fields
             and key not in prohibited_raw_fields
+            and key not in restricted_role_fields
         }
         record_uid = str(record.get("record_uid") or "").strip()
         if not record_uid:
@@ -1768,6 +1769,9 @@ def _project_public_records(
             policy.automated_disclosure_review_id
         )
         projection["human_disclosure_review_id"] = policy.human_disclosure_review_id
+        projection["pseudonymization_method"] = policy.pseudonymization_method
+        projection["retention_policy_id"] = policy.retention_policy_id
+        projection["retention_review_id"] = policy.retention_review_id
         public.append(projection)
     return tuple(public)
 
