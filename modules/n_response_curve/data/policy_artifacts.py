@@ -744,6 +744,47 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                             for key, value in raw_constants.items()
                         }
                     ),
+                    comparability_group_id=(
+                        _nonempty_text(
+                            raw_arm.get("comparability_group_id"),
+                            where=(
+                                f"{where}.arms[{arm_index}].comparability_group_id"
+                            ),
+                        )
+                        if raw_arm.get("comparability_group_id") is not None
+                        else None
+                    ),
+                    comparability_review_id=(
+                        _nonempty_text(
+                            raw_arm.get("comparability_review_id"),
+                            where=(
+                                f"{where}.arms[{arm_index}].comparability_review_id"
+                            ),
+                        )
+                        if raw_arm.get("comparability_review_id") is not None
+                        else None
+                    ),
+                    recommendation_set_membership_status=_nonempty_text(
+                        raw_arm.get(
+                            "recommendation_set_membership_status",
+                            "not_verified",
+                        ),
+                        where=(
+                            f"{where}.arms[{arm_index}]"
+                            ".recommendation_set_membership_status"
+                        ),
+                    ),
+                    recommendation_set_review_id=(
+                        _nonempty_text(
+                            raw_arm.get("recommendation_set_review_id"),
+                            where=(
+                                f"{where}.arms[{arm_index}]"
+                                ".recommendation_set_review_id"
+                            ),
+                        )
+                        if raw_arm.get("recommendation_set_review_id") is not None
+                        else None
+                    ),
                 )
             )
         source_sha256 = _nonempty_text(
