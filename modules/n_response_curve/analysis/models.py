@@ -12,6 +12,7 @@ from scipy.optimize import least_squares
 
 from ..data.provenance import stable_identifier, stable_json_sha256
 from .reviewed_methods import (
+    MOD09_ESTIMATOR_SPECIFICATION,
     UNCERTAINTY_METHOD_CONFIDENCE_LEVELS,
     UNCERTAINTY_METHOD_REQUIRED_EVIDENCE,
     UNCERTAINTY_METHOD_SPECS,
