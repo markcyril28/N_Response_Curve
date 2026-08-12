@@ -1100,6 +1100,16 @@ def resolve_response_series(
         candidate_groups.items(),
         key=lambda item: tuple(map(str, item[0])),
     ):
+        if any(
+            _reviewed_comparison_set_uid(record) in conflicting_comparison_sets
+            for record in group
+        ):
+            for record in group:
+                _mark_unresolved(
+                    record,
+                    "COMPARISON_SET_UID_REUSED_ACROSS_CONTEXTS",
+                )
+            continue
         n_groups: list[tuple[float, list[dict[str, Any]]]] = []
         parsed_n_rows: list[tuple[float, dict[str, Any]]] = []
         for record in group:
