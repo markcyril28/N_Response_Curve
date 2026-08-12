@@ -134,7 +134,17 @@ nrc_run_mixed_models <- function(stage) {
   if (!nrc_formula_has_hierarchy(model_formula)) {
     return(nrc_skip_result("INTERACTION_HIERARCHY_VIOLATION"))
   }
-  design_reason <- nrc_fixed_effect_design_reason(model_formula, stage$data, 3L)
+  minimum_residual_df <- specification$support_policy$minimum_residual_df
+  if (is.null(minimum_residual_df) || !is.numeric(minimum_residual_df) ||
+        length(minimum_residual_df) != 1L || !is.finite(minimum_residual_df) ||
+        minimum_residual_df < 1 || minimum_residual_df != as.integer(minimum_residual_df)) {
+    return(nrc_skip_result("PREDECLARED_RESIDUAL_DF_THRESHOLD_REQUIRED"))
+  }
+  design_reason <- nrc_fixed_effect_design_reason(
+    model_formula,
+    analysis_data,
+    as.integer(minimum_residual_df)
+  )
   if (!is.null(design_reason)) {
     return(nrc_skip_result(design_reason))
   }
@@ -143,17 +153,17 @@ nrc_run_mixed_models <- function(stage) {
     model_kind <- "lm"
   }
   outcome_kind <- specification$outcome_kind
-  if (is.null(outcome_kind)) {
-    outcome_kind <- "continuous"
+  if (is.null(model_kind) || is.null(outcome_kind)) {
+    return(nrc_skip_result("PREDECLARED_MODEL_SPECIFICATION_REQUIRED"))
   }
   first_stage_weights <- NULL
   first_stage <- specification$first_stage_uncertainty
   if (!is.null(first_stage)) {
     weight_column <- first_stage$weight_column
-    if (is.null(weight_column) || !weight_column %in% names(stage$data)) {
+    if (is.null(weight_column) || !weight_column %in% names(analysis_data)) {
       return(nrc_skip_result("FIRST_STAGE_WEIGHT_COLUMN_REQUIRED"))
     }
-    first_stage_weights <- stage$data[[weight_column]]
+    first_stage_weights <- analysis_data[[weight_column]]
     if (!is.numeric(first_stage_weights) ||
         any(!is.finite(first_stage_weights)) ||
         any(first_stage_weights <= 0)) {
