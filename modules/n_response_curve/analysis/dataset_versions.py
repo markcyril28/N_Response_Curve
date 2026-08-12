@@ -241,10 +241,13 @@ def _verified_recommendation_member(
     membership_status_field: str,
     verified_status: str,
 ) -> bool:
+    review_id = record.get("recommendation_set_review_id")
     return (
         _eligible(record)
         and record.get("treatment_classification_status") == "resolved"
         and record.get(membership_status_field) == verified_status
+        and isinstance(review_id, str)
+        and bool(review_id.strip())
         and finite_number(record.get("n_rate_kg_ha")) is not None
         and finite_number(record.get("yield_t_ha")) is not None
     )
