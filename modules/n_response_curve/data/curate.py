@@ -387,29 +387,26 @@ def validate_reviewed_fill_down_policy(source_map: ReviewedSourceMap) -> None:
             )
 
 
-def validate_reviewed_nutrient_unit_controls(source_map: ReviewedSourceMap) -> None:
-    """Require explicit reviewed unit/basis conversion for every mapped nutrient rate."""
+def validate_nutrient_unit_control_consistency(source_map: ReviewedSourceMap) -> None:
+    """Reject an internally contradictory reviewed unit/basis control.
 
-    mapped_fields = set(source_map.fields)
-    mapped_fields.update(source_map.declared_constant_fields)
-    for arm in source_map.arms:
-        mapped_fields.update(arm.field_positions)
-        mapped_fields.update(arm.constants)
-    required_fields = mapped_fields.intersection(NUTRIENT_CANONICAL_UNITS)
-    control_fields = set(source_map.nutrient_unit_controls)
-    missing_fields = sorted(required_fields - control_fields)
-    unexpected_fields = sorted(control_fields - required_fields)
-    if missing_fields:
-        raise ValueError(
-            f"{missing_fields[0]} lacks a reviewed unit/basis control"
-        )
-    if unexpected_fields:
-        raise ValueError(
-            "Reviewed nutrient unit/basis controls target unmapped field(s): "
-            + ", ".join(unexpected_fields)
-        )
+    Every supplied control is checked, whether or not the source map's representation
+    basis has been reviewed, because ``_finalize_canonical_record`` applies a control's
+    conversion factor as soon as the control exists. The check is a consistency gate
+    only: it verifies that the declared source unit, source basis, and conversion factor
+    can describe the same conversion. It deliberately does not verify the *magnitude* of
+    a cross-basis factor, because no approved elemental/oxide stoichiometry is bound and
+    decided `DAT-04` Option D forbids imposing an unaudited conversion.
+    """
+
     for field_name, control in source_map.nutrient_unit_controls.items():
+        if field_name not in NUTRIENT_CANONICAL_UNITS:
+            raise ValueError(
+                "Nutrient unit/basis control targets a field outside the reviewed "
+                f"nutrient contract: {field_name}"
+            )
         expected_unit = NUTRIENT_CANONICAL_UNITS[field_name]
+        canonical_basis = CANONICAL_NUTRIENT_BASES[field_name]
         if control.canonical_field != field_name:
             raise ValueError("Nutrient unit control canonical field does not match its key")
         if control.canonical_unit != expected_unit:
