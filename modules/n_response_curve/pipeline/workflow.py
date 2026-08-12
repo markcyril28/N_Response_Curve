@@ -2315,6 +2315,174 @@ def _complete_case_composition_rows(
     )
 
 
+def _complete_case_comparison_rows(
+    phase_four: PhaseFourResult,
+) -> tuple[dict[str, Any], ...]:
+    """Summarize included versus excluded factor and outcome composition."""
+
+    candidates = {
+        candidate.candidate_id: candidate
+        for candidate in phase_four.registry.candidates
+    }
+    summaries: list[dict[str, Any]] = []
+    for candidate_id, preparation in phase_four.r_preparations:
+        candidate = candidates.get(candidate_id)
+        if candidate is None:
+            continue
+        membership_rows = tuple(preparation.membership_rows)
+        statuses = sorted(
+            {
+                str(row.get("membership_status") or "unknown")
+                for row in membership_rows
+            }
+        )
+        for status in statuses:
+            status_rows = tuple(
+                row
+                for row in membership_rows
+                if str(row.get("membership_status") or "unknown") == status
+            )
+            for factor_name in candidate.factor_names:
+                level_counts = Counter(
+                    "__missing__"
+                    if row.get(factor_name) is None
+                    else str(row.get(factor_name))
+                    for row in status_rows
+                )
+                for level, count in sorted(level_counts.items()):
+                    summaries.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "membership_status": status,
+                            "comparison_kind": "factor_level",
+                            "variable_name": factor_name,
+                            "level": level,
+                            "count": count,
+                            "available_count": (
+                                0 if level == "__missing__" else count
+                            ),
+                            "missing_count": (
+                                count if level == "__missing__" else 0
+                            ),
+                            "mean": None,
+                            "median": None,
+                            "minimum": None,
+                            "maximum": None,
+                        }
+                    )
+
+            outcome_name = str(
+                preparation.specification.get("outcome_name")
+                or candidate.curve_outcome
+            )
+            outcome_values = [row.get("outcome_value") for row in status_rows]
+            present_values = [value for value in outcome_values if value is not None]
+            numeric_values: list[float] = []
+            for value in present_values:
+                if isinstance(value, bool):
+                    break
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    break
+                if not math.isfinite(numeric_value):
+                    break
+                numeric_values.append(numeric_value)
+            if present_values and len(numeric_values) == len(present_values):
+                summaries.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "membership_status": status,
+                        "comparison_kind": "outcome_numeric_summary",
+                        "variable_name": outcome_name,
+                        "level": None,
+                        "count": len(status_rows),
+                        "available_count": len(numeric_values),
+                        "missing_count": len(status_rows) - len(numeric_values),
+                        "mean": sum(numeric_values) / len(numeric_values),
+                        "median": median(numeric_values),
+                        "minimum": min(numeric_values),
+                        "maximum": max(numeric_values),
+                    }
+                )
+            else:
+                level_counts = Counter(
+                    "__missing__" if value is None else str(value)
+                    for value in outcome_values
+                )
+                for level, count in sorted(level_counts.items()):
+                    summaries.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "membership_status": status,
+                            "comparison_kind": "outcome_level",
+                            "variable_name": outcome_name,
+                            "level": level,
+                            "count": count,
+                            "available_count": (
+                                0 if level == "__missing__" else count
+                            ),
+                            "missing_count": (
+                                count if level == "__missing__" else 0
+                            ),
+                            "mean": None,
+                            "median": None,
+                            "minimum": None,
+                            "maximum": None,
+                        }
+                    )
+    return tuple(
+        sorted(
+            summaries,
+            key=lambda row: (
+                row["candidate_id"],
+                row["comparison_kind"],
+                row["variable_name"],
+                row["membership_status"],
+                str(row.get("level") or ""),
+            ),
+        )
+    )
+
+
+def _literature_verification_rows(phase_two: Any) -> tuple[dict[str, Any], ...]:
+    verification = getattr(phase_two, "literature_verification", None)
+    source_policy = getattr(phase_two, "source_data_policy", None)
+    if verification is None or source_policy is None:
+        return ()
+    policy = source_policy.literature_verification_policy
+    authority = source_policy.artifact_authorities.get("literature_verification")
+    if policy is None or authority is None:
+        raise ConfigError(
+            "Literature-verification result is missing its authenticated policy authority"
+        )
+    identity = {
+        "policy_version": policy.version,
+        "policy_review_id": policy.review_id,
+        "policy_sha256": authority.sha256,
+        "round_number": verification.round_number,
+    }
+    return (
+        {
+            "literature_verification_uid": stable_json_sha256(identity),
+            **identity,
+            "source_names": list(
+                source_policy.literature_verification_source_names
+            ),
+            "status": verification.status,
+            "selected_record_uids": list(verification.selected_record_uids),
+            "selected_record_count": len(verification.selected_record_uids),
+            "escalated_strata": [
+                list(stratum) for stratum in verification.escalated_strata
+            ],
+            "limitation_reasons": list(verification.limitation_reasons),
+            "completed_result_count": len(
+                source_policy.literature_verification_results
+            ),
+        },
+    )
+
+
 def _table_artifacts(
     phase_two: Any,
     phase_three: PhaseThreeResult,
