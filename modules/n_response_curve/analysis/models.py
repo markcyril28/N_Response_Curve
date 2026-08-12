@@ -686,16 +686,27 @@ def _reviewed_credibility_policy(
 def _at_reviewed_parameter_boundary(
     parameters: np.ndarray,
     gate: _ReviewedModelGate,
+    *,
+    lower_bounds: np.ndarray | None = None,
+    upper_bounds: np.ndarray | None = None,
 ) -> bool:
-    scale = np.maximum(
-        np.maximum(np.abs(gate.lower_bounds), np.abs(gate.upper_bounds)),
-        1.0,
-    )
+    """Report whether a fit came to rest against any active constraint.
+
+    ``lower_bounds``/``upper_bounds`` are the effective bounds from
+    :func:`_effective_parameter_bounds`. They default to the reviewed policy
+    bounds only for callers that impose no additional narrowing; a plateau
+    candidate must pass its effective bounds, otherwise an onset pinned to the
+    observed-domain interior constraint is misreported as an interior estimate.
+    """
+
+    lower = gate.lower_bounds if lower_bounds is None else lower_bounds
+    upper = gate.upper_bounds if upper_bounds is None else upper_bounds
+    scale = np.maximum(np.maximum(np.abs(lower), np.abs(upper)), 1.0)
     tolerance = gate.parameter_boundary_relative_tolerance
     boundary_tolerance = np.maximum(scale * tolerance, tolerance)
     return bool(
-        np.any(np.abs(parameters - gate.lower_bounds) <= boundary_tolerance)
-        or np.any(np.abs(parameters - gate.upper_bounds) <= boundary_tolerance)
+        np.any(np.abs(parameters - lower) <= boundary_tolerance)
+        or np.any(np.abs(parameters - upper) <= boundary_tolerance)
     )
 
 
