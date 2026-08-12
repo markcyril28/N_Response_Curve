@@ -334,16 +334,27 @@ def effective_enablement(config: ValidatedConfig) -> dict[str, Any]:
     }
 
 
-def _policy_content(config: ValidatedConfig) -> dict[str, Any]:
+def _policy_content(
+    config: ValidatedConfig,
+    review_gate_policy: ReviewGatePolicy | None = None,
+    authority_matrix: ApprovalAuthorityMatrix | None = None,
+) -> dict[str, Any]:
     enablement = effective_enablement(config)
-    return {
+    content = {
         "schema_version": _POLICY_SNAPSHOT_SCHEMA_VERSION,
         "mode": config.run_mode,
         "config_sha256": sha256_file(config.config_path),
-        "semantic_policy": _semantic_policy(),
+        "semantic_policy": _semantic_policy(review_gate_policy),
         "effective_enablement": enablement,
         "effective_enablement_sha256": stable_json_sha256(enablement),
     }
+    if authority_matrix is not None:
+        content["approval_authority_matrix"] = {
+            "matrix_id": authority_matrix.matrix_id,
+            "effective_from": authority_matrix.effective_from,
+            "artifact_sha256": authority_matrix.artifact_sha256,
+        }
+    return content
 
 
 def _enabled_restricted_sources(config: ValidatedConfig) -> tuple[str, ...]:
