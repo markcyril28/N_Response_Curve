@@ -1845,18 +1845,29 @@ def load_source_data_policy_manifest(
         where="source-data policy designated_reviewers",
     )
     raw_artifacts = payload.get("artifacts")
-    if (
-        not isinstance(raw_artifacts, Mapping)
-        or set(raw_artifacts) != set(_ARTIFACT_KEYS)
-        or len(raw_artifacts) != len(_ARTIFACT_KEYS)
-    ):
+    if not isinstance(raw_artifacts, Mapping):
         raise SourceDataPolicyError(
-            "Source-data policy artifacts must contain exactly: "
-            + ", ".join(_ARTIFACT_KEYS)
+            "Source-data policy artifacts must be an object"
+        )
+    observed_artifact_keys = set(raw_artifacts)
+    required_artifact_keys = set(_ARTIFACT_KEYS)
+    supported_artifact_keys = required_artifact_keys | set(_OPTIONAL_ARTIFACT_KEYS)
+    if (
+        not required_artifact_keys.issubset(observed_artifact_keys)
+        or not observed_artifact_keys.issubset(supported_artifact_keys)
+    ):
+        missing = sorted(required_artifact_keys - observed_artifact_keys)
+        extra = sorted(observed_artifact_keys - supported_artifact_keys)
+        raise SourceDataPolicyError(
+            "Source-data policy artifact inventory is invalid: "
+            f"missing={missing}; unsupported={extra}"
         )
     authorities: dict[str, PolicyAuthority] = {}
     artifacts: dict[str, Mapping[str, Any]] = {}
-    for key in _ARTIFACT_KEYS:
+    loaded_artifact_keys = (*_ARTIFACT_KEYS,) + tuple(
+        key for key in _OPTIONAL_ARTIFACT_KEYS if key in raw_artifacts
+    )
+    for key in loaded_artifact_keys:
         authority, artifact_payload = _load_artifact(
             raw_artifacts[key],
             project_root=root,
