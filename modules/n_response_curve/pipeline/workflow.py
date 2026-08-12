@@ -4072,6 +4072,7 @@ def release_phases_three_to_five(
                 phase_three,
                 manifest,
                 terminal_state,
+                review_gate_policy=policy_snapshot.review_gate_policy,
             ),
         ),
         write_run_log,
