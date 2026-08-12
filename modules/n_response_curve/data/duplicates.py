@@ -192,15 +192,29 @@ def _raw_context_value(record: Mapping[str, Any], dimension: str) -> str | None:
     return normalized or None
 
 
+def _source_context_value(record: Mapping[str, Any], dimension: str) -> str | None:
+    key = _RAW_CONTEXT_FIELD_ALIASES.get(dimension, dimension)
+    value = record.get(key)
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _context_value(record: Mapping[str, Any], dimension: str) -> str | None:
-    normalized = _raw_context_value(record, dimension)
+    normalized_key = _CONTEXT_FIELD_ALIASES.get(dimension, dimension)
+    normalized = (
+        _raw_context_value(record, dimension)
+        if normalized_key in record
+        else _source_context_value(record, dimension)
+    )
     if normalized is None or normalized.casefold() in _MISSING_CONTEXT_VALUES:
         return None
     return normalized
 
 
 def _has_mixed_context(record: Mapping[str, Any], dimension: str) -> bool:
-    raw_value = _raw_context_value(record, dimension)
+    raw_value = _source_context_value(record, dimension)
     return (
         raw_value is not None
         and raw_value.casefold() not in _MISSING_CONTEXT_VALUES
