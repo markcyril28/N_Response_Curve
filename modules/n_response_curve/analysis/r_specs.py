@@ -212,8 +212,7 @@ def _curve_formula(
     else:
         fixed_terms = " + ".join(candidate.factor_names)
     formula = f"{candidate.curve_outcome} ~ {fixed_terms}"
-    if include_random_intercept:
-        formula += f" + (1 | {grouping_column})"
+    formula += f" + (1 | {grouping_column})"
     return formula
 
 
@@ -231,8 +230,7 @@ def _observation_formula(
                 f"I(n_rate_kg_ha^2):{factor_name}",
             )
         )
-    if include_random_intercept:
-        terms.append("(1 | study_uid/response_series_uid)")
+    terms.append("(1 | study_uid/response_series_uid)")
     return "yield_t_ha ~ " + " + ".join(terms)
 
 
