@@ -297,7 +297,24 @@ class RestrictedDataPolicy:
     access_review_id: str
     automated_disclosure_review_id: str
     human_disclosure_review_id: str
+    pseudonymization_method: str
+    retention_policy_id: str
+    retention_rule: str
+    retention_review_id: str
     disclosure_review_projection_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.pseudonymization_method != "hmac_sha256_secret_v1":
+            raise ValueError(
+                "Restricted-data pseudonymization method must be hmac_sha256_secret_v1"
+            )
+        for label, value in (
+            ("retention policy ID", self.retention_policy_id),
+            ("retention rule", self.retention_rule),
+            ("retention review ID", self.retention_review_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Restricted-data {label} must be nonempty")
 
 
 @dataclass(frozen=True)
