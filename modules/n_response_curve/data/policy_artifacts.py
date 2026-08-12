@@ -60,6 +60,7 @@ _ARTIFACT_KEYS = (
     "duplicate_adjudications",
     "repeat_adjudications",
 )
+_OPTIONAL_ARTIFACT_KEYS = ("literature_verification",)
 
 
 class SourceDataPolicyError(ValueError):
