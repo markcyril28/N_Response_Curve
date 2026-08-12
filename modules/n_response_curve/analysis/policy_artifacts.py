@@ -2678,9 +2678,18 @@ def load_curve_model_policy(
     if not isinstance(records[0], Mapping):
         raise PolicyArtifactError("curve model policy record must be an object")
     observed_record_keys = set(records[0])
-    if observed_record_keys == required_record_keys | {
-        "first_stage_contextual_uncertainty"
-    }:
+    optional_record_keys = {
+        "first_stage_contextual_uncertainty",
+        "efficiency_metric",
+        "efficiency_operating_point",
+        "asymptote_reporting",
+        "asymptote_support",
+        "model_credibility",
+    }
+    if (
+        required_record_keys <= observed_record_keys
+        and observed_record_keys <= required_record_keys | optional_record_keys
+    ):
         required_record_keys = observed_record_keys
     raw = _exact_object(
         records[0],
