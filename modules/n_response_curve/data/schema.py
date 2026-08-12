@@ -149,12 +149,17 @@ def classify_missing(
     if not normalized:
         return "blank"
     lowered = normalized.casefold()
+    if missing_state_lookup is not None:
+        reviewed_owners = _reviewed_lookup_alias_owners(missing_state_lookup)
+        reviewed_state = reviewed_owners.get(_category_token(normalized))
+        if reviewed_state is not None:
+            return reviewed_state
     if lowered == str(missing_values["not_stated"]).strip().casefold():
-        return "not_stated"
+        return "unresolved_missing" if missing_state_lookup is not None else "not_stated"
     if lowered in {str(item).strip().casefold() for item in missing_values.get("not_applicable", ())}:
-        return "not_applicable"
+        return "unresolved_missing" if missing_state_lookup is not None else "not_applicable"
     if lowered in {str(item).strip().casefold() for item in missing_values.get("invalid_numeric", ())}:
-        return "invalid_numeric"
+        return "unresolved_missing" if missing_state_lookup is not None else "invalid_numeric"
     return "present"
 
 
@@ -170,10 +175,19 @@ def classify_raw_state(value: str | None, missing_values: Mapping[str, Any]) -> 
     return "present"
 
 
-def parse_numeric(value: str | None, missing_values: Mapping[str, Any]) -> NumericParse:
+def parse_numeric(
+    value: str | None,
+    missing_values: Mapping[str, Any],
+    *,
+    missing_state_lookup: ReviewedLookupTable | None = None,
+) -> NumericParse:
     """Parse locale-light numeric cells while preserving an explicit parse status."""
 
-    missing_state = classify_missing(value, missing_values)
+    missing_state = classify_missing(
+        value,
+        missing_values,
+        missing_state_lookup=missing_state_lookup,
+    )
     if missing_state != "present":
         return NumericParse(value=None, status=missing_state)
     normalized = _normalized_text(value).replace("−", "-").replace("–", "-")
