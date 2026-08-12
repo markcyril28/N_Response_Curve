@@ -413,7 +413,7 @@ def validate_nutrient_unit_control_consistency(source_map: ReviewedSourceMap) ->
             raise ValueError(
                 f"{field_name} nutrient control must canonicalize to {expected_unit}"
             )
-        if control.source_basis not in {"elemental", "oxide"}:
+        if control.source_basis not in _KNOWN_NUTRIENT_BASES:
             raise ValueError("Nutrient unit control source basis is unsupported")
         if not all(
             isinstance(value, str) and value.strip()
@@ -426,11 +426,47 @@ def validate_nutrient_unit_control_consistency(source_map: ReviewedSourceMap) ->
             raise ValueError("Nutrient unit control requires explicit reviewed evidence")
         if not math.isfinite(control.conversion_factor) or control.conversion_factor <= 0:
             raise ValueError("Nutrient unit conversion factor must be finite and positive")
+        if control.source_basis != canonical_basis:
+            if control.source_unit == control.canonical_unit:
+                raise ValueError(
+                    f"{field_name} nutrient control declares a {control.source_basis}"
+                    f"-to-{canonical_basis} basis change with an unchanged source unit"
+                )
+            if control.conversion_factor == 1.0:
+                raise ValueError(
+                    f"{field_name} nutrient control declares a {control.source_basis}"
+                    f"-to-{canonical_basis} basis change but uses an identity "
+                    "conversion factor"
+                )
         if (
             control.source_unit == control.canonical_unit
             and control.conversion_factor != 1.0
         ):
             raise ValueError("Identity nutrient-unit conversion must use factor 1")
+
+
+def validate_reviewed_nutrient_unit_controls(source_map: ReviewedSourceMap) -> None:
+    """Require explicit reviewed unit/basis conversion for every mapped nutrient rate."""
+
+    mapped_fields = set(source_map.fields)
+    mapped_fields.update(source_map.declared_constant_fields)
+    for arm in source_map.arms:
+        mapped_fields.update(arm.field_positions)
+        mapped_fields.update(arm.constants)
+    required_fields = mapped_fields.intersection(NUTRIENT_CANONICAL_UNITS)
+    control_fields = set(source_map.nutrient_unit_controls)
+    missing_fields = sorted(required_fields - control_fields)
+    unexpected_fields = sorted(control_fields - required_fields)
+    if missing_fields:
+        raise ValueError(
+            f"{missing_fields[0]} lacks a reviewed unit/basis control"
+        )
+    if unexpected_fields:
+        raise ValueError(
+            "Reviewed nutrient unit/basis controls target unmapped field(s): "
+            + ", ".join(unexpected_fields)
+        )
+    validate_nutrient_unit_control_consistency(source_map)
 
 
 def _field_raw_value(row: RawRow, position: int) -> str:
