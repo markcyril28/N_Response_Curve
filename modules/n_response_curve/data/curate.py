@@ -1319,6 +1319,11 @@ def _curate_source(
                         "role": disposition.role,
                         "canonical_field": disposition.canonical_field,
                         "variable_family": disposition.variable_family,
+                        "source_value_type": disposition.source_value_type,
+                        "provider_semantics_status": disposition.provider_semantics_status,
+                        "date_conversion_rule": disposition.date_conversion_rule,
+                        "leakage_class": disposition.leakage_class,
+                        "additional_use_status": disposition.additional_use_status,
                     }
                     for disposition in effective_map.dispositions
                 ),
