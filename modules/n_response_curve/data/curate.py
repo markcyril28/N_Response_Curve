@@ -1600,6 +1600,64 @@ def _project_public_records(
     return tuple(public)
 
 
+def disclosure_review_projection_sha256(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    policy: RestrictedDataPolicy,
+) -> str:
+    """Hash the exact deidentified restricted projection reviewed for release."""
+
+    projected = _project_public_records(tuple(records), policy=policy)
+    restricted_projection = sorted(
+        (
+            dict(record)
+            for record in projected
+            if record.get("data_classification") == "public_deidentified"
+        ),
+        key=lambda record: str(record.get("release_record_uid") or ""),
+    )
+    payload = json.dumps(
+        restricted_projection,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def project_public_records(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    policy: RestrictedDataPolicy,
+) -> tuple[dict[str, Any], ...]:
+    """Create a projection only when both disclosure reviews bind its exact bytes."""
+
+    source_records = tuple(records)
+    projected = _project_public_records(source_records, policy=policy)
+    restricted_rows_present = any(
+        record.get("data_classification") == "restricted"
+        for record in source_records
+    )
+    if not restricted_rows_present:
+        return projected
+    reviewed_digest = str(
+        policy.disclosure_review_projection_sha256 or ""
+    ).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", reviewed_digest) is None:
+        raise ValueError(
+            "Restricted-data disclosure reviews must bind the exact projected bytes"
+        )
+    observed_digest = disclosure_review_projection_sha256(
+        source_records,
+        policy=policy,
+    )
+    if observed_digest != reviewed_digest:
+        raise ValueError(
+            "Restricted-data projection does not match the disclosure-reviewed bytes"
+        )
+    return projected
+
+
 __all__ = [
     "CurationResult",
     "PhysicalColumnDisposition",
