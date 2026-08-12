@@ -3411,6 +3411,7 @@ def _analysis_policy_stage_writer(
         if analysis_policy is None:
             return ()
         authorities = (
+            *((analysis_policy.manifest_authority,) if analysis_policy.manifest_authority else ()),
             analysis_policy.support_authority,
             analysis_policy.representation_authority,
             analysis_policy.estimand_authority,
