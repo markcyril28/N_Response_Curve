@@ -1605,6 +1605,24 @@ def _optimum_summary(
     response_tolerance = flat_response_tolerance_t_ha
     span = observed_max - observed_min
 
+    def observed_domain_boundary() -> tuple[str, float | None, float | None]:
+        """Locate the in-domain edge a monotone fit peaks at.
+
+        Only the two domain edges can hold the maximum once an interior
+        optimum has been ruled out, so evaluating them exactly beats scanning
+        the plotting grid. A fit that is flat to within the reviewed response
+        tolerance has no distinguishable edge, and inventing one would pick an
+        arbitrary end, so it reports the flat state with no rate or yield.
+        """
+
+        lower_yield = float(evaluate_model(model_name, [observed_min], parameters)[0])
+        upper_yield = float(evaluate_model(model_name, [observed_max], parameters)[0])
+        if abs(upper_yield - lower_yield) <= response_tolerance:
+            return "FLAT_ACROSS_OBSERVED_DOMAIN", None, None
+        if upper_yield > lower_yield:
+            return "UPPER_OBSERVED_DOMAIN_BOUNDARY", float(observed_max), upper_yield
+        return "LOWER_OBSERVED_DOMAIN_BOUNDARY", float(observed_min), lower_yield
+
     def summary(
         optimum_status: str,
         optimum: float | None,
@@ -1617,6 +1635,7 @@ def _optimum_summary(
         reasons: tuple[str, ...] = (),
         *,
         support_asymptote: bool = False,
+        report_domain_boundary: bool = False,
     ) -> _OptimumSummary:
         supported_maximum = (
             finite_maximum
@@ -1624,6 +1643,11 @@ def _optimum_summary(
             else asymptote
             if support_asymptote
             else None
+        )
+        boundary_status, boundary_rate, boundary_yield = (
+            observed_domain_boundary()
+            if report_domain_boundary
+            else ("NOT_APPLICABLE", None, None)
         )
         return _OptimumSummary(
             optimum_status,
