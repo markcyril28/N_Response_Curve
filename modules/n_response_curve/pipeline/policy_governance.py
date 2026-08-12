@@ -380,6 +380,17 @@ def _authority_matrix_path(config: ValidatedConfig) -> Path:
     return path
 
 
+def _review_gate_policy_path(config: ValidatedConfig) -> Path:
+    path = (
+        config.paths["run_metadata_root"]
+        / "approvals"
+        / "review_gate_policy.json"
+    ).resolve()
+    if not path.is_relative_to(config.project_root):
+        raise ConfigError("Review-gate policy path escapes the project root")
+    return path
+
+
 def _approval_timestamp(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError("Approved policy snapshot has an invalid approval timestamp")
