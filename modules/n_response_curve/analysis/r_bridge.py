@@ -17,6 +17,22 @@ class RBridgeError(RuntimeError):
     """A contract, dispatch, or result validation violation at the Python/R boundary."""
 
 
+def r_completed_diagnostics_reason(metadata: Mapping[str, Any]) -> str | None:
+    """Return the fail-closed eligibility reason for completed R diagnostics."""
+
+    diagnostics = metadata.get("diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        return "R_DIAGNOSTICS_MISSING"
+    required = ("converged", "singular", "boundary_fit")
+    if any(type(diagnostics.get(key)) is not bool for key in required):
+        return "R_DIAGNOSTICS_INVALID"
+    if diagnostics["converged"] is False:
+        return "R_MODEL_NONCONVERGENCE"
+    if diagnostics["singular"] is True or diagnostics["boundary_fit"] is True:
+        return "R_MODEL_SINGULAR_OR_BOUNDARY"
+    return None
+
+
 @dataclass(frozen=True)
 class RStageContract:
     stage_root: Path
@@ -209,6 +225,13 @@ def validate_r_stage_result(contract: RStageContract) -> RStageResult:
         raise RBridgeError("R stage result metadata has an invalid engine binding")
     if status == "completed" and not raw_results:
         raise RBridgeError("Completed R stage result must contain at least one result row")
+    if status == "completed":
+        diagnostics_reason = r_completed_diagnostics_reason(metadata)
+        if diagnostics_reason is not None:
+            raise RBridgeError(
+                "Completed R stage result has ineligible diagnostics: "
+                f"{diagnostics_reason}"
+            )
     if status in {"skipped", "failed"} and not raw_results:
         raise RBridgeError("Non-completed R stage result must contain a structured reason row")
     specification = contract_payload.get("specification", {})
