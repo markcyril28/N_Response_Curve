@@ -450,6 +450,64 @@ def ingest_configured_sources(
             raise ConfigError(
                 f"Enabled source is not registered in the manifest: {source_name} ({manifest_relative_path})"
             )
+        reconciliation = workbook_reconciliations.get(source_name)
+        workbook_csv_basis = (
+            "parallel_workbook_csv_unresolved"
+            if source_config.get("workbook")
+            else "csv_registered_artifact"
+        )
+        if reconciliation is not None:
+            if not isinstance(reconciliation, WorkbookCsvReconciliation):
+                raise ConfigError(
+                    f"Workbook/CSV reconciliation for {source_name!r} uses an unsupported type"
+                )
+            if reconciliation.source_name != source_name:
+                raise ConfigError(
+                    f"Workbook/CSV reconciliation for {source_name!r} is bound to a different source"
+                )
+            if not reconciliation.review_id.strip():
+                raise ConfigError(
+                    f"Workbook/CSV reconciliation for {source_name!r} lacks review evidence"
+                )
+            for label, digest in (
+                ("workbook", reconciliation.workbook_sha256),
+                ("CSV", reconciliation.csv_sha256),
+            ):
+                if re.fullmatch(r"[0-9a-f]{64}", digest.strip().lower()) is None:
+                    raise ConfigError(
+                        f"Reviewed {label} checksum for {source_name!r} is not a SHA-256 value"
+                    )
+            workbook_value = source_config.get("workbook")
+            if not isinstance(workbook_value, str) or not workbook_value.strip():
+                raise ConfigError(
+                    f"Workbook/CSV reconciliation for {source_name!r} lacks a configured workbook"
+                )
+            workbook_path = (config.project_root / workbook_value).resolve()
+            if not workbook_path.is_file():
+                raise ConfigError(
+                    f"Configured workbook for {source_name!r} does not exist: {workbook_path}"
+                )
+            workbook_manifest_path = _manifest_relative_path(config, workbook_path)
+            registered_workbook_sha256 = integrity_report.artifact_sha256.get(
+                workbook_manifest_path
+            )
+            if registered_workbook_sha256 is None:
+                raise ConfigError(
+                    f"Configured workbook is not registered in the manifest: {source_name} "
+                    f"({workbook_manifest_path})"
+                )
+            if (
+                reconciliation.workbook_sha256 != registered_workbook_sha256
+                or reconciliation.workbook_sha256 != sha256_file(workbook_path)
+            ):
+                raise ConfigError(
+                    f"Configured workbook for {source_name!r} differs from the reviewed workbook checksum"
+                )
+            if reconciliation.csv_sha256 != expected_sha256:
+                raise ConfigError(
+                    f"Configured CSV for {source_name!r} differs from the reviewed CSV checksum"
+                )
+            workbook_csv_basis = "parallel_workbook_csv_verified_equivalent"
         adapter_version = str(source_config["shape_adapter_version"])
         if adapter_version in configured_specs:
             adapter_spec = configured_specs[adapter_version]
