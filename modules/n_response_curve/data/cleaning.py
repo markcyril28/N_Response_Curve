@@ -37,6 +37,25 @@ def _normalized_unit(value: str) -> str:
     return _SPACE_RE.sub(" ", value.strip()).casefold()
 
 
+def validate_numeric_rule_unit(
+    field: str,
+    unit: str,
+    *,
+    require_known: bool = False,
+) -> None:
+    """Fail closed unless a cleaning threshold has a known physical quantity."""
+
+    accepted_units = _CANONICAL_NUMERIC_FIELD_UNITS.get(field)
+    if accepted_units is None:
+        if require_known:
+            raise ValueError(
+                f"Final cleaning field {field} has no verified quantity/unit contract"
+            )
+        return
+    if _normalized_unit(unit) not in accepted_units:
+        raise ValueError(f"Final cleaning field {field} has an incompatible rule unit")
+
+
 @dataclass(frozen=True)
 class FinalCleaningRule:
     """One pre-reviewed, source-specific final cleaning rule."""
