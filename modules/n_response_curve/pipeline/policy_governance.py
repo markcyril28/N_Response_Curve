@@ -72,6 +72,103 @@ class ApprovalAuthorityMatrix:
 
 
 @dataclass(frozen=True)
+class ReviewGatePolicy:
+    """Approved prospective treatment of fully resolved nonanalytical evidence."""
+
+    policy_id: str
+    prospective_effective_version: str
+    effective_from: str
+    approval: Mapping[str, str]
+    fatal_issue_states: tuple[str, ...]
+    permitted_resolved_dispositions: tuple[Mapping[str, str], ...]
+    source_accountability_policy: str
+    analytical_leakage_policy: str
+    artifact_path: Path
+    artifact_sha256: str
+
+    def permits(self, issue: Mapping[str, Any]) -> bool:
+        identity = {
+            field: str(issue.get(field) or "")
+            for field in ("stage", "issue_scope", "issue_state", "status")
+        }
+        return any(
+            identity == dict(disposition)
+            for disposition in self.permitted_resolved_dispositions
+        )
+
+    def manifest_payload(
+        self,
+        *,
+        project_root: Path | None = None,
+    ) -> dict[str, Any]:
+        artifact_path: str | None = str(self.artifact_path)
+        if project_root is not None:
+            try:
+                artifact_path = self.artifact_path.relative_to(project_root).as_posix()
+            except ValueError:
+                artifact_path = None
+        return {
+            "policy_id": self.policy_id,
+            "prospective_effective_version": self.prospective_effective_version,
+            "effective_from": self.effective_from,
+            "approval": dict(self.approval),
+            "fatal_issue_states": list(self.fatal_issue_states),
+            "permitted_resolved_dispositions": [
+                dict(disposition)
+                for disposition in self.permitted_resolved_dispositions
+            ],
+            "source_accountability_policy": self.source_accountability_policy,
+            "analytical_leakage_policy": self.analytical_leakage_policy,
+            "artifact_path": artifact_path,
+            "artifact_sha256": self.artifact_sha256,
+        }
+
+    def semantic_payload(self) -> dict[str, Any]:
+        payload = self.manifest_payload()
+        payload.pop("approval")
+        payload.pop("artifact_path")
+        return payload
+
+
+@dataclass(frozen=True)
+class ReleaseApproval:
+    """Exact release-owner authorization for one target and run identity."""
+
+    record_id: str
+    run_id: str
+    release_target: str
+    run_identity_sha256: str
+    authority_matrix_sha256: str
+    approval: Mapping[str, str]
+    artifact_path: Path
+    artifact_sha256: str
+
+    def manifest_payload(
+        self,
+        *,
+        project_root: Path | None = None,
+    ) -> dict[str, Any]:
+        artifact_path: str | None = str(self.artifact_path)
+        if project_root is not None:
+            try:
+                artifact_path = self.artifact_path.relative_to(project_root).as_posix()
+            except ValueError:
+                artifact_path = None
+        return {
+            "status": "approved",
+            "record_id": self.record_id,
+            "scope": "release_promotion",
+            "run_id": self.run_id,
+            "release_target": self.release_target,
+            "run_identity_sha256": self.run_identity_sha256,
+            "authority_matrix_sha256": self.authority_matrix_sha256,
+            "approval": dict(self.approval),
+            "artifact_path": artifact_path,
+            "artifact_sha256": self.artifact_sha256,
+        }
+
+
+@dataclass(frozen=True)
 class RuntimePolicySnapshot:
     """Validated semantic policy state for one requested runtime operation."""
 
