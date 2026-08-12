@@ -1286,20 +1286,19 @@ def _curate_source(
                 "parent_row_uid": parent_row_uid,
                 "source_arm_id": arm.arm_id,
                 "source_arm_role": arm.role,
+                "source_arm_comparability_group_id": arm.comparability_group_id,
+                "source_arm_comparability_review_id": arm.comparability_review_id,
                 "source_arm_uid": _stable_uid("source-arm-v1", parent_row_uid, arm.arm_id),
+                "treatment_uid": _stable_uid(
+                    "treatment-v1",
+                    parent_row_uid,
+                    arm.arm_id,
+                ),
                 "comparison_set_uid": _stable_uid("comparison-set-v1", parent_row_uid),
                 "recommendation_set_membership_status": (
-                    "verified_context_comparable"
-                    if recommendation_context_verified
-                    and arm.role in {"management_comparison", "response_candidate"}
-                    else "not_verified"
+                    arm.recommendation_set_membership_status
                 ),
-                "recommendation_set_review_id": (
-                    effective_map.review_id
-                    if recommendation_context_verified
-                    and arm.role in {"management_comparison", "response_candidate"}
-                    else None
-                ),
+                "recommendation_set_review_id": arm.recommendation_set_review_id,
                 "record_uid": _stable_uid(
                     "record-v2",
                     source_uid,
