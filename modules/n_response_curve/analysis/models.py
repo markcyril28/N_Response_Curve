@@ -423,6 +423,41 @@ def _observed_bounds(n_rates: np.ndarray) -> tuple[float, float]:
     return float(np.min(n_rates)), float(np.max(n_rates))
 
 
+def _effective_parameter_bounds(
+    model_name: str,
+    x: np.ndarray,
+    gate: _ReviewedModelGate,
+) -> tuple[tuple[np.ndarray, np.ndarray] | None, str | None]:
+    """Return the bounds the optimizer is actually constrained by, or a reason.
+
+    The reviewed policy bounds are not the whole constraint set. A plateau onset
+    is additionally confined to the strict interior of the observed N domain, so
+    that a reported onset can never be an extrapolation and so that
+    ``quadratic_plateau``'s ``x / onset`` always divides by a positive number.
+
+    That narrowing is part of the fitted problem, so every check that asks
+    "did this parameter come to rest against a constraint?" must use these
+    bounds rather than ``gate.lower_bounds``/``gate.upper_bounds``. Testing only
+    the reviewed bounds reports a constraint-pinned onset as an interior
+    estimate, which promotes a degenerate fit into the credible set.
+    """
+
+    x_min, x_max = _observed_bounds(x)
+    x_span = x_max - x_min
+    interior_lower = x_min + x_span * _PLATEAU_INTERIOR_MARGIN
+    interior_upper = x_max - x_span * _PLATEAU_INTERIOR_MARGIN
+    if interior_lower >= interior_upper:
+        return None, "INSUFFICIENT_N_RATE_RANGE"
+    lower = gate.lower_bounds.copy()
+    upper = gate.upper_bounds.copy()
+    if model_name in _PLATEAU_ONSET_MODELS:
+        lower[2] = max(lower[2], interior_lower)
+        upper[2] = min(upper[2], interior_upper)
+        if lower[2] >= upper[2]:
+            return None, "NO_REVIEWED_INTERIOR_PLATEAU_DOMAIN"
+    return (lower, upper), None
+
+
 def _minimum_distinct_levels(model_name: str) -> int:
     if model_name not in MODEL_ORDER:
         raise ValueError(f"Unknown response model: {model_name}")
