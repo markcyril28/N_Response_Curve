@@ -1310,7 +1310,24 @@ def _grouped_prediction_summary(
     return float(math.sqrt(float(np.mean(squared_errors)))), scored_levels, basis
 
 
-def _aicc(rss: float, n_observations: int, parameter_count: int) -> float | None:
+def _aicc(rss: float, n_observations: int, mean_parameter_count: int) -> float | None:
+    """Return AICc counting the residual-variance parameter, or None.
+
+    The Gaussian likelihood behind this expression estimates the residual
+    variance as well as the mean parameters, so `k` is the mean-parameter count
+    plus the MOD-09 nuisance count. Omitting it understates every candidate by
+    one and, because the small-sample correction is nonlinear in `k`, shifts
+    candidates by unequal amounts -- the comparison, not just the level, is
+    wrong. AICc is undefined at `n <= k + 1`, so it is suppressed there instead
+    of being reported from a negative or zero denominator.
+
+    This value stays a descriptive diagnostic: decided MOD-02 Option D reports
+    all credible candidates and selects none, so nothing here ranks a model.
+    """
+
+    parameter_count = mean_parameter_count + int(
+        MOD09_ESTIMATOR_SPECIFICATION["nuisance_parameter_count"]
+    )
     if n_observations <= parameter_count + 1:
         return None
     mean_square = max(rss / n_observations, np.finfo(float).tiny)
