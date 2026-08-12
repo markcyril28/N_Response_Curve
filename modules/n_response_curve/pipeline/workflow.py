@@ -4004,8 +4004,12 @@ def release_phases_three_to_five(
         return (log_path,)
 
     stage_writers = (
-        _policy_stage_writer(policy_snapshot, manifest),
+        _policy_stage_writer(policy_snapshot, manifest, release_approval),
         _analysis_policy_stage_writer(analysis_policy, manifest),
+        _source_data_policy_stage_writer(
+            phase_two.source_data_policy,
+            manifest,
+        ),
         _logged_stage_writer(
             run_log,
             "figures",
