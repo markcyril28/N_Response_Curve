@@ -95,11 +95,8 @@ class FinalCleaningRule:
                 and self.lower_bound > self.upper_bound
             ):
                 raise ValueError("Final cleaning lower bounds cannot exceed upper bounds")
-            accepted_units = _CANONICAL_NUMERIC_FIELD_UNITS.get(str(self.field))
-            if accepted_units is not None and _normalized_unit(self.unit) not in accepted_units:
-                raise ValueError(
-                    f"Final cleaning field {self.field} has an incompatible rule unit"
-                )
+            if self.field is not None:
+                validate_numeric_rule_unit(self.field, self.unit)
         elif not self.values:
             raise ValueError("Remark final cleaning rules require at least one reviewed value")
 
