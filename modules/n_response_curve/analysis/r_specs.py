@@ -64,8 +64,27 @@ def _normalized_rows(
     observation_level: bool,
     first_stage_variance_field: str | None = None,
     dependence_unit_field: str | None = None,
+    require_verified_comparability: bool = False,
 ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
     normalized: list[dict[str, Any]] = []
+    membership: list[dict[str, Any]] = []
+    review_ids_by_context: dict[str, set[str]] = {}
+    if require_verified_comparability:
+        for row in rows:
+            context_uid = str(row.get("comparison_set_uid") or "").strip()
+            review_id = str(row.get("recommendation_set_review_id") or "").strip()
+            if (
+                context_uid
+                and review_id
+                and row.get("recommendation_set_membership_status")
+                == "verified_context_comparable"
+            ):
+                review_ids_by_context.setdefault(context_uid, set()).add(review_id)
+    conflicting_review_contexts = {
+        context_uid
+        for context_uid, review_ids in review_ids_by_context.items()
+        if len(review_ids) > 1
+    }
     membership: list[dict[str, Any]] = []
     for raw_row in rows:
         row = dict(raw_row)
@@ -84,6 +103,22 @@ def _normalized_rows(
             exclusion_reasons.append("MISSING_STUDY_ID")
         if dependence_unit_field is not None and not row.get(dependence_unit_field):
             exclusion_reasons.append("MISSING_DEPENDENCE_UNIT")
+        if require_verified_comparability and (
+            not isinstance(row.get("treatment_uid"), str)
+            or not row.get("treatment_uid")
+            or row.get("treatment_classification_status") != "resolved"
+            or row.get("recommendation_set_membership_status")
+            != "verified_context_comparable"
+            or not isinstance(row.get("recommendation_set_review_id"), str)
+            or not str(row.get("recommendation_set_review_id") or "").strip()
+        ):
+            exclusion_reasons.append("COMPARABILITY_EVIDENCE_REQUIRED")
+        if (
+            require_verified_comparability
+            and str(row.get("comparison_set_uid") or "").strip()
+            in conflicting_review_contexts
+        ):
+            exclusion_reasons.append("COMPARABILITY_REVIEW_AUTHORITY_CONFLICT")
         if not _present(row.get(outcome_name)):
             exclusion_reasons.append("MISSING_OUTCOME")
         exclusion_reasons.extend(
@@ -112,6 +147,15 @@ def _normalized_rows(
             "source_name": row.get("source_name"),
             "study_uid": row.get("study_uid"),
             "response_series_uid": row.get("response_series_uid"),
+            "treatment_uid": row.get("treatment_uid"),
+            "recommendation_set_membership_status": row.get(
+                "recommendation_set_membership_status"
+            ),
+            "recommendation_set_review_id": row.get(
+                "recommendation_set_review_id"
+            ),
+            "outcome_name": outcome_name,
+            "outcome_value": row.get(outcome_name),
             **factors,
         }
         if dependence_unit_field is not None:
