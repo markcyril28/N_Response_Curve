@@ -149,9 +149,6 @@ nrc_run_mixed_models <- function(stage) {
     return(nrc_skip_result(design_reason))
   }
   model_kind <- specification$model_kind
-  if (is.null(model_kind)) {
-    model_kind <- "lm"
-  }
   outcome_kind <- specification$outcome_kind
   if (is.null(model_kind) || is.null(outcome_kind)) {
     return(nrc_skip_result("PREDECLARED_MODEL_SPECIFICATION_REQUIRED"))
