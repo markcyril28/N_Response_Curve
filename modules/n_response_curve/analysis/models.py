@@ -1661,6 +1661,9 @@ def _optimum_summary(
             proximity_status,
             shape,
             reasons,
+            boundary_status,
+            boundary_rate,
+            boundary_yield,
         )
 
     if model_name == "linear":
@@ -1682,6 +1685,7 @@ def _optimum_summary(
             "none",
             "NO_SUPPORTED_MAXIMUM_REFERENCE",
             shape,
+            report_domain_boundary=True,
         )
     if model_name == "quadratic":
         curvature = parameters["curvature"]
@@ -1699,6 +1703,7 @@ def _optimum_summary(
                 "NO_SUPPORTED_MAXIMUM_REFERENCE",
                 "weak_quadratic_curvature",
                 ("WEAK_QUADRATIC_CURVATURE",),
+                report_domain_boundary=True,
             )
         if curvature < 0.0:
             vertex = -parameters["slope"] / (2.0 * curvature)
@@ -1739,12 +1744,14 @@ def _optimum_summary(
             "NO_SUPPORTED_MAXIMUM_REFERENCE",
             shape,
             ("OPTIMUM_AT_OR_OUTSIDE_OBSERVED_DOMAIN",),
+            report_domain_boundary=True,
         )
     if model_name in {"linear_plateau", "quadratic_plateau"}:
         onset = parameters["plateau_onset"]
         distinct_rates = sorted(set(float(value) for value in observed_n_rates))
         left_support = sum(value < onset for value in distinct_rates)
         right_support = sum(value >= onset for value in distinct_rates)
+        strictly_beyond_support = sum(value > onset for value in distinct_rates)
         response_gain = (
             parameters["slope"] * max(onset - observed_min, 0.0)
             if model_name == "linear_plateau"
@@ -1754,7 +1761,8 @@ def _optimum_summary(
             parameter_rank_full
             and response_gain > response_tolerance
             and left_support >= 2
-            and right_support >= 1
+            and right_support >= 2
+            and strictly_beyond_support >= 1
             and observed_min + boundary_tolerance < onset < observed_max - boundary_tolerance
         )
         if identifiable:
