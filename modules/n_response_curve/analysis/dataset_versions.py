@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 from typing import Any, Iterable, Mapping, Sequence
@@ -24,6 +24,11 @@ KNOWN_DATASET_VERSIONS = (
     "D12_climate_enriched_future",
     "D13_untrimmed_final_cleaning_sensitivity",
 )
+
+DATASET_MEMBERSHIP_RULE_IDS = {
+    version_id: f"dataset-membership:{version_id}:v1"
+    for version_id in KNOWN_DATASET_VERSIONS
+}
 
 
 @dataclass(frozen=True)
