@@ -325,6 +325,71 @@ def prepare_r_analysis(
 
     if candidate.engine != "r":
         raise ValueError("R analysis preparation requires an R-owned candidate")
+    stable_key = "record_uid" if observation_level else "response_series_uid"
+    model_specification = dict(candidate.model_specification)
+    required_model_fields = {
+        "outcome_kind",
+        "model_kind",
+        "dependence_structure",
+        "link_function",
+        "focal_factor_names",
+        "adjustment_factor_names",
+        "multiplicity_test_ids",
+        "interval_method",
+    }
+    if not required_model_fields.issubset(model_specification):
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_MODEL_SPECIFICATION_REQUIRED",),
+            {},
+            (),
+            stable_key,
+        )
+    expected_structure = (
+        "nested_random_intercept" if observation_level else "random_intercept"
+    )
+    if model_specification["dependence_structure"] != expected_structure:
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_MODEL_STRUCTURE_UNSUPPORTED",),
+            {},
+            (),
+            stable_key,
+        )
+    focal_factors = tuple(model_specification["focal_factor_names"])
+    adjustment_factors = tuple(model_specification["adjustment_factor_names"])
+    if (
+        set(focal_factors) & set(adjustment_factors)
+        or set(focal_factors) | set(adjustment_factors)
+        != set(candidate.factor_names)
+    ):
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_FACTOR_ROLE_PARTITION_INVALID",),
+            {},
+            (),
+            stable_key,
+        )
+    expected_test_ids = tuple(model_specification["multiplicity_test_ids"])
+    if not expected_test_ids or len(expected_test_ids) != len(set(expected_test_ids)):
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_MULTIPLICITY_TEST_IDS_REQUIRED",),
+            {},
+            (),
+            stable_key,
+        )
+    if (
+        candidate.decision_alpha is None
+        or not 0.0 < float(candidate.decision_alpha) <= 1.0
+    ):
+        return RAnalysisPreparation(
+            "skipped",
+            ("PREDECLARED_DECISION_ALPHA_REQUIRED",),
+            {},
+            (),
+            stable_key,
+        )
     contrast_specification = dict(candidate.prespecified_contrast)
     same_context_management_contrast = (
         candidate.analysis_family == "marginal_contrasts"
@@ -380,6 +445,42 @@ def prepare_r_analysis(
             (),
             "record_uid" if observation_level else "response_series_uid",
         )
+    if candidate.analysis_family == "marginal_contrasts":
+        required_contrast_fields = {
+            "estimand_id",
+            "treatment",
+            "comparator",
+            "direction",
+        }
+        if not required_contrast_fields.issubset(contrast_specification):
+            return RAnalysisPreparation(
+                "skipped",
+                ("PRESPECIFIED_CONTRAST_REQUIRED",),
+                {},
+                (),
+                stable_key,
+            )
+        contrast_specification.setdefault(
+            "factor_name",
+            candidate.factor_names[0],
+        )
+        if contrast_specification["factor_name"] != candidate.factor_names[0]:
+            return RAnalysisPreparation(
+                "skipped",
+                ("PRESPECIFIED_CONTRAST_FACTOR_MISMATCH",),
+                {},
+                (),
+                stable_key,
+            )
+        estimand_id = str(contrast_specification["estimand_id"])
+        if expected_test_ids != (estimand_id,):
+            return RAnalysisPreparation(
+                "skipped",
+                ("PREDECLARED_MULTIPLICITY_TEST_MISMATCH",),
+                {},
+                (),
+                stable_key,
+            )
     if same_context_management_contrast:
         treatment = contrast_specification.get("treatment")
         comparator = contrast_specification.get("comparator")
@@ -403,19 +504,11 @@ def prepare_r_analysis(
     stable_key = "record_uid" if observation_level else "response_series_uid"
     outcome_name = "yield_t_ha" if observation_level else candidate.curve_outcome
     first_stage_variance_field: str | None = None
-    if (
+    fitted_feature_inference = (
         not observation_level
         and candidate.analysis_family in _FITTED_FEATURE_INFERENTIAL_FAMILIES
-    ):
-        first_stage_reasons = first_stage_uncertainty_reasons(rows, outcome_name)
-        if first_stage_reasons:
-            return RAnalysisPreparation(
-                "skipped",
-                first_stage_reasons,
-                {},
-                (),
-                stable_key,
-            )
+    )
+    if fitted_feature_inference:
         first_stage_variance_field = f"{outcome_name}_first_stage_variance"
     normalized, membership_rows = _normalized_rows(
         rows,
@@ -425,9 +518,89 @@ def prepare_r_analysis(
         outcome_name=outcome_name,
         stable_key=stable_key,
         observation_level=observation_level,
-        first_stage_variance_field=first_stage_variance_field,
+        first_stage_variance_field=(
+            None if fitted_feature_inference else first_stage_variance_field
+        ),
         dependence_unit_field=dependence_unit_field,
+        require_verified_comparability=same_context_management_contrast,
     )
+    if fitted_feature_inference and normalized:
+        included_keys = {str(row[stable_key]) for row in normalized}
+        included_rows = tuple(
+            row
+            for row in rows
+            if str(row.get(stable_key) or "") in included_keys
+        )
+        policy_reasons = first_stage_policy_reasons(
+            included_rows,
+            outcome_name,
+            candidate.first_stage_uncertainty_policy,
+        )
+        if policy_reasons:
+            return RAnalysisPreparation(
+                "skipped",
+                policy_reasons,
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
+        first_stage_reasons = first_stage_uncertainty_reasons(
+            included_rows,
+            outcome_name,
+        )
+        if first_stage_reasons:
+            return RAnalysisPreparation(
+                "skipped",
+                first_stage_reasons,
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
+        normalized, membership_rows = _normalized_rows(
+            rows,
+            candidate.factor_names,
+            candidate_id=candidate.candidate_id,
+            factor_representations=candidate.factor_representations,
+            outcome_name=outcome_name,
+            stable_key=stable_key,
+            observation_level=observation_level,
+            first_stage_variance_field=first_stage_variance_field,
+            dependence_unit_field=dependence_unit_field,
+            require_verified_comparability=same_context_management_contrast,
+        )
+    factor_representation_contracts: dict[str, dict[str, Any]] = {}
+    for factor_name, raw_representation in candidate.factor_representations.items():
+        representation = dict(raw_representation)
+        if representation.get("data_type") in {
+            "categorical",
+            "ordinal",
+            "boolean",
+        }:
+            reference_level = representation.get("reference_level")
+            observed_levels = {
+                str(row[factor_name])
+                for row in normalized
+                if row.get(factor_name) is not None
+            }
+            if (
+                not isinstance(reference_level, str)
+                or reference_level not in observed_levels
+            ):
+                return RAnalysisPreparation(
+                    "skipped",
+                    (f"REVIEWED_REFERENCE_LEVEL_UNAVAILABLE:{factor_name}",),
+                    {},
+                    normalized,
+                    stable_key,
+                    membership_rows,
+                )
+            representation["approved_levels"] = [
+                reference_level,
+                *sorted(observed_levels - {reference_level}),
+            ]
+        factor_representation_contracts[factor_name] = representation
     if same_context_management_contrast:
         assert dependence_unit_field is not None
         factor_name = candidate.factor_names[0]
