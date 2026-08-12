@@ -628,6 +628,61 @@ def _reviewed_model_gate(
     )
 
 
+def _reviewed_credibility_policy(
+    policy: Mapping[str, Any],
+) -> tuple[_ReviewedCredibilityPolicy | None, str | None]:
+    raw = policy.get("model_credibility_policy")
+    if not isinstance(raw, Mapping):
+        return None, "MODEL_CREDIBILITY_POLICY_UNAVAILABLE"
+    policy_id = raw.get("policy_id")
+    if not isinstance(policy_id, str) or not policy_id.strip():
+        return None, "MODEL_CREDIBILITY_POLICY_UNAVAILABLE"
+    if raw.get("review_status") != "approved":
+        return None, "MODEL_CREDIBILITY_POLICY_NOT_APPROVED"
+    numeric: dict[str, float] = {}
+    for field in (
+        "maximum_normalized_rmse",
+        "maximum_parameter_influence_relative_shift",
+        "maximum_parameter_relative_standard_error",
+        "parameter_scale_floor",
+        "maximum_observed_step_decline_t_ha",
+    ):
+        value = raw.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            return None, "MODEL_CREDIBILITY_THRESHOLDS_INVALID"
+        numeric[field] = float(value)
+    minimum_folds = raw.get("minimum_influence_folds")
+    if (
+        isinstance(minimum_folds, bool)
+        or not isinstance(minimum_folds, int)
+        or minimum_folds < 2
+    ):
+        return None, "MODEL_CREDIBILITY_THRESHOLDS_INVALID"
+    return (
+        _ReviewedCredibilityPolicy(
+            policy_id=policy_id.strip(),
+            maximum_normalized_rmse=numeric["maximum_normalized_rmse"],
+            maximum_parameter_influence_relative_shift=numeric[
+                "maximum_parameter_influence_relative_shift"
+            ],
+            minimum_influence_folds=minimum_folds,
+            maximum_parameter_relative_standard_error=numeric[
+                "maximum_parameter_relative_standard_error"
+            ],
+            parameter_scale_floor=numeric["parameter_scale_floor"],
+            maximum_observed_step_decline_t_ha=numeric[
+                "maximum_observed_step_decline_t_ha"
+            ],
+        ),
+        None,
+    )
+
+
 def _at_reviewed_parameter_boundary(
     parameters: np.ndarray,
     gate: _ReviewedModelGate,
