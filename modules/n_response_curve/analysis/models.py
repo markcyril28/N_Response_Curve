@@ -1895,7 +1895,15 @@ def fit_candidate_model(
     observed_min, observed_max = _observed_bounds(x)
     distinct_levels = len(set(float(value) for value in x))
     evidence_rows = tuple(observation_evidence or ())
-    estimator_status = _estimator_grain_status(evidence_rows, n_observations)
+    estimator_status = _estimator_grain_status(
+        evidence_rows,
+        n_observations,
+        policy,
+    )
+    level_replicate_counts, replication_balance_status = _replication_balance(
+        x,
+        evidence_rows,
+    )
     if distinct_levels != n_observations:
         return _attempt(
             response_series_uid=response_series_uid,
