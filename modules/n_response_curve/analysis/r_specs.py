@@ -171,6 +171,14 @@ def _normalized_rows(
         }
         if dependence_unit_field is not None:
             analysis_row[dependence_unit_field] = row[dependence_unit_field]
+        if require_verified_comparability:
+            analysis_row["treatment_uid"] = row["treatment_uid"]
+            analysis_row["recommendation_set_membership_status"] = row[
+                "recommendation_set_membership_status"
+            ]
+            analysis_row["recommendation_set_review_id"] = row[
+                "recommendation_set_review_id"
+            ]
         if observation_level:
             analysis_row["response_series_uid"] = row["response_series_uid"]
             analysis_row["n_rate_kg_ha"] = row["n_rate_kg_ha"]
