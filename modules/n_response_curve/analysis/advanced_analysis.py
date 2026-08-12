@@ -294,44 +294,63 @@ def _predictive_result(
 
         best_model.fit(features.iloc[train], response[train])
         predicted = best_model.predict(features.iloc[test])
+        held_out_groups = groups[test]
         if numeric_outcome:
-            performance.append(
-                {
-                    "rmse": math.sqrt(
-                        mean_squared_error(
-                            response[test],
-                            predicted,
-                        )
-                    ),
-                    "mae": mean_absolute_error(
-                        response[test],
-                        predicted,
-                    ),
-                    "r2": (
-                        r2_score(response[test], predicted)
-                        if len(test) > 1
-                        else math.nan
-                    ),
-                }
-            )
+            for study_uid in sorted(set(held_out_groups.tolist())):
+                study_positions = np.flatnonzero(
+                    held_out_groups == study_uid
+                )
+                observed = response[test][study_positions]
+                study_predicted = predicted[study_positions]
+                performance.append(
+                    {
+                        "outer_fold": fold,
+                        "study_uid": str(study_uid),
+                        "rmse": math.sqrt(
+                            mean_squared_error(observed, study_predicted)
+                        ),
+                        "mae": mean_absolute_error(
+                            observed,
+                            study_predicted,
+                        ),
+                        "r2": (
+                            r2_score(observed, study_predicted)
+                            if len(study_positions) > 1
+                            else math.nan
+                        ),
+                    }
+                )
             importance_scoring = "neg_root_mean_squared_error"
         else:
             probabilities = best_model.predict_proba(
                 features.iloc[test]
             )
-            performance.append(
-                {
-                    "balanced_accuracy": balanced_accuracy_score(
-                        response[test],
-                        predicted,
-                    ),
-                    "log_loss": log_loss(
-                        response[test],
-                        probabilities,
-                        labels=best_model.classes_,
-                    ),
-                }
-            )
+            for study_uid in sorted(set(held_out_groups.tolist())):
+                study_positions = np.flatnonzero(
+                    held_out_groups == study_uid
+                )
+                observed = response[test][study_positions]
+                study_predicted = predicted[study_positions]
+                if len(set(observed)) < 2:
+                    study_balanced_accuracy = math.nan
+                    balanced_accuracy_unavailable_study_count += 1
+                else:
+                    study_balanced_accuracy = balanced_accuracy_score(
+                        observed,
+                        study_predicted,
+                    )
+                performance.append(
+                    {
+                        "outer_fold": fold,
+                        "study_uid": str(study_uid),
+                        "balanced_accuracy": study_balanced_accuracy,
+                        "log_loss": log_loss(
+                            observed,
+                            probabilities[study_positions],
+                            labels=best_model.classes_,
+                        ),
+                    }
+                )
             importance_scoring = "balanced_accuracy"
         measured = permutation_importance(
             best_model,
@@ -350,7 +369,12 @@ def _predictive_result(
         selected_parameters.append(dict(best_parameters))
 
     metric_names = sorted(
-        {name for fold_result in performance for name in fold_result}
+        {
+            name
+            for fold_result in performance
+            for name in fold_result
+            if name not in {"outer_fold", "study_uid"}
+        }
     )
     performance_record: dict[str, Any] = {
         "record_type": "performance",
@@ -360,9 +384,16 @@ def _predictive_result(
             "continuous" if numeric_outcome else "categorical"
         ),
         "group_cross_validation_by": "study_uid",
-        "resampling_design": "adaptive_repeated_group_shuffle",
-        "configured_outer_repeat_count": outer_repeat_count,
-        "outer_fold_count": len(performance),
+        "resampling_design": resampling_design,
+        "primary_partition_count": 1,
+        "configured_outer_repeat_count": 1,
+        "outer_fold_count": len(outer_splits),
+        "held_out_study_metric_count": len(performance),
+        "balanced_accuracy_unavailable_study_count": (
+            balanced_accuracy_unavailable_study_count
+        ),
+        "performance_aggregation": "equal_weight_per_held_out_study",
+        "study_balancing": "equal_weight_per_held_out_study",
         "tuning_search_space": list(parameter_grid),
         "selected_parameters_by_fold": selected_parameters,
         "preprocessing_scope": "fit within each training fold",
