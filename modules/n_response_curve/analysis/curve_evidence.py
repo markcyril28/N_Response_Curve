@@ -46,6 +46,42 @@ _ORGANIC_FIT_BLOCK_REASONS = frozenset(
     }
 )
 
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _approved_scientific_policy_authority(
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    authority = policy.get("scientific_policy_authority")
+    if not isinstance(authority, Mapping) or set(authority) != {
+        "approved_by",
+        "approved_on",
+        "artifact_sha256",
+    }:
+        return None
+    approved_by = authority.get("approved_by")
+    approved_on = authority.get("approved_on")
+    if (
+        not isinstance(approved_by, str)
+        or not approved_by.strip()
+        or not isinstance(approved_on, str)
+        or not approved_on.strip()
+        or not _is_sha256(authority.get("artifact_sha256"))
+    ):
+        return None
+    try:
+        date.fromisoformat(approved_on)
+    except ValueError:
+        return None
+    return authority
+
+
 @dataclass(frozen=True)
 class _DisagreementSummary:
     status: str
