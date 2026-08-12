@@ -128,6 +128,30 @@ def _series_rows(records: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[st
     return grouped
 
 
+def _approved_efficiency_policy(
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    raw = policy.get("efficiency_policy")
+    if not isinstance(raw, Mapping):
+        return None
+    if (
+        raw.get("review_status") != "approved"
+        or raw.get("metric_id")
+        != "EFF-01-option-a-partial-factor-productivity"
+        or raw.get("basis") != "observed_reviewed_treatment_mean"
+        or raw.get("aggregation_level") != "record_by_n_level"
+        or not isinstance(raw.get("policy_id"), str)
+        or not str(raw["policy_id"]).strip()
+    ):
+        return None
+    if "authority" in raw:
+        return None
+    authority = _approved_scientific_policy_authority(policy)
+    if authority is None:
+        return None
+    return {**dict(raw), "authority": authority}
+
+
 def _partial_factor_productivity_rows(
     records: Iterable[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
