@@ -1507,7 +1507,7 @@ def curate_ingestion(
     return CurationResult(records=records, parent_row_uids=parent_row_uids)
 
 
-def project_public_records(
+def _project_public_records(
     records: Iterable[Mapping[str, Any]],
     *,
     policy: RestrictedDataPolicy,
