@@ -1644,6 +1644,159 @@ def _repeat_adjudications(
     return tuple(adjudications)
 
 
+def _literature_verification(
+    payload: Mapping[str, Any],
+    *,
+    designated_reviewers: tuple[str, ...],
+) -> tuple[
+    tuple[str, ...],
+    VerificationSamplingPolicy,
+    tuple[VerificationResult, ...],
+]:
+    records = _records(payload, where="literature_verification")
+    if len(records) != 1:
+        raise SourceDataPolicyError(
+            "Literature-verification artifact must contain exactly one policy record"
+        )
+    record = records[0]
+    source_names = _string_tuple(
+        record.get("source_names"),
+        where="literature_verification source_names",
+    )
+    stratum_fields = _string_tuple(
+        record.get("stratum_fields"),
+        where="literature_verification stratum_fields",
+    )
+    risk_field = _nonempty_text(
+        record.get("risk_field"),
+        where="literature_verification risk_field",
+    )
+    if risk_field in stratum_fields:
+        raise SourceDataPolicyError(
+            "Literature-verification risk field must be separate from stratum fields"
+        )
+    raw_thresholds = record.get("discrepancy_thresholds")
+    if not isinstance(raw_thresholds, Mapping) or not raw_thresholds:
+        raise SourceDataPolicyError(
+            "Literature-verification discrepancy thresholds must be a nonempty object"
+        )
+    discrepancy_thresholds = MappingProxyType(
+        {
+            _nonempty_text(
+                severity,
+                where="literature-verification discrepancy severity",
+            ): _integer(
+                threshold,
+                where=(
+                    "literature-verification discrepancy threshold "
+                    f"for {severity!r}"
+                ),
+            )
+            for severity, threshold in raw_thresholds.items()
+        }
+    )
+    if "none" in discrepancy_thresholds:
+        raise SourceDataPolicyError(
+            "Literature-verification discrepancy thresholds must not redefine 'none'"
+        )
+    policy = VerificationSamplingPolicy(
+        version=_version(
+            record.get("version"),
+            where="literature_verification version",
+        ),
+        review_id=_nonempty_text(
+            record.get("review_id"),
+            where="literature_verification review_id",
+        ),
+        stratum_fields=stratum_fields,
+        risk_field=risk_field,
+        initial_sample_per_stratum=_integer(
+            record.get("initial_sample_per_stratum"),
+            where="literature_verification initial_sample_per_stratum",
+        ),
+        escalation_sample_per_stratum=_integer(
+            record.get("escalation_sample_per_stratum"),
+            where="literature_verification escalation_sample_per_stratum",
+        ),
+        discrepancy_thresholds=discrepancy_thresholds,
+        maximum_rounds=_integer(
+            record.get("maximum_rounds"),
+            where="literature_verification maximum_rounds",
+        ),
+        seed=_nonempty_text(
+            record.get("seed"),
+            where="literature_verification seed",
+        ),
+    )
+    raw_results = record.get("completed_results")
+    if not isinstance(raw_results, list):
+        raise SourceDataPolicyError(
+            "Literature-verification completed_results must be a JSON array"
+        )
+    reviewers = set(designated_reviewers)
+    results: list[VerificationResult] = []
+    seen_record_uids: set[str] = set()
+    for index, raw_result in enumerate(raw_results):
+        where = f"literature_verification completed_results[{index}]"
+        result = _exact_object(
+            raw_result,
+            required_keys=(
+                "record_uid",
+                "round_number",
+                "severity",
+                "reviewer",
+                "reviewed_on",
+                "evidence",
+            ),
+            where=where,
+        )
+        record_uid = _nonempty_text(
+            result.get("record_uid"),
+            where=f"{where}.record_uid",
+        )
+        if record_uid in seen_record_uids:
+            raise SourceDataPolicyError(
+                "Literature-verification results must have unique record UIDs"
+            )
+        seen_record_uids.add(record_uid)
+        reviewer = _nonempty_text(
+            result.get("reviewer"),
+            where=f"{where}.reviewer",
+        )
+        if reviewer not in reviewers:
+            raise SourceDataPolicyError(
+                "Literature-verification result reviewer is not designated"
+            )
+        severity = _nonempty_text(
+            result.get("severity"),
+            where=f"{where}.severity",
+        )
+        if severity != "none" and severity not in discrepancy_thresholds:
+            raise SourceDataPolicyError(
+                "Literature-verification result uses an undeclared severity"
+            )
+        results.append(
+            VerificationResult(
+                record_uid=record_uid,
+                round_number=_integer(
+                    result.get("round_number"),
+                    where=f"{where}.round_number",
+                ),
+                severity=severity,
+                reviewer=reviewer,
+                reviewed_on=_iso_date(
+                    result.get("reviewed_on"),
+                    where=f"{where}.reviewed_on",
+                ),
+                evidence=_nonempty_text(
+                    result.get("evidence"),
+                    where=f"{where}.evidence",
+                ),
+            )
+        )
+    return source_names, policy, tuple(results)
+
+
 def load_source_data_policy_manifest(
     manifest_path: str | Path,
     *,
