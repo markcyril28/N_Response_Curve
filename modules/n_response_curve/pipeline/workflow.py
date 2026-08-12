@@ -1936,12 +1936,14 @@ def _strict_review_gate_stage_writer(
             "fail_incomplete_evidence"
             if not evidence_complete
             else "fail_findings"
-            if issues and config.run_mode in {"validate", "full"}
+            if blocking_issues and config.run_mode in {"validate", "full"}
             else "bounded_with_findings"
-            if issues
+            if blocking_issues
             else "pass"
         )
-        state_counts = dict(sorted(Counter(row["issue_state"] for row in issues).items()))
+        state_counts = dict(
+            sorted(Counter(row["issue_state"] for row in classified_issues).items())
+        )
         payload = {
             "schema_version": _REVIEW_GATE_SCHEMA_VERSION,
             "policy_id": _REVIEW_GATE_POLICY_ID,
