@@ -571,4 +571,5 @@ __all__ = [
     "parse_numeric",
     "sensitive_path_alias",
     "validate_reviewed_lookup_table",
+    "validate_reviewed_missing_state_table",
 ]
