@@ -109,6 +109,9 @@ class CurveEvidenceResult:
     prediction_rows: tuple[dict[str, Any], ...]
     economic_optimum_rows: tuple[dict[str, Any], ...]
     efficiency_rows: tuple[dict[str, Any], ...]
+    efficiency_operating_point_rows: tuple[dict[str, Any], ...]
+    asymptote_support_rows: tuple[dict[str, Any], ...]
+    asymptote_reporting_rows: tuple[dict[str, Any], ...]
     environmental_risk_rows: tuple[dict[str, Any], ...]
 
 
