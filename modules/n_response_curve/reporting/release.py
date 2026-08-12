@@ -592,6 +592,314 @@ def _recover_interrupted_promotion(target: Path) -> None:
     raise ReportingError("Interrupted release promotion cannot be recovered automatically")
 
 
+def _archived_governance_json(
+    target: Path,
+    checksums: Mapping[str, str],
+    *,
+    relative_path: Any,
+    expected_sha256: Any,
+    label: str,
+) -> Mapping[str, Any]:
+    """Read one checksummed governance artifact named by an authoritative manifest."""
+
+    if not isinstance(relative_path, str) or not relative_path:
+        raise ReportingError(f"Full-release governance is missing archived {label}")
+    path = Path(relative_path)
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != relative_path:
+        raise ReportingError(f"Full-release governance has an unsafe archived {label} path")
+    if not isinstance(expected_sha256, str) or not _SHA256.fullmatch(expected_sha256):
+        raise ReportingError(f"Full-release governance has an invalid {label} hash")
+    if checksums.get(relative_path) != expected_sha256:
+        raise ReportingError(
+            f"Full-release governance {label} is not bound to the checksum inventory"
+        )
+    artifact_path = target / path
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReportingError(
+            f"Full-release governance archived {label} is unreadable or malformed"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise ReportingError(f"Full-release governance archived {label} must be a JSON object")
+    return payload
+
+
+def _verify_archived_policy_bundle(
+    target: Path,
+    checksums: Mapping[str, str],
+    section: Any,
+    *,
+    label: str,
+    default_accountable_party: object,
+    accountable_party_by_artifact: Mapping[str, object] | None = None,
+) -> None:
+    if not isinstance(section, Mapping) or section.get("status") != "validated":
+        raise ReportingError(f"Full-release governance requires validated {label}")
+    manifest_sha256 = section.get("manifest_sha256")
+    component_hashes = section.get("artifact_sha256")
+    archived_paths = section.get("archived_artifact_paths")
+    if (
+        not isinstance(manifest_sha256, str)
+        or not _SHA256.fullmatch(manifest_sha256)
+        or not isinstance(component_hashes, Mapping)
+        or not isinstance(archived_paths, Mapping)
+        or not archived_paths
+    ):
+        raise ReportingError(f"Full-release governance {label} inventory is malformed")
+    unmatched_components = set(component_hashes)
+    manifest_matches = 0
+    for artifact_type, relative_path in archived_paths.items():
+        if not isinstance(artifact_type, str):
+            raise ReportingError(f"Full-release governance {label} inventory is malformed")
+        expected_sha256 = component_hashes.get(artifact_type)
+        if (
+            expected_sha256 is None
+            and manifest_matches == 0
+            and isinstance(relative_path, str)
+            and checksums.get(relative_path) == manifest_sha256
+        ):
+            expected_sha256 = manifest_sha256
+            manifest_matches += 1
+        elif expected_sha256 is not None:
+            unmatched_components.discard(artifact_type)
+        payload = _archived_governance_json(
+            target,
+            checksums,
+            relative_path=relative_path,
+            expected_sha256=expected_sha256,
+            label=f"{label} artifact {artifact_type}",
+        )
+        expected_party = (
+            accountable_party_by_artifact or {}
+        ).get(artifact_type, default_accountable_party)
+        if (
+            not isinstance(expected_party, str)
+            or not expected_party
+            or payload.get("approved_by") != expected_party
+        ):
+            raise ReportingError(
+                f"Full-release governance {label} artifact {artifact_type} "
+                "signer does not match its accountable authority"
+            )
+    if unmatched_components or manifest_matches != 1:
+        raise ReportingError(
+            f"Full-release governance {label} archive is incomplete or misbound"
+        )
+
+
+def _verify_full_release_governance(
+    target: Path,
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> None:
+    if manifest.get("status") != "phase_5_full_release_complete":
+        return
+    runtime_policy = manifest.get("runtime_policy")
+    run_identity = manifest.get("run_identity")
+    run_identity_sha256 = manifest.get("run_identity_sha256")
+    if (
+        not isinstance(runtime_policy, Mapping)
+        or runtime_policy.get("mode") != "full"
+        or runtime_policy.get("status") != "approved"
+        or not isinstance(run_identity, Mapping)
+        or run_identity.get("mode") != "full"
+        or not isinstance(run_identity_sha256, str)
+        or run_identity_sha256 != stable_json_sha256(run_identity)
+    ):
+        raise ReportingError(
+            "Full-release governance runtime policy or run identity is missing or invalid"
+        )
+
+    policy_content_sha256 = runtime_policy.get("policy_content_sha256")
+    effective_enablement = runtime_policy.get("effective_enablement")
+    effective_enablement_sha256 = runtime_policy.get("effective_enablement_sha256")
+    if (
+        not isinstance(policy_content_sha256, str)
+        or not _SHA256.fullmatch(policy_content_sha256)
+        or effective_enablement_sha256 != stable_json_sha256(effective_enablement)
+        or run_identity.get("policy_content_sha256") != policy_content_sha256
+        or run_identity.get("effective_enablement_sha256")
+        != effective_enablement_sha256
+    ):
+        raise ReportingError("Full-release governance runtime-policy identity is misbound")
+
+    authority_matrix = runtime_policy.get("approval_authority_matrix")
+    if not isinstance(authority_matrix, Mapping):
+        raise ReportingError("Full-release governance authority matrix is missing")
+    matrix_sha256 = authority_matrix.get("artifact_sha256")
+    matrix_source = _archived_governance_json(
+        target,
+        checksums,
+        relative_path=authority_matrix.get("archived_artifact_path"),
+        expected_sha256=matrix_sha256,
+        label="approval authority matrix",
+    )
+    matrix_approval = authority_matrix.get("approval")
+    try:
+        matrix_effective_date = _governance_calendar_date(
+            matrix_source.get("effective_from")
+        )
+        matrix_approval_date = _governance_calendar_date(
+            matrix_source.get("approved_at")
+        )
+    except ValueError as exc:
+        raise ReportingError(
+            "Full-release governance authority matrix dates are invalid"
+        ) from exc
+    if (
+        matrix_source.get("status") != "APPROVED"
+        or matrix_source.get("matrix_id") != authority_matrix.get("matrix_id")
+        or matrix_source.get("effective_from") != authority_matrix.get("effective_from")
+        or matrix_source.get("gate_authorities") != authority_matrix.get("gate_authorities")
+        or not isinstance(matrix_approval, Mapping)
+        or matrix_source.get("approved_by") != matrix_approval.get("approved_by")
+        or matrix_source.get("approved_at") != matrix_approval.get("approved_at")
+        or any(
+            matrix_source.get(field) != value
+            or authority_matrix.get(field) != value
+            for field, value in _FULL_AUTHORITY_POLICY_VALUES.items()
+        )
+        or matrix_approval_date > matrix_effective_date
+        or matrix_effective_date > date.today()
+        or run_identity.get("approval_authority_matrix_sha256") != matrix_sha256
+    ):
+        raise ReportingError("Full-release governance authority matrix is misbound")
+    gate_authorities = authority_matrix.get("gate_authorities")
+    if not isinstance(gate_authorities, Mapping):
+        raise ReportingError("Full-release governance authority assignments are malformed")
+    accountable_parties = [
+        assignment.get("accountable_party")
+        for assignment in gate_authorities.values()
+        if isinstance(assignment, Mapping)
+    ]
+    if (
+        len(accountable_parties) != 5
+        or any(not isinstance(party, str) or not party for party in accountable_parties)
+        or len(accountable_parties) != len(set(accountable_parties))
+    ):
+        raise ReportingError(
+            "Full-release governance authority assignments do not enforce role separation"
+        )
+
+    snapshot_source = _archived_governance_json(
+        target,
+        checksums,
+        relative_path=runtime_policy.get("archived_artifact_path"),
+        expected_sha256=runtime_policy.get("approval_artifact_sha256"),
+        label="approved runtime-policy snapshot",
+    )
+    snapshot_content = snapshot_source.get("policy_content")
+    runtime_approval = runtime_policy.get("approval")
+    runtime_assignment = gate_authorities.get("runtime_integrity")
+    runtime_party = (
+        runtime_assignment.get("accountable_party")
+        if isinstance(runtime_assignment, Mapping)
+        else None
+    )
+    if (
+        snapshot_source.get("status") != "APPROVED"
+        or snapshot_source.get("policy_content_sha256") != policy_content_sha256
+        or stable_json_sha256(snapshot_content) != policy_content_sha256
+        or not isinstance(snapshot_content, Mapping)
+        or snapshot_content.get("effective_enablement") != effective_enablement
+        or not isinstance(runtime_approval, Mapping)
+        or runtime_approval.get("approved_by") != runtime_party
+        or snapshot_source.get("approved_by") != runtime_party
+        or run_identity.get("approval_artifact_sha256")
+        != runtime_policy.get("approval_artifact_sha256")
+    ):
+        raise ReportingError("Full-release governance runtime-policy snapshot is misbound")
+
+    review_policy = runtime_policy.get("review_gate_policy")
+    if review_policy is not None:
+        if not isinstance(review_policy, Mapping):
+            raise ReportingError("Full-release governance review policy is malformed")
+        review_source = _archived_governance_json(
+            target,
+            checksums,
+            relative_path=review_policy.get("archived_artifact_path"),
+            expected_sha256=review_policy.get("artifact_sha256"),
+            label="review-gate policy",
+        )
+        scientific_assignment = gate_authorities.get("scientific_methods")
+        scientific_party = (
+            scientific_assignment.get("accountable_party")
+            if isinstance(scientific_assignment, Mapping)
+            else None
+        )
+        if (
+            review_source.get("status") != "APPROVED"
+            or review_source.get("policy_id") != review_policy.get("policy_id")
+            or review_source.get("approved_by") != scientific_party
+        ):
+            raise ReportingError("Full-release governance review policy is misbound")
+
+    release_approval = manifest.get("release_approval")
+    if not isinstance(release_approval, Mapping):
+        raise ReportingError("Full-release governance release approval is missing")
+    release_source = _archived_governance_json(
+        target,
+        checksums,
+        relative_path=release_approval.get("archived_artifact_path"),
+        expected_sha256=release_approval.get("artifact_sha256"),
+        label="release approval",
+    )
+    release_assignment = gate_authorities.get("release_promotion")
+    release_party = (
+        release_assignment.get("accountable_party")
+        if isinstance(release_assignment, Mapping)
+        else None
+    )
+    if (
+        release_approval.get("status") != "approved"
+        or release_approval.get("run_id") != manifest.get("run_id")
+        or release_approval.get("run_identity_sha256") != run_identity_sha256
+        or release_approval.get("authority_matrix_sha256") != matrix_sha256
+        or not isinstance(release_approval.get("approval"), Mapping)
+        or release_approval["approval"].get("approved_by") != release_party
+        or release_source.get("status") != "APPROVED"
+        or release_source.get("run_id") != manifest.get("run_id")
+        or release_source.get("run_identity_sha256") != run_identity_sha256
+        or release_source.get("approved_by") != release_party
+    ):
+        raise ReportingError("Full-release governance release approval is misbound")
+
+    source_assignment = gate_authorities.get("source_integrity")
+    restricted_assignment = gate_authorities.get("restricted_data")
+    scientific_assignment = gate_authorities.get("scientific_methods")
+    source_party = (
+        source_assignment.get("accountable_party")
+        if isinstance(source_assignment, Mapping)
+        else None
+    )
+    restricted_party = (
+        restricted_assignment.get("accountable_party")
+        if isinstance(restricted_assignment, Mapping)
+        else None
+    )
+    scientific_party = (
+        scientific_assignment.get("accountable_party")
+        if isinstance(scientific_assignment, Mapping)
+        else None
+    )
+    _verify_archived_policy_bundle(
+        target,
+        checksums,
+        manifest.get("source_data_policy"),
+        label="source-data policy",
+        default_accountable_party=source_party,
+        accountable_party_by_artifact={"restricted_policy": restricted_party},
+    )
+    _verify_archived_policy_bundle(
+        target,
+        checksums,
+        manifest.get("analysis_policy"),
+        label="analysis policy",
+        default_accountable_party=scientific_party,
+    )
+
+
 def verify_release_package(target_path: str | Path) -> ReleasePackage:
     """Verify every promoted artifact against its immutable checksum ledger."""
 
@@ -667,6 +975,7 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
             or expected.get(relative_path) != digest
         ):
             raise ReportingError("Release run manifest report-document metadata is invalid")
+    _verify_full_release_governance(target, expected, payload)
     try:
         report_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
