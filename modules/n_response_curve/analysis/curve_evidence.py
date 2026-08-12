@@ -2651,6 +2651,32 @@ def build_curve_evidence(
         for series_uid in sorted(credible_by_series)
         for attempt in credible_by_series[series_uid]
     )
+    asymptote_support_rows = _asymptote_support_rows(
+        credible_attempts_flat,
+        policy=policy,
+    )
+    credible_attempts_flat = _promote_supported_asymptotes(
+        credible_attempts_flat,
+        asymptote_support_rows,
+    )
+    promoted_by_uid = {
+        attempt.model_attempt_uid: attempt for attempt in credible_attempts_flat
+    }
+    attempts = tuple(
+        promoted_by_uid.get(attempt.model_attempt_uid, attempt)
+        for attempt in attempts
+    )
+    by_series = {}
+    for attempt in attempts:
+        by_series.setdefault(attempt.response_series_uid, []).append(attempt)
+    credible_by_series = {
+        series_uid: tuple(
+            promoted_by_uid.get(attempt.model_attempt_uid, attempt)
+            for attempt in series_attempts
+            if attempt.model_attempt_uid in promoted_by_uid
+        )
+        for series_uid, series_attempts in sorted(by_series.items())
+    }
     selected_attempts: tuple[ModelAttempt, ...] = ()
     grouped_rows = _series_rows(copied_records)
     grouped_fit_rows = _series_rows(fit_records)
@@ -2726,7 +2752,85 @@ def build_curve_evidence(
         credible_attempts_flat,
         policy=policy,
     )
-    efficiency_rows = _partial_factor_productivity_rows(copied_records)
+    efficiency_rows = _partial_factor_productivity_rows(
+        copied_records,
+        policy=policy,
+    )
+    efficiency_operating_point_rows = _efficiency_operating_point_rows(
+        credible_attempts_flat,
+        policy=policy,
+    )
+    asymptote_reporting_rows = _asymptote_reporting_rows(
+        credible_attempts_flat,
+        policy=policy,
+    )
+    asymptote_by_series = {
+        str(row["response_series_uid"]): row
+        for row in asymptote_reporting_rows
+    }
+    # An asymptotic curve has no finite maximum, so its associated rate can only
+    # come from the approved MOD-07 fraction, and only once MOD-08 support has
+    # already promoted the ceiling. Rows left pending by `_maximum_associated_rate`
+    # are the only ones eligible; nothing else is overwritten.
+    curve_rows = tuple(
+        {
+            **row,
+            **(
+                {
+                    "maximum_associated_n_kg_ha": asymptote_row[
+                        "asymptote_fraction_n_kg_ha"
+                    ],
+                    "maximum_associated_n_basis": asymptote_row["basis"],
+                    "maximum_associated_n_status": (
+                        "available_mod07_asymptote_fraction"
+                    ),
+                }
+                if (
+                    row.get("maximum_associated_n_status")
+                    == "pending_mod07_asymptote_fraction_policy"
+                    and (
+                        asymptote_row := asymptote_by_series.get(
+                            str(row["response_series_uid"])
+                        )
+                    )
+                    is not None
+                    and asymptote_row.get("status") == "available"
+                )
+                else {}
+            ),
+        }
+        for row in curve_rows
+    )
+    series_evidence_rows = tuple(
+        {
+            **row,
+            **(
+                {
+                    "asymptote_reporting_status": asymptote_row["status"],
+                    "asymptote_rate_label": asymptote_row["rate_label"],
+                    "asymptote_fraction": asymptote_row["asymptote_fraction"],
+                    "asymptote_fraction_n_kg_ha": asymptote_row[
+                        "asymptote_fraction_n_kg_ha"
+                    ],
+                    "asymptote_fraction_n_se_kg_ha": asymptote_row[
+                        "asymptote_fraction_n_se_kg_ha"
+                    ],
+                    "asymptote_reporting_basis": asymptote_row["basis"],
+                    "asymptote_reporting_policy_id": asymptote_row[
+                        "asymptote_reporting_policy_id"
+                    ],
+                }
+                if (
+                    asymptote_row := asymptote_by_series.get(
+                        str(row["response_series_uid"])
+                    )
+                )
+                is not None
+                else {}
+            ),
+        }
+        for row in series_evidence_rows
+    )
     environmental_risk_rows = _environmental_risk_rows(copied_records)
     return CurveEvidenceResult(
         reporting_policy=reporting_policy,
@@ -2739,6 +2843,9 @@ def build_curve_evidence(
         prediction_rows=predictions,
         economic_optimum_rows=economic_optimum_rows,
         efficiency_rows=efficiency_rows,
+        efficiency_operating_point_rows=efficiency_operating_point_rows,
+        asymptote_support_rows=asymptote_support_rows,
+        asymptote_reporting_rows=asymptote_reporting_rows,
         environmental_risk_rows=environmental_risk_rows,
     )
 
