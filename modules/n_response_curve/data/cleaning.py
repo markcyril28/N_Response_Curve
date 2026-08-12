@@ -443,7 +443,13 @@ def _decision_row(record: Mapping[str, Any]) -> dict[str, Any]:
         "cleaning_review_id": record.get("cleaning_review_id"),
         "cleaning_reviewer": record.get("cleaning_reviewer"),
         "cleaning_reviewed_on": record.get("cleaning_reviewed_on"),
+        "cleaning_prespecification_status": record.get(
+            "cleaning_prespecification_status"
+        ),
         "cleaning_rule_ids": record.get("cleaning_rule_ids", ()),
+        "cleaning_unevaluable_rule_ids": record.get(
+            "cleaning_unevaluable_rule_ids", ()
+        ),
         "cleaning_reason_codes": record.get("cleaning_reason_codes", ()),
         "cleaning_review_status": record.get("cleaning_review_status"),
         "final_analytical_membership_status": record.get(
@@ -463,10 +469,18 @@ def apply_final_cleaning(
 
     Missing policy coverage is a review hold. It never becomes an implicit deletion.
     Raw values are deliberately excluded from the decision ledger.
+
+    Distributional and influence rules are decided against the group a record
+    belongs to, so every source is evaluated once up front and each record then
+    reads its own verdict. A rule that cannot be decided — too small a group, a
+    degenerate spread, an unavailable grouping key, or an influence diagnostic
+    that only a fitted model could supply — holds its records for review instead
+    of resolving them either way. A matched exclusion still wins over a hold,
+    because both keep the record out of the primary view and the exclusion is
+    the one with a reviewed reason behind it.
     """
 
-    cleaned: list[dict[str, Any]] = []
-    decisions: list[dict[str, Any]] = []
+    prepared: list[dict[str, Any]] = []
     for source_record in records:
         record = dict(source_record)
         record_uid = record.get("record_uid")
