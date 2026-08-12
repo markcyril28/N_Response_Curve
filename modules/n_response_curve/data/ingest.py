@@ -511,6 +511,8 @@ def ingest_configured_sources(
         adapter_version = str(source_config["shape_adapter_version"])
         if adapter_version in configured_specs:
             adapter_spec = configured_specs[adapter_version]
+        elif adapter_version in BUILTIN_ADAPTER_SPECS:
+            adapter_spec = BUILTIN_ADAPTER_SPECS[adapter_version]
         elif adapter_version in {"core-trial-csv-v1", "fixture-csv-v1"}:
             adapter_spec = SourceAdapterSpec(
                 version=adapter_version,
@@ -529,6 +531,7 @@ def ingest_configured_sources(
                 source_name=source_name,
                 expected_physical_columns=adapter_spec.expected_physical_columns,
                 expected_headers=adapter_spec.expected_headers,
+                expected_header_sha256=adapter_spec.expected_header_sha256,
                 expected_sha256=expected_sha256,
                 source_type=str(source_config["source_type"]),
                 source_family=str(source_config["source_family"]),
