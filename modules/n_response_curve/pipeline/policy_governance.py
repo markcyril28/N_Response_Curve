@@ -553,6 +553,347 @@ def load_approval_authority_matrix(path: str | Path) -> ApprovalAuthorityMatrix:
     )
 
 
+def load_review_gate_policy(
+    path: str | Path,
+    *,
+    authority_matrix: ApprovalAuthorityMatrix,
+) -> ReviewGatePolicy:
+    """Load the approved disposition-aware review policy without inferring states."""
+
+    artifact_path = Path(path).resolve()
+    payload = _load_json_object(artifact_path)
+    required_keys = {
+        "schema_version",
+        "status",
+        "policy_id",
+        "prospective_effective_version",
+        "effective_from",
+        "approved_by",
+        "approved_at",
+        "approval_source",
+        "fatal_issue_states",
+        "permitted_resolved_dispositions",
+        "source_accountability_policy",
+        "analytical_leakage_policy",
+    }
+    if set(payload) != required_keys:
+        raise ConfigError("Review-gate policy fields do not match the required schema")
+    if payload["schema_version"] != _REVIEW_GATE_POLICY_SCHEMA_VERSION:
+        raise ConfigError("Review-gate policy schema version is unsupported")
+    if payload["status"] != _APPROVED_STATUS:
+        raise ConfigError("Review-gate policy is not approved")
+    approval = {
+        "approved_by": _approval_text(
+            payload["approved_by"],
+            field="review-gate policy approver",
+        ),
+        "approved_at": _approval_timestamp(payload["approved_at"]),
+        "approval_source": _approval_text(
+            payload["approval_source"],
+            field="review-gate policy approval source",
+        ),
+    }
+    scientific_party = authority_matrix.gate_authorities["scientific_methods"][
+        "accountable_party"
+    ]
+    if approval["approved_by"] != scientific_party:
+        raise ConfigError(
+            "Review-gate policy signer is not the accountable scientific-methods party "
+            "in the OPS-08 authority matrix"
+        )
+    fatal_states = payload["fatal_issue_states"]
+    if (
+        not isinstance(fatal_states, list)
+        or sorted(fatal_states) != list(_FATAL_REVIEW_ISSUE_STATES)
+        or len(fatal_states) != len(set(fatal_states))
+    ):
+        raise ConfigError(
+            "Review-gate policy must keep structural, unresolved, and warning states fatal"
+        )
+    raw_dispositions = payload["permitted_resolved_dispositions"]
+    if not isinstance(raw_dispositions, list) or not raw_dispositions:
+        raise ConfigError(
+            "Review-gate policy must enumerate at least one exact permitted resolved disposition"
+        )
+    required_disposition_fields = {
+        "stage",
+        "issue_scope",
+        "issue_state",
+        "status",
+    }
+    permitted: list[Mapping[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for index, raw_disposition in enumerate(raw_dispositions):
+        if (
+            not isinstance(raw_disposition, Mapping)
+            or set(raw_disposition) != required_disposition_fields
+        ):
+            raise ConfigError(
+                f"Review-gate permitted disposition {index} does not match the required schema"
+            )
+        disposition = {
+            field: _approval_text(
+                raw_disposition[field],
+                field=f"review-gate disposition {index} {field}",
+            )
+            for field in sorted(required_disposition_fields)
+        }
+        if disposition["stage"] not in {"phase_2", "phase_3", "phase_4"}:
+            raise ConfigError("Review-gate permitted disposition has an invalid stage")
+        if disposition["issue_state"] != "excluded_series":
+            raise ConfigError(
+                "Only exact resolved excluded-series dispositions may be permitted"
+            )
+        identity = (
+            disposition["stage"],
+            disposition["issue_scope"],
+            disposition["issue_state"],
+            disposition["status"],
+        )
+        if identity in seen:
+            raise ConfigError("Review-gate permitted dispositions must be unique")
+        seen.add(identity)
+        permitted.append(disposition)
+    effective_from = _approval_timestamp(payload["effective_from"])
+    if _approval_calendar_date(approval["approved_at"]) < _approval_calendar_date(
+        authority_matrix.effective_from
+    ):
+        raise ConfigError(
+            "Review-gate policy approval predates the effective OPS-08 authority matrix"
+        )
+    if _approval_calendar_date(effective_from) < _approval_calendar_date(
+        approval["approved_at"]
+    ):
+        raise ConfigError(
+            "Review-gate policy cannot become effective before its approval date"
+        )
+    if _approval_calendar_date(effective_from) < _approval_calendar_date(
+        authority_matrix.effective_from
+    ):
+        raise ConfigError(
+            "Review-gate policy predates the effective OPS-08 authority matrix"
+        )
+    source_accountability_policy = _approval_text(
+        payload["source_accountability_policy"],
+        field="review-gate source-accountability policy",
+    )
+    if (
+        source_accountability_policy
+        != "retain_in_authoritative_source_accountability_ledger"
+    ):
+        raise ConfigError(
+            "Review-gate policy must retain every disposition in source accountability"
+        )
+    analytical_leakage_policy = _approval_text(
+        payload["analytical_leakage_policy"],
+        field="review-gate analytical-leakage policy",
+    )
+    if analytical_leakage_policy != "prohibit_analysis_use":
+        raise ConfigError(
+            "Review-gate policy must keep analytical leakage prohibited and fatal"
+        )
+    return ReviewGatePolicy(
+        policy_id=_approval_text(payload["policy_id"], field="review-gate policy identifier"),
+        prospective_effective_version=_approval_text(
+            payload["prospective_effective_version"],
+            field="review-gate prospective effective version",
+        ),
+        effective_from=effective_from,
+        approval=approval,
+        fatal_issue_states=tuple(sorted(fatal_states)),
+        permitted_resolved_dispositions=tuple(permitted),
+        source_accountability_policy=source_accountability_policy,
+        analytical_leakage_policy=analytical_leakage_policy,
+        artifact_path=artifact_path,
+        artifact_sha256=sha256_file(artifact_path),
+    )
+
+
+def load_release_approval(
+    path: str | Path,
+    *,
+    authority_matrix: ApprovalAuthorityMatrix,
+    run_id: str,
+    release_target: str,
+    run_identity_sha256: str,
+) -> ReleaseApproval:
+    """Require release-owner approval bound to the exact promotion request."""
+
+    artifact_path = Path(path).resolve()
+    if not artifact_path.is_file():
+        raise ConfigError(
+            "Authoritative release requires a release-owner approval record at "
+            f"{artifact_path}; expected run_identity_sha256={run_identity_sha256}"
+        )
+    payload = _load_json_object(artifact_path)
+    required_keys = {
+        "schema_version",
+        "status",
+        "record_id",
+        "scope",
+        "run_id",
+        "release_target",
+        "run_identity_sha256",
+        "authority_matrix_sha256",
+        "approved_by",
+        "approved_at",
+        "approval_source",
+    }
+    if set(payload) != required_keys:
+        raise ConfigError("Release approval fields do not match the required schema")
+    if payload["schema_version"] != _RELEASE_APPROVAL_SCHEMA_VERSION:
+        raise ConfigError("Release approval schema version is unsupported")
+    if payload["status"] != _APPROVED_STATUS:
+        raise ConfigError("Release approval record is not approved")
+    if payload["scope"] != "release_promotion":
+        raise ConfigError("Release approval scope must be release_promotion")
+    expected_values = {
+        "run_id": run_id,
+        "release_target": release_target,
+        "run_identity_sha256": run_identity_sha256,
+        "authority_matrix_sha256": authority_matrix.artifact_sha256,
+    }
+    for field, expected in expected_values.items():
+        if payload[field] != expected:
+            raise ConfigError(
+                f"Release approval {field} does not match the current promotion request"
+            )
+    approval = {
+        "approved_by": _approval_text(
+            payload["approved_by"],
+            field="release approval approver",
+        ),
+        "approved_at": _approval_timestamp(payload["approved_at"]),
+        "approval_source": _approval_text(
+            payload["approval_source"],
+            field="release approval source",
+        ),
+    }
+    release_party = authority_matrix.gate_authorities["release_promotion"][
+        "accountable_party"
+    ]
+    if approval["approved_by"] != release_party:
+        raise ConfigError(
+            "Release approval signer is not the accountable release-promotion party "
+            "in the OPS-08 authority matrix"
+        )
+    if _approval_calendar_date(approval["approved_at"]) < _approval_calendar_date(
+        authority_matrix.effective_from
+    ):
+        raise ConfigError(
+            "Release approval predates the effective OPS-08 authority matrix"
+        )
+    return ReleaseApproval(
+        record_id=_approval_text(
+            payload["record_id"],
+            field="release approval record identifier",
+        ),
+        run_id=run_id,
+        release_target=release_target,
+        run_identity_sha256=run_identity_sha256,
+        authority_matrix_sha256=authority_matrix.artifact_sha256,
+        approval=approval,
+        artifact_path=artifact_path,
+        artifact_sha256=sha256_file(artifact_path),
+    )
+
+
+def phase_two_review_disposition(row: Mapping[str, Any]) -> Mapping[str, str]:
+    """Return the exact state-map identity used by both early and release gates."""
+
+    raw_reasons = row.get("eligibility_reason_codes", row.get("reason_codes", ()))
+    if isinstance(raw_reasons, str):
+        reasons = (raw_reasons,)
+    elif isinstance(raw_reasons, (list, tuple, set, frozenset)):
+        reasons = tuple(str(reason) for reason in raw_reasons)
+    else:
+        reasons = ()
+    normalized_reasons = tuple(reason.strip().upper() for reason in reasons)
+    if any(
+        token in reason
+        for reason in normalized_reasons
+        for token in ("DATA_ERROR", "PROHIBITED_USE", "STRUCTURAL")
+    ):
+        issue_state = "structural"
+    elif any(
+        "UNRESOLVED" in reason or "REVIEW" in reason
+        for reason in normalized_reasons
+    ):
+        issue_state = "unresolved"
+    elif any("WARNING" in reason for reason in normalized_reasons) or row.get(
+        "status"
+    ) == "warning":
+        issue_state = "warning"
+    elif row.get("analytical_record_status") not in {None, "included"}:
+        issue_state = "excluded_series"
+    else:
+        issue_state = "structural"
+    return MappingProxyType(
+        {
+            "stage": "phase_2",
+            "issue_scope": "record",
+            "issue_state": issue_state,
+            "status": str(row.get("eligibility_tier") or "review"),
+        }
+    )
+
+
+def validate_policy_authority_bindings(
+    authority_matrix: ApprovalAuthorityMatrix,
+    *,
+    source_data_policy: Any | None,
+    analysis_policy: Any | None,
+) -> None:
+    """Bind every supplied policy artifact to its OPS-08 accountable party."""
+
+    def require_authority(authority: Any, *, gate: str, artifact: str) -> None:
+        expected_party = authority_matrix.gate_authorities[gate]["accountable_party"]
+        if getattr(authority, "approved_by", None) != expected_party:
+            raise ConfigError(
+                f"{artifact} signer is not the accountable {gate} party in the OPS-08 authority matrix"
+            )
+        approval_date = getattr(authority, "approval_date", None)
+        try:
+            parsed_date = date.fromisoformat(str(approval_date))
+        except ValueError as exc:
+            raise ConfigError(f"{artifact} approval date is invalid") from exc
+        if parsed_date < date.fromisoformat(authority_matrix.effective_from):
+            raise ConfigError(
+                f"{artifact} approval predates the effective OPS-08 authority matrix"
+            )
+
+    if source_data_policy is not None:
+        require_authority(
+            source_data_policy.manifest_authority,
+            gate="source_integrity",
+            artifact="source-data policy manifest",
+        )
+        source_gate_by_artifact = {
+            "restricted_policy": "restricted_data",
+            "final_cleaning_policy": "scientific_methods",
+        }
+        for name, authority in source_data_policy.artifact_authorities.items():
+            require_authority(
+                authority,
+                gate=source_gate_by_artifact.get(name, "source_integrity"),
+                artifact=f"source-data policy component {name!r}",
+            )
+    if analysis_policy is not None:
+        for name, authority in (
+            ("manifest", analysis_policy.manifest_authority),
+            ("support table", analysis_policy.support_authority),
+            ("factor representations", analysis_policy.representation_authority),
+            ("estimands", analysis_policy.estimand_authority),
+            ("hypotheses", analysis_policy.hypothesis_authority),
+            ("curve-model policy", analysis_policy.model_authority),
+        ):
+            require_authority(
+                authority,
+                gate="scientific_methods",
+                artifact=f"analysis-policy {name}",
+            )
+
+
 def _validate_approved_snapshot(
     config: ValidatedConfig,
     *,
