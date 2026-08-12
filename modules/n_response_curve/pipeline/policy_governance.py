@@ -260,8 +260,10 @@ def effective_analysis_hypotheses(
     )
 
 
-def _semantic_policy() -> dict[str, Any]:
-    return {
+def _semantic_policy(
+    review_gate_policy: ReviewGatePolicy | None = None,
+) -> dict[str, Any]:
+    policy = {
         "test_subset": {
             "selection": "deterministic_representative_greedy_coverage",
             "coverage_dimensions": [
@@ -302,6 +304,12 @@ def _semantic_policy() -> dict[str, Any]:
             "complete_machine_readable_qc": True,
         },
     }
+    if review_gate_policy is not None:
+        policy["review_gate"] = {
+            "modes": ["validate", "full"],
+            **review_gate_policy.semantic_payload(),
+        }
+    return policy
 
 
 def effective_enablement(config: ValidatedConfig) -> dict[str, Any]:
