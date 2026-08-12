@@ -192,6 +192,8 @@ def ingest_csv(
     representation_basis_status: str = "review_required",
     checksum_revision_approval: ChecksumRevisionApproval | Mapping[str, object] | None = None,
     checksum_revision_artifact_path: str | None = None,
+    candidate_workbook_path: str | Path | None = None,
+    candidate_sheet: str | None = None,
     designated_reviewers: Iterable[str] = (),
 ) -> IngestedSource:
     """Read one CSV by physical position and fail before accepting shape drift.
