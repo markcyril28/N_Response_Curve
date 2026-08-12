@@ -1486,8 +1486,11 @@ def _delta_feature_variances(
     parameter_covariance: np.ndarray | None,
     optimum_summary: _OptimumSummary,
     predictions: Sequence[Mapping[str, float]],
+    *,
+    asymptote_support_policy: object = None,
+    asymptote_reporting_policy: object = None,
 ) -> Mapping[str, float]:
-    """Propagate reviewed first-stage uncertainty to supported numeric features."""
+    """Expose only fitted or derived variances authorized by reviewed policy."""
 
     if parameter_covariance is None:
         return {}
@@ -1513,48 +1516,74 @@ def _delta_feature_variances(
         peak_variance = float(peak["fitted_mean_se_t_ha"]) ** 2
         if math.isfinite(peak_variance) and peak_variance > 0.0:
             variances["predicted_observed_domain_peak_yield_t_ha"] = peak_variance
-
-    if model_name == "quadratic":
-        slope = float(parameters["slope"])
-        curvature = float(parameters["curvature"])
-        if curvature != 0.0 and optimum_summary.agronomic_optimum_n_kg_ha is not None:
-            add(
-                "agronomic_optimum_n_kg_ha",
-                (0.0, -1.0 / (2.0 * curvature), slope / (2.0 * curvature**2)),
+    if (
+        model_name == "mitscherlich"
+        and isinstance(asymptote_support_policy, Mapping)
+        and asymptote_support_policy.get("review_status") == "approved"
+        and isinstance(asymptote_support_policy.get("policy_id"), str)
+        and str(asymptote_support_policy["policy_id"]).strip()
+        and parameter_covariance.shape[0] >= 1
+    ):
+        asymptote_variance = float(parameter_covariance[0, 0])
+        if math.isfinite(asymptote_variance) and asymptote_variance > 0.0:
+            variances["fitted_asymptote_yield_t_ha"] = asymptote_variance
+        if (
+            isinstance(asymptote_reporting_policy, Mapping)
+            and asymptote_reporting_policy.get("review_status") == "approved"
+            and isinstance(asymptote_reporting_policy.get("policy_id"), str)
+            and str(asymptote_reporting_policy["policy_id"]).strip()
+            and isinstance(
+                asymptote_reporting_policy.get("asymptote_fraction"),
+                (int, float),
             )
-            finite_gradient = (
-                1.0,
-                -slope / (2.0 * curvature),
-                slope**2 / (4.0 * curvature**2),
+            and not isinstance(
+                asymptote_reporting_policy.get("asymptote_fraction"), bool
             )
-            if optimum_summary.finite_maximum_yield_t_ha is not None:
-                add("finite_maximum_yield_t_ha", finite_gradient)
-    elif model_name == "linear_plateau":
-        slope = float(parameters["slope"])
-        onset = float(parameters["plateau_onset"])
-        if optimum_summary.plateau_onset_n_kg_ha is not None:
-            add("plateau_onset_n_kg_ha", (0.0, 0.0, 1.0))
-            add("agronomic_optimum_n_kg_ha", (0.0, 0.0, 1.0))
-        if optimum_summary.finite_maximum_yield_t_ha is not None:
-            add("finite_maximum_yield_t_ha", (1.0, onset, slope))
-    elif model_name == "quadratic_plateau":
-        if optimum_summary.plateau_onset_n_kg_ha is not None:
-            add("plateau_onset_n_kg_ha", (0.0, 0.0, 1.0))
-            add("agronomic_optimum_n_kg_ha", (0.0, 0.0, 1.0))
-        if optimum_summary.finite_maximum_yield_t_ha is not None:
-            add("finite_maximum_yield_t_ha", (1.0, 1.0, 0.0))
-    elif model_name == "mitscherlich":
-        if optimum_summary.fitted_asymptote_yield_t_ha is not None:
-            add("fitted_asymptote_yield_t_ha", (1.0, 0.0, 0.0))
-
-    if "finite_maximum_yield_t_ha" in variances:
-        variances["predicted_max_yield_t_ha"] = variances[
-            "finite_maximum_yield_t_ha"
-        ]
-        if optimum_summary.supported_max_yield_t_ha is not None:
-            variances["supported_max_yield_t_ha"] = variances[
-                "finite_maximum_yield_t_ha"
-            ]
+            and parameter_covariance.shape[0] >= 3
+        ):
+            fraction = float(asymptote_reporting_policy["asymptote_fraction"])
+            reference_quantity = asymptote_reporting_policy.get("reference_quantity")
+            asymptote = float(parameters["asymptote"])
+            amplitude = float(parameters["amplitude"])
+            rate = float(parameters["rate"])
+            # The reported rate, and therefore its gradient, depends on which
+            # quantity `q` is a fraction of. Reusing one gradient for both
+            # conventions attaches the wrong variance to the reported rate.
+            if reference_quantity == "ceiling_level":
+                ratio = asymptote * (1.0 - fraction) / amplitude
+            elif reference_quantity == "response_range":
+                ratio = 1.0 - fraction
+            else:
+                ratio = 0.0
+            if (
+                0.0 < fraction < 1.0
+                and asymptote > 0.0
+                and amplitude > 0.0
+                and rate > 0.0
+                and ratio > 0.0
+            ):
+                # N = -ln(ratio) / r. Under `response_range` the ratio is the
+                # constant 1 - q, so only the rate parameter carries uncertainty.
+                gradient = np.asarray(
+                    (
+                        -1.0 / (rate * asymptote),
+                        1.0 / (rate * amplitude),
+                        math.log(ratio) / (rate**2),
+                    )
+                    if reference_quantity == "ceiling_level"
+                    else (0.0, 0.0, math.log(ratio) / (rate**2)),
+                    dtype=float,
+                )
+                reporting_rate_variance = float(
+                    gradient @ parameter_covariance[:3, :3] @ gradient
+                )
+                if (
+                    math.isfinite(reporting_rate_variance)
+                    and reporting_rate_variance > 0.0
+                ):
+                    variances[
+                        "asymptote_fraction_reporting_n_kg_ha"
+                    ] = reporting_rate_variance
     return variances
 
 
