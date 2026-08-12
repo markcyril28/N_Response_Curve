@@ -1835,7 +1835,9 @@ def project_public_records(
 
 
 __all__ = [
+    "CANONICAL_NUTRIENT_BASES",
     "CurationResult",
+    "NUTRIENT_CANONICAL_UNITS",
     "PhysicalColumnDisposition",
     "REQUIRED_REVIEWED_LOOKUP_FIELDS",
     "RestrictedDataPolicy",
@@ -1845,5 +1847,6 @@ __all__ = [
     "curate_ingestion",
     "disclosure_review_projection_sha256",
     "project_public_records",
+    "validate_restricted_column_coverage",
     "validate_reviewed_curation_controls",
 ]
