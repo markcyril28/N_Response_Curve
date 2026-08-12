@@ -478,6 +478,21 @@ def _optional_field(record: Mapping[str, Any], name: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _requires_complete_semantic_disposition(source: IngestedSource) -> bool:
+    """Identify the combined source by its adapter, not by its operator-chosen key.
+
+    `sources.<name>` is an operator-editable config key, so binding the decided `DAT-09`
+    completeness gate to the literal name lets a rename silently disarm it. The shape
+    adapter is the hard binding: it is checked against the 228-column physical shape and
+    the reviewed header digest before curation is reached.
+    """
+
+    return (
+        source.shape_adapter_version == COMBINED_NOPT_RCM_ADAPTER_SPEC.version
+        or source.source_name == "ph_combined_nopt_rcm"
+    )
+
+
 def _validate_reviewed_source_map(
     source: IngestedSource,
     source_map: ReviewedSourceMap,
