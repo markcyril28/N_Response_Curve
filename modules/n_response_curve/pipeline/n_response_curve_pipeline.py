@@ -278,9 +278,35 @@ def run_phase_two(
     if source_data_policy is not None:
         ingestion = ingest_configured_sources(
             config,
+            adapter_specs=_reviewed_source_adapter_specs(
+                config,
+                source_data_policy,
+            ),
             checksum_revision_approvals=(
                 source_data_policy.checksum_revision_approvals
             ),
+            source_representation_bases={
+                source_name: source_map.representation_basis
+                for source_name, source_map in source_data_policy.source_maps.items()
+                if source_map.representation_basis_status == "reviewed"
+            },
+            source_workbook_reconciliations={
+                source_name: WorkbookCsvReconciliation(
+                    source_name=source_name,
+                    workbook_sha256=source_map.workbook_sha256,
+                    csv_sha256=source_map.csv_sha256,
+                    review_id=source_map.workbook_csv_reconciliation_review_id,
+                )
+                for source_name, source_map in source_data_policy.source_maps.items()
+                if (
+                    source_name in config.enabled_sources
+                    and source_map.workbook_csv_basis
+                    == "parallel_workbook_csv_verified_equivalent"
+                    and source_map.workbook_sha256 is not None
+                    and source_map.csv_sha256 is not None
+                    and source_map.workbook_csv_reconciliation_review_id is not None
+                )
+            },
             designated_reviewers=source_data_policy.designated_reviewers,
         )
     else:
