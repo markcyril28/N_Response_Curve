@@ -3445,6 +3445,48 @@ def _analysis_policy_stage_writer(
     return write_analysis_policy
 
 
+def _source_data_policy_stage_writer(
+    source_data_policy: SourceDataPolicyBundle | None,
+    manifest: dict[str, Any],
+) -> Callable[[Path], tuple[Path, ...]]:
+    def write_source_data_policy(stage_root: Path) -> tuple[Path, ...]:
+        if source_data_policy is None:
+            return ()
+        authorities = (
+            source_data_policy.manifest_authority,
+            *(
+                source_data_policy.artifact_authorities[name]
+                for name in sorted(source_data_policy.artifact_authorities)
+            ),
+        )
+        destinations: list[Path] = []
+        archived: dict[str, str] = {}
+        for authority in authorities:
+            destination = (
+                stage_root
+                / "governance"
+                / "source_data_policy"
+                / f"{authority.artifact_type}.json"
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(authority.path, destination)
+            if sha256_file(destination) != authority.sha256:
+                raise ReportingError(
+                    "Archived source-data-policy artifact does not match its "
+                    f"validated source: {authority.artifact_type}"
+                )
+            archived[authority.artifact_type] = (
+                destination.relative_to(stage_root).as_posix()
+            )
+            destinations.append(destination)
+        manifest["source_data_policy"]["archived_artifact_paths"] = dict(
+            sorted(archived.items())
+        )
+        return tuple(destinations)
+
+    return write_source_data_policy
+
+
 def _load_replacement_record(
     config: ValidatedConfig,
     target: Path,
