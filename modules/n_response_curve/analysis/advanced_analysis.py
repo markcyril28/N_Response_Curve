@@ -21,7 +21,12 @@ from sklearn.metrics import (
     r2_score,
     silhouette_score,
 )
-from sklearn.model_selection import GroupKFold, GroupShuffleSplit, cross_val_score
+from sklearn.model_selection import (
+    GroupKFold,
+    LeaveOneGroupOut,
+    StratifiedGroupKFold,
+    cross_val_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
