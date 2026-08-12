@@ -553,6 +553,7 @@ def sensitive_path_alias(value: str | None) -> str | None:
 __all__ = [
     "CANONICAL_N_RATE_UNIT",
     "CANONICAL_YIELD_UNIT",
+    "KNOWN_MISSING_STATE_CLASSES",
     "CategoryNormalization",
     "NumericParse",
     "ReviewedLookupTable",
