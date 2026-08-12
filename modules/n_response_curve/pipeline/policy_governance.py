@@ -1022,10 +1022,6 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
         path=snapshot_path,
         expected_content=content,
     )
-    if authority_matrix is None:
-        authority_matrix = load_approval_authority_matrix(
-            _authority_matrix_path(config)
-        )
     runtime_party = authority_matrix.gate_authorities["runtime_integrity"][
         "accountable_party"
     ]
