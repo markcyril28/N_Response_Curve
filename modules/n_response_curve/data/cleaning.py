@@ -23,9 +23,13 @@ FINAL_CLEANING_METADATA_FIELDS = (
 )
 _CANONICAL_NUMERIC_FIELD_UNITS = {
     "yield_t_ha": frozenset({"t/ha", "t ha-1", "tonnes ha-1"}),
+    "yield_kg_ha": frozenset({"kg/ha", "kg ha-1", "kg ha^-1"}),
     "n_rate_kg_ha": frozenset({"kg n/ha", "kg n ha-1", "kg n ha^-1"}),
+    "inorganic_n_rate": frozenset({"kg n/ha", "kg n ha-1", "kg n ha^-1"}),
     "p_rate_kg_p2o5_ha": frozenset({"kg p2o5/ha", "kg p2o5 ha-1"}),
+    "inorganic_p_rate": frozenset({"kg p2o5/ha", "kg p2o5 ha-1"}),
     "k_rate_kg_k2o_ha": frozenset({"kg k2o/ha", "kg k2o ha-1"}),
+    "inorganic_k_rate": frozenset({"kg k2o/ha", "kg k2o ha-1"}),
 }
 
 
