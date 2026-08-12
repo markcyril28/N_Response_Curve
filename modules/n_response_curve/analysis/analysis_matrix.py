@@ -133,6 +133,7 @@ class MultiplicityFamily:
     candidate_ids: tuple[str, ...]
     hypothesis_ids: tuple[str, ...]
     specification_ids: tuple[str, ...] = ()
+    alpha: float | None = None
 
 
 @dataclass(frozen=True)
