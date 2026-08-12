@@ -169,6 +169,7 @@ CANONICAL_NUTRIENT_BASES = MappingProxyType(
         ) in _CANONICAL_NUTRIENT_UNIT_BASES.items()
     }
 )
+_KNOWN_NUTRIENT_BASES = frozenset({"elemental", "oxide"})
 _OPTIONAL_CANONICAL_SOURCE_FIELDS = frozenset({"recommended_n_rate"})
 
 
