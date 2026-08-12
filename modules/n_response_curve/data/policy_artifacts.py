@@ -793,8 +793,41 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
         ).lower()
         if _SHA256_RE.fullmatch(source_sha256) is None:
             raise SourceDataPolicyError(f"{where}.source_sha256 is malformed")
+        reconciliation_hashes: dict[str, str | None] = {}
+        for field_name in ("workbook_sha256", "csv_sha256"):
+            raw_digest = record.get(field_name)
+            digest = (
+                _nonempty_text(raw_digest, where=f"{where}.{field_name}").lower()
+                if raw_digest is not None
+                else None
+            )
+            if digest is not None and _SHA256_RE.fullmatch(digest) is None:
+                raise SourceDataPolicyError(f"{where}.{field_name} is malformed")
+            reconciliation_hashes[field_name] = digest
         normalization_map_version = record.get("normalization_map_version")
         normalization_review_id = record.get("normalization_review_id")
+        raw_missing_state_maps = record.get("missing_state_maps", {})
+        if not isinstance(raw_missing_state_maps, Mapping):
+            raise SourceDataPolicyError(
+                f"{where}.missing_state_maps must be an object"
+            )
+        missing_state_maps = {
+            _nonempty_text(
+                field_name,
+                where=f"{where}.missing_state_maps key",
+            ): _reviewed_lookup_from_object(
+                lookup,
+                where=f"{where}.missing_state_maps.{field_name}",
+            )
+            for field_name, lookup in raw_missing_state_maps.items()
+        }
+        for field_name, lookup in missing_state_maps.items():
+            try:
+                validate_reviewed_missing_state_table(lookup)
+            except ValueError as exc:
+                raise SourceDataPolicyError(
+                    f"{where}.missing_state_maps.{field_name} is invalid: {exc}"
+                ) from exc
         raw_representation_basis = record.get("representation_basis")
         representation_basis = (
             _nonempty_text(
