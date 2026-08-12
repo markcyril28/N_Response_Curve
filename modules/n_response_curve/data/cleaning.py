@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
-from typing import Any, Iterable, Mapping
+import statistics
+from typing import Any, Iterable, Mapping, Sequence
 
 
 _RULE_TYPES = frozenset({"numeric_outside_range", "remark_match"})
