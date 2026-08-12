@@ -2190,12 +2190,20 @@ def fit_candidate_model(
         parameter_covariance,
         optimum_summary,
         predictions,
+        asymptote_support_policy=policy.get("asymptote_support_policy"),
+        asymptote_reporting_policy=policy.get("asymptote_reporting_policy"),
     )
     reasons = list(optimum_summary.reason_codes)
     aicc = _aicc(rss, n_observations, parameter_count)
     if aicc is None:
         reasons.append("AICC_UNAVAILABLE")
-    grouped_prediction_rmse, grouped_prediction_fold_count = _grouped_prediction_summary(
+    if replication_balance_status == "unbalanced_unequal_replication":
+        reasons.append("MOD09_UNEQUAL_REPLICATION_ACROSS_REVIEWED_MEANS")
+    (
+        grouped_prediction_rmse,
+        grouped_prediction_fold_count,
+        grouped_prediction_basis,
+    ) = _grouped_prediction_summary(
         model_name,
         x,
         y,
@@ -2204,9 +2212,48 @@ def fit_candidate_model(
         minimum_residual_df=minimum_residual_df,
         tolerance=model_gate.optimizer_tolerance,
         gate=model_gate,
+        policy=policy,
     )
     if grouped_prediction_rmse is None:
         reasons.append("GROUPED_PREDICTION_UNAVAILABLE")
+    (
+        credibility_status,
+        credibility_policy_id,
+        absolute_fit_normalized_rmse,
+        influence_max_relative_parameter_shift,
+        influence_fold_count,
+        parameter_precision_max_relative_se,
+        maximum_observed_step_decline_t_ha,
+        credibility_reasons,
+    ) = _credibility_diagnostics(
+        model_name,
+        x,
+        y,
+        parameters,
+        rss=rss,
+        residual_df=residual_df,
+        minimum_yield=minimum_yield,
+        maximum_yield=maximum_yield,
+        gate=model_gate,
+        policy=policy,
+    )
+    reasons.extend(credibility_reasons)
+    asymptote_influence_max_relative_shift: float | None = None
+    asymptote_influence_fold_count = 0
+    if model_name == "mitscherlich":
+        (
+            asymptote_influence_max_relative_shift,
+            asymptote_influence_fold_count,
+        ) = _asymptote_influence_summary(
+            x,
+            y,
+            parameters,
+            minimum_yield=minimum_yield,
+            maximum_yield=maximum_yield,
+            gate=model_gate,
+        )
+        if asymptote_influence_max_relative_shift is None:
+            reasons.append("ASYMPTOTE_INFLUENCE_DIAGNOSTIC_UNAVAILABLE")
     reasons.extend(uncertainty_reasons)
     sensitivity_weights, sensitivity_reasons = _inverse_variance_sensitivity_weights(
         evidence_rows,
