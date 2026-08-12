@@ -2403,6 +2403,46 @@ def _all_credible_curve_row(
             "sole_credible_model_name": credible[0].model_name if len(credible) == 1 else None,
         }
     )
+    # MOD-02 Option D suppression is quantity-specific: a credible set that
+    # disagrees materially must not publish one associated rate, one attainable
+    # yield, or one boundary reference, even though the observed maximum and its
+    # rate remain facts about the data and stay reportable.
+    if summary.materially_different is not False:
+        suppression = (
+            "suppressed_material_credible_model_disagreement"
+            if summary.materially_different
+            else "suppressed_pending_reviewed_materiality_rule"
+        )
+        row.update(
+            {
+                "maximum_associated_n_kg_ha": None,
+                "maximum_associated_n_basis": "none",
+                "maximum_associated_n_status": suppression,
+                "attainable_yield_t_ha": None,
+                "attainable_yield_basis": "none",
+                "attainable_yield_status": suppression,
+                "observed_domain_boundary_status": suppression,
+                "observed_domain_boundary_n_kg_ha": None,
+                "observed_domain_boundary_yield_t_ha": None,
+            }
+        )
+    else:
+        boundary_statuses = {
+            attempt.observed_domain_boundary_status for attempt in credible
+        }
+        boundary_rates = _numeric_range(credible, "observed_domain_boundary_n_kg_ha")
+        if len(boundary_statuses) != 1 or (
+            boundary_rates is not None and boundary_rates[0] != boundary_rates[1]
+        ):
+            row.update(
+                {
+                    "observed_domain_boundary_status": (
+                        "CREDIBLE_MODEL_RANGE_REPORTED"
+                    ),
+                    "observed_domain_boundary_n_kg_ha": None,
+                    "observed_domain_boundary_yield_t_ha": None,
+                }
+            )
     observed_max = float(row["observed_max_yield_t_ha"])
     supported_max = row["supported_max_yield_t_ha"]
     finite_maximum = row["finite_maximum_yield_t_ha"]
