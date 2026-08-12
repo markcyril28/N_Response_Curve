@@ -2425,6 +2425,7 @@ def credible_model_attempts(attempts: Iterable[ModelAttempt]) -> tuple[ModelAtte
         for attempt in attempts
         if attempt.status == "fitted"
         and attempt.estimator_status == "primary_reviewed"
+        and attempt.credibility_status == "passed"
         and "UNIDENTIFIABLE_SHAPE_PARAMETERS" not in attempt.reason_codes
     ]
     return tuple(
@@ -2470,6 +2471,10 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "estimator_name": attempt.estimator_name,
         "estimator_status": attempt.estimator_status,
         "analysis_grain": attempt.analysis_grain,
+        "level_replicate_counts": [
+            list(pair) for pair in attempt.level_replicate_counts
+        ],
+        "replication_balance_status": attempt.replication_balance_status,
         "weighted_sensitivity_status": attempt.weighted_sensitivity_status,
         "weighted_sensitivity_parameters": dict(
             attempt.weighted_sensitivity_parameters
@@ -2489,6 +2494,24 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "aicc": attempt.aicc,
         "grouped_prediction_rmse": attempt.grouped_prediction_rmse,
         "grouped_prediction_fold_count": attempt.grouped_prediction_fold_count,
+        "grouped_prediction_basis": attempt.grouped_prediction_basis,
+        "credibility_status": attempt.credibility_status,
+        "credibility_policy_id": attempt.credibility_policy_id,
+        "absolute_fit_normalized_rmse": attempt.absolute_fit_normalized_rmse,
+        "influence_max_relative_parameter_shift": (
+            attempt.influence_max_relative_parameter_shift
+        ),
+        "influence_fold_count": attempt.influence_fold_count,
+        "parameter_precision_max_relative_se": (
+            attempt.parameter_precision_max_relative_se
+        ),
+        "maximum_observed_step_decline_t_ha": (
+            attempt.maximum_observed_step_decline_t_ha
+        ),
+        "asymptote_influence_max_relative_shift": (
+            attempt.asymptote_influence_max_relative_shift
+        ),
+        "asymptote_influence_fold_count": attempt.asymptote_influence_fold_count,
         "parameters": dict(attempt.parameters),
         "curve_shape_class": attempt.curve_shape_class,
         "optimum_status": attempt.optimum_status,
@@ -2501,6 +2524,11 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "supported_max_yield_t_ha": attempt.supported_max_yield_t_ha,
         "maximum_reference_basis": attempt.maximum_reference_basis,
         "maximum_proximity_status": attempt.maximum_proximity_status,
+        "observed_domain_boundary_status": attempt.observed_domain_boundary_status,
+        "observed_domain_boundary_n_kg_ha": attempt.observed_domain_boundary_n_kg_ha,
+        "observed_domain_boundary_yield_t_ha": (
+            attempt.observed_domain_boundary_yield_t_ha
+        ),
         "uncertainty_status": attempt.uncertainty_status,
         "uncertainty_method": attempt.uncertainty_method,
         "uncertainty_evidence_basis": list(attempt.uncertainty_evidence_basis),
