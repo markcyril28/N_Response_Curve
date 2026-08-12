@@ -542,6 +542,29 @@ def _reasons_for_candidate(
             reasons.append("INSUFFICIENT_CLASS_EVENTS_PER_PARAMETER")
     if reasons:
         return "pruned", tuple(sorted(reasons)), independent_studies, cell_counts, cell_study_counts
+    if analysis_family in _FITTED_FEATURE_INFERENTIAL_FAMILIES:
+        policy_reasons = first_stage_policy_reasons(
+            rows,
+            curve_outcome,
+            first_stage_uncertainty_policy,
+        )
+        if policy_reasons:
+            return (
+                "skipped",
+                policy_reasons,
+                independent_studies,
+                cell_counts,
+                cell_study_counts,
+            )
+        first_stage_reasons = first_stage_uncertainty_reasons(rows, curve_outcome)
+        if first_stage_reasons:
+            return (
+                "skipped",
+                first_stage_reasons,
+                independent_studies,
+                cell_counts,
+                cell_study_counts,
+            )
     return "run", (), independent_studies, cell_counts, cell_study_counts
 
 
