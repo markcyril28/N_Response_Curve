@@ -1330,6 +1330,17 @@ def _row_fit_exclusion_reasons(
             if role == "comparison_only"
             else "TREATMENT_FIT_ROLE_NOT_VERIFIED"
         )
+    if role == "curve_candidate" and not (
+        record.get("treatment_class_normalization_status") == "mapped_reviewed"
+        and isinstance(record.get("treatment_class_review_id"), str)
+        and bool(str(record.get("treatment_class_review_id")).strip())
+        and record.get(
+            "treatment_fit_role_provenance_status",
+            "reviewed_lookup_bound",
+        )
+        == "reviewed_lookup_bound"
+    ):
+        reasons.add("TREATMENT_FIT_ROLE_NOT_REVIEW_BOUND")
     treatment_class = str(record.get("treatment_text_class") or "")
     if treatment_class == "FP":
         reasons.add("FARMER_PRACTICE_COMPARISON_EXCLUDED_FROM_FIT")
