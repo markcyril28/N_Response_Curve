@@ -57,6 +57,9 @@ class DatasetVersion:
     record_uids: tuple[str, ...]
     reason_codes: tuple[str, ...]
     membership_sha256: str
+    membership_rule_id: str | None = None
+    configuration_sha256: str | None = None
+    input_dataset_sha256: str | None = None
     authority_status: str = "authoritative"
     authority_reason_codes: tuple[str, ...] = ()
     membership_diagnostics: tuple[DatasetMembershipDiagnostic, ...] = ()
