@@ -1335,21 +1335,27 @@ def _terminal_status_stage_writer(
                 result = r_by_candidate.get(candidate.candidate_id)
                 if result is None:
                     raise ReportingError(f"R candidate lacks a terminal result: {candidate.candidate_id}")
-                diagnostics = result.get("metadata", {}).get("diagnostics", {})
-                if result.get("status") == "completed" and diagnostics.get("converged") is False:
-                    terminal_status = "nonconverged"
-                elif result.get("status") == "completed" and (
-                    diagnostics.get("singular") is True or diagnostics.get("boundary_fit") is True
-                ):
-                    terminal_status = "not_interpretable"
-                else:
-                    terminal_status = "run" if result.get("status") == "completed" else str(result.get("status"))
                 reason_codes = [str(reason) for reason in result.get("reason_codes", ())]
+                if result.get("status") == "completed":
+                    metadata = result.get("metadata")
+                    diagnostics_reason = r_completed_diagnostics_reason(
+                        metadata if isinstance(metadata, Mapping) else {}
+                    )
+                    if diagnostics_reason == "R_MODEL_NONCONVERGENCE":
+                        terminal_status = "nonconverged"
+                    elif diagnostics_reason is not None:
+                        terminal_status = "not_interpretable"
+                    else:
+                        terminal_status = "run"
+                    if diagnostics_reason is not None:
+                        reason_codes.append(diagnostics_reason)
+                else:
+                    terminal_status = str(result.get("status"))
             else:
                 raise ReportingError(f"Candidate has an unknown terminal engine: {candidate.engine}")
             inferential_interpretability = "not_applicable"
             multiplicity_status = None
-            if candidate.analysis_family in _INFERENTIAL_ANALYSIS_FAMILIES and terminal_status == "run":
+            if candidate.analysis_family in INFERENTIAL_ANALYSIS_FAMILIES and terminal_status == "run":
                 reconciliation = multiplicity_by_candidate.get(candidate.candidate_id)
                 if candidate.multiplicity_family_id is None:
                     terminal_status = "not_interpretable"
