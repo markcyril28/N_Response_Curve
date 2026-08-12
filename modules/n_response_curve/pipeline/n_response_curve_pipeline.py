@@ -325,22 +325,29 @@ def run_phase_two(
             else {}
         ),
     )
-    resolution = resolve_response_series(
+    literature_verification = (
+        _plan_literature_verification(source_data_policy, curation.records)
+        if source_data_policy is not None
+        else None
+    )
+    resolution_kwargs: dict[str, Any] = (
+        dict(source_data_policy.resolution_kwargs)
+        if source_data_policy is not None
+        else {}
+    )
+    untrimmed_resolution = resolve_response_series(
         curation.records,
         series_identity_dimensions=config.series_identity_dimensions,
         n_level_tolerance_kg_ha=float(config.raw["eligibility"]["n_level_tolerance_kg_ha"]),
-        **(
-            dict(source_data_policy.resolution_kwargs)
-            if source_data_policy is not None
-            else {}
-        ),
+        **resolution_kwargs,
     )
     untrimmed_analysis_eligibility: EligibilityResult | None = None
     if source_data_policy is not None:
         untrimmed_analysis_eligibility = assign_eligibility(
-            resolution.analysis_records,
+            untrimmed_resolution.analysis_records,
             policy=config.raw["eligibility"],
         )
+    resolution = untrimmed_resolution
     final_cleaning: FinalCleaningResult | None = None
     if source_data_policy is not None:
         final_cleaning = apply_final_cleaning(
