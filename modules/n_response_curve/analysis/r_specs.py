@@ -792,6 +792,7 @@ def prepare_r_analysis(
                     {},
                     normalized,
                     stable_key,
+                    membership_rows,
                 )
             if len(level_counts) > 2:
                 return RAnalysisPreparation(
@@ -800,11 +801,26 @@ def prepare_r_analysis(
                     {},
                     normalized,
                     stable_key,
+                    membership_rows,
                 )
-            else:
-                model_kind = "glmmTMB"
+            expected_model_kind = "glmmTMB"
+            expected_link_function = "logit"
         else:
-            model_kind = "lmer"
+            expected_model_kind = "lmer"
+            expected_link_function = "identity"
+        if (
+            model_specification["model_kind"] != expected_model_kind
+            or model_specification["link_function"] != expected_link_function
+        ):
+            return RAnalysisPreparation(
+                "skipped",
+                ("PREDECLARED_MODEL_KIND_OUTCOME_MISMATCH",),
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
+        model_kind = str(model_specification["model_kind"])
         gate_reason = _design_gate_reason(
             normalized,
             candidate.factor_names,
@@ -814,7 +830,14 @@ def prepare_r_analysis(
             all_factor_interactions=candidate.analysis_family == "all_supported_interactions",
         )
         if gate_reason is not None:
-            return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
+            return RAnalysisPreparation(
+                "skipped",
+                (gate_reason,),
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
         if not random_intercept:
             return RAnalysisPreparation(
                 "skipped",
@@ -822,6 +845,7 @@ def prepare_r_analysis(
                 {},
                 normalized,
                 stable_key,
+                membership_rows,
             )
         formula = _curve_formula(
             candidate,
@@ -838,10 +862,7 @@ def prepare_r_analysis(
         "analysis_family": candidate.analysis_family,
         "hypothesis_id": candidate.hypothesis_id,
         "factor_names": list(candidate.factor_names),
-        "factor_representations": {
-            name: dict(representation)
-            for name, representation in candidate.factor_representations.items()
-        },
+        "factor_representations": factor_representation_contracts,
         "support_rule_id": candidate.support_rule_id,
         "support_policy": dict(candidate.support_policy),
         "estimand": dict(candidate.prespecified_contrast),
@@ -849,6 +870,8 @@ def prepare_r_analysis(
         "support_gates_passed": True,
         "model_formula": formula,
         "model_kind": model_kind,
+        "model_structure": expected_structure,
+        "model_specification": model_specification,
         "outcome_kind": outcome_kind,
         "multiplicity": {
             "method": "BH",
@@ -860,6 +883,8 @@ def prepare_r_analysis(
             ),
             "registry_authority": "prespecified_analysis_registry",
             "adjustment_status": "pending_central_reconciliation",
+            "expected_test_ids": list(expected_test_ids),
+            "alpha": float(candidate.decision_alpha),
         },
         "grouping_column": grouping_column,
         "predeclared_grouping": list(candidate.grouping),
@@ -877,6 +902,10 @@ def prepare_r_analysis(
         specification["first_stage_uncertainty"] = {
             "decision_id": "ANA-16",
             "mode": "variance_aware_two_stage",
+            "policy_id": candidate.first_stage_uncertainty_policy["policy_id"],
+            "policy_authority_sha256": candidate.first_stage_uncertainty_policy[
+                "authority_sha256"
+            ],
             "method_id": method_ids[0] if len(method_ids) == 1 else None,
             "source_variance_field": first_stage_variance_field,
             "variance_column": "first_stage_variance",
@@ -893,10 +922,7 @@ def prepare_r_analysis(
             }
         )
     elif candidate.analysis_family == "marginal_contrasts":
-        specification["contrast_specification"] = contrast_specification or {
-            "factor_name": candidate.factor_names[0],
-            "adjustment": "BH",
-        }
+        specification["contrast_specification"] = contrast_specification
     return RAnalysisPreparation(
         "run",
         (),
