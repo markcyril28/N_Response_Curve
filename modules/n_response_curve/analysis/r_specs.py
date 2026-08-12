@@ -85,7 +85,6 @@ def _normalized_rows(
         for context_uid, review_ids in review_ids_by_context.items()
         if len(review_ids) > 1
     }
-    membership: list[dict[str, Any]] = []
     for raw_row in rows:
         row = dict(raw_row)
         factors = {
@@ -204,7 +203,6 @@ def _normalized_rows(
 def _curve_formula(
     candidate: AnalysisCandidate,
     *,
-    include_random_intercept: bool,
     grouping_column: str,
 ) -> str:
     if candidate.analysis_family == "all_supported_interactions":
@@ -218,8 +216,6 @@ def _curve_formula(
 
 def _observation_formula(
     factor_names: Sequence[str],
-    *,
-    include_random_intercept: bool,
 ) -> str:
     terms = ["n_rate_kg_ha", "I(n_rate_kg_ha^2)"]
     terms.extend(factor_names)
@@ -501,7 +497,6 @@ def prepare_r_analysis(
             )
         contrast_specification["factor_name"] = candidate.factor_names[0]
         contrast_specification.setdefault("adjustment", "BH")
-    stable_key = "record_uid" if observation_level else "response_series_uid"
     outcome_name = "yield_t_ha" if observation_level else candidate.curve_outcome
     first_stage_variance_field: str | None = None
     fitted_feature_inference = (
@@ -849,7 +844,6 @@ def prepare_r_analysis(
             )
         formula = _curve_formula(
             candidate,
-            include_random_intercept=random_intercept,
             grouping_column=grouping_column,
         )
 
