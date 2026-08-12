@@ -1071,6 +1071,22 @@ def _restricted_policy(
             "Restricted policy public_release_fields contains prohibited field(s): "
             + ", ".join(sorted(invalid_public_fields))
         )
+    raw_projection_sha256 = record.get("disclosure_review_projection_sha256")
+    projection_sha256 = (
+        _nonempty_text(
+            raw_projection_sha256,
+            where="restricted policy disclosure_review_projection_sha256",
+        ).lower()
+        if raw_projection_sha256 is not None
+        else None
+    )
+    if (
+        projection_sha256 is not None
+        and _SHA256_RE.fullmatch(projection_sha256) is None
+    ):
+        raise SourceDataPolicyError(
+            "restricted policy disclosure_review_projection_sha256 is malformed"
+        )
     return (
         RestrictedDataPolicy(
             pseudonym_salt=secret,
@@ -1091,60 +1107,130 @@ def _restricted_policy(
                 record.get("human_disclosure_review_id"),
                 where="restricted policy human_disclosure_review_id",
             ),
+            disclosure_review_projection_sha256=projection_sha256,
         ),
         secret_reference,
     )
 
 
-def _duplicate_rules(payload: Mapping[str, Any]) -> DuplicateRuleSet:
+def _duplicate_rules(
+    payload: Mapping[str, Any],
+    *,
+    known_source_names: Iterable[str],
+) -> tuple[DuplicateRuleSet, ...]:
     records = _records(payload, where="duplicate rules")
-    if len(records) != 1:
-        raise SourceDataPolicyError("Duplicate rules must contain exactly one record")
-    record = records[0]
-    raw_tolerances = record.get("probable_numeric_tolerances")
-    if not isinstance(raw_tolerances, Mapping):
-        raise SourceDataPolicyError(
-            "duplicate rules probable_numeric_tolerances must be an object"
-        )
-    tolerances: dict[str, float] = {}
-    for field, value in raw_tolerances.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if not records:
+        raise SourceDataPolicyError("Duplicate rules must contain at least one record")
+    known_sources = {
+        str(source_name).strip()
+        for source_name in known_source_names
+        if str(source_name).strip()
+    }
+    assigned_sources: set[str] = set()
+    versions: set[str] = set()
+    rule_sets: list[DuplicateRuleSet] = []
+    for record in records:
+        raw_tolerances = record.get("probable_numeric_tolerances")
+        if not isinstance(raw_tolerances, Mapping):
             raise SourceDataPolicyError(
-                "Duplicate-rule numeric tolerances must be numeric"
+                "duplicate rules probable_numeric_tolerances must be an object"
             )
-        tolerance = float(value)
-        if tolerance < 0:
+        tolerances: dict[str, float] = {}
+        for field, value in raw_tolerances.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise SourceDataPolicyError(
+                    "Duplicate-rule numeric tolerances must be finite numeric values"
+                )
+            tolerance = float(value)
+            if tolerance < 0:
+                raise SourceDataPolicyError(
+                    "Duplicate-rule numeric tolerances must be nonnegative"
+                )
+            tolerances[
+                _nonempty_text(field, where="duplicate tolerance field")
+            ] = tolerance
+        cross_source_only = record.get("probable_cross_source_only")
+        if not isinstance(cross_source_only, bool):
             raise SourceDataPolicyError(
-                "Duplicate-rule numeric tolerances must be nonnegative"
+                "duplicate rules probable_cross_source_only must be boolean"
             )
-        tolerances[_nonempty_text(field, where="duplicate tolerance field")] = tolerance
-    cross_source_only = record.get("probable_cross_source_only")
-    if not isinstance(cross_source_only, bool):
-        raise SourceDataPolicyError(
-            "duplicate rules probable_cross_source_only must be boolean"
+        scope_kind = record.get("scope_kind", "source_local")
+        if scope_kind not in {"source_local", "cross_source"}:
+            raise SourceDataPolicyError(
+                "duplicate rules scope_kind must be source_local or cross_source"
+            )
+        version = _version(record.get("version"), where="duplicate rules version")
+        if version in versions:
+            raise SourceDataPolicyError("Duplicate-rule versions must be unique")
+        versions.add(version)
+        raw_source_names = record.get("source_names")
+        if raw_source_names is None and len(records) == 1:
+            source_names = tuple(sorted(known_sources))
+        elif raw_source_names is None:
+            raise SourceDataPolicyError(
+                "Multiple duplicate rules require explicit source_names"
+            )
+        else:
+            source_names = _string_tuple(
+                raw_source_names,
+                where="duplicate rules source_names",
+            )
+        unknown_sources = sorted(set(source_names) - known_sources)
+        overlap = sorted(set(source_names) & assigned_sources)
+        if unknown_sources or overlap:
+            if unknown_sources or scope_kind == "source_local":
+                raise SourceDataPolicyError(
+                    "Duplicate-rule source scope is invalid: "
+                    f"unknown={unknown_sources}; overlap={overlap}"
+                )
+        if scope_kind == "cross_source":
+            if len(set(source_names)) < 2:
+                raise SourceDataPolicyError(
+                    "Cross-source duplicate rules require at least two source names"
+                )
+            if not cross_source_only:
+                raise SourceDataPolicyError(
+                    "Cross-source duplicate rules must prohibit within-source probable matches"
+                )
+        else:
+            assigned_sources.update(source_names)
+        rule_sets.append(
+            DuplicateRuleSet(
+                version=version,
+                review_id=_nonempty_text(
+                    record.get("review_id"),
+                    where="duplicate rules review_id",
+                ),
+                exact_key_fields=_string_tuple(
+                    record.get("exact_key_fields"),
+                    where="duplicate rules exact_key_fields",
+                ),
+                probable_key_fields=_string_tuple(
+                    record.get("probable_key_fields"),
+                    where="duplicate rules probable_key_fields",
+                ),
+                probable_numeric_tolerances=MappingProxyType(tolerances),
+                casefold_fields=_string_tuple(
+                    record.get("casefold_fields", []),
+                    where="duplicate rules casefold_fields",
+                    allow_empty=True,
+                ),
+                source_names=source_names,
+                probable_cross_source_only=cross_source_only,
+                scope_kind=str(scope_kind),
+            )
         )
-    return DuplicateRuleSet(
-        version=_version(record.get("version"), where="duplicate rules version"),
-        review_id=_nonempty_text(
-            record.get("review_id"),
-            where="duplicate rules review_id",
-        ),
-        exact_key_fields=_string_tuple(
-            record.get("exact_key_fields"),
-            where="duplicate rules exact_key_fields",
-        ),
-        probable_key_fields=_string_tuple(
-            record.get("probable_key_fields"),
-            where="duplicate rules probable_key_fields",
-        ),
-        probable_numeric_tolerances=MappingProxyType(tolerances),
-        casefold_fields=_string_tuple(
-            record.get("casefold_fields", []),
-            where="duplicate rules casefold_fields",
-            allow_empty=True,
-        ),
-        probable_cross_source_only=cross_source_only,
-    )
+    missing_sources = sorted(known_sources - assigned_sources)
+    if missing_sources:
+        raise SourceDataPolicyError(
+            "Duplicate-rule source scope is incomplete: "
+            f"missing={missing_sources}"
+        )
+    return tuple(rule_sets)
 
 
 def _optional_finite_number(value: object, *, where: str) -> float | None:
@@ -1316,6 +1402,58 @@ def _final_cleaning_policies(
     return MappingProxyType(dict(sorted(policies.items())))
 
 
+def _validate_final_cleaning_policy_targets(
+    policies: Mapping[str, SourceCleaningPolicy],
+    source_maps: Mapping[str, ReviewedSourceMap],
+) -> None:
+    for source_name, policy in policies.items():
+        source_map = source_maps.get(source_name)
+        if source_map is None:
+            raise SourceDataPolicyError(
+                f"Final cleaning policy source {source_name!r} has no reviewed source map"
+            )
+        canonical_fields = set(source_map.fields)
+        physical_positions = {
+            disposition.position for disposition in source_map.dispositions
+        }
+        for rule in policy.rules:
+            if rule.field is not None and rule.field not in canonical_fields:
+                raise SourceDataPolicyError(
+                    f"Final cleaning rule {rule.rule_id!r} targets unknown canonical field "
+                    f"{rule.field!r} for source {source_name!r}; no verified "
+                    "quantity/unit contract is available"
+                )
+            if (
+                rule.raw_position is not None
+                and rule.raw_position not in physical_positions
+            ):
+                raise SourceDataPolicyError(
+                    f"Final cleaning rule {rule.rule_id!r} targets out-of-shape raw "
+                    f"position {rule.raw_position} for source {source_name!r}"
+                )
+            if rule.rule_type == "numeric_outside_range" and rule.raw_position is not None:
+                disposition = next(
+                    item
+                    for item in source_map.dispositions
+                    if item.position == rule.raw_position
+                )
+                if disposition.role != "canonical" or disposition.canonical_field is None:
+                    raise SourceDataPolicyError(
+                        f"Final cleaning rule {rule.rule_id!r} raw position does not "
+                        "target a verified canonical quantity"
+                    )
+                try:
+                    validate_numeric_rule_unit(
+                        disposition.canonical_field,
+                        rule.unit,
+                        require_known=True,
+                    )
+                except ValueError as exc:
+                    raise SourceDataPolicyError(
+                        f"Final cleaning rule {rule.rule_id!r} has an invalid unit: {exc}"
+                    ) from exc
+
+
 def _checksum_revision_approvals(
     payload: Mapping[str, Any],
     *,
@@ -1453,6 +1591,30 @@ def _repeat_adjudications(
             raise SourceDataPolicyError(
                 f"{where}.reviewer is not in the designated reviewer registry"
             )
+        raw_split_assignments = record.get("management_split_assignments")
+        if raw_split_assignments is None:
+            management_split_assignments = None
+        elif not isinstance(raw_split_assignments, Mapping):
+            raise SourceDataPolicyError(
+                f"{where}.management_split_assignments must be an object"
+            )
+        else:
+            management_split_assignments = MappingProxyType(
+                {
+                    _nonempty_text(
+                        record_uid,
+                        where=(
+                            f"{where}.management_split_assignments record UID"
+                        ),
+                    ): _nonempty_text(
+                        split_id,
+                        where=(
+                            f"{where}.management_split_assignments[{record_uid!r}]"
+                        ),
+                    )
+                    for record_uid, split_id in raw_split_assignments.items()
+                }
+            )
         adjudications.append(
             RepeatAdjudication(
                 record_uids=_string_tuple(
@@ -1476,6 +1638,7 @@ def _repeat_adjudications(
                     record.get("review_id"),
                     where=f"{where}.review_id",
                 ),
+                management_split_assignments=management_split_assignments,
             )
         )
     return tuple(adjudications)
