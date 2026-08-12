@@ -542,11 +542,7 @@ def ingest_configured_sources(
                 schema_map_version=adapter_spec.map_version,
                 encoding=str(source_config["encoding"]),
                 data_classification=str(source_config["data_classification"]),
-                workbook_csv_basis=(
-                    "parallel_workbook_csv_unresolved"
-                    if source_config.get("workbook")
-                    else "csv_registered_artifact"
-                ),
+                workbook_csv_basis=workbook_csv_basis,
                 representation_basis=representation_bases.get(
                     source_name,
                     "unclear_mixed_scope",
