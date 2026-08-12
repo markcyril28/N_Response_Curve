@@ -273,6 +273,7 @@ class RestrictedDataPolicy:
     access_review_id: str
     automated_disclosure_review_id: str
     human_disclosure_review_id: str
+    disclosure_review_projection_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -309,6 +310,89 @@ def _fill_down_positions(source: IngestedSource, fields: tuple[str, ...]) -> dic
             )
         positions[matches[0]] = header
     return positions
+
+
+def validate_reviewed_fill_down_policy(source_map: ReviewedSourceMap) -> None:
+    """Limit reviewed fill-down to mapped provenance and hierarchy identifiers."""
+
+    canonical_by_position = {
+        position: canonical_name
+        for canonical_name, position in source_map.fields.items()
+    }
+    for header in source_map.fill_down_headers:
+        positions = tuple(
+            position
+            for position, expected_header in source_map.expected_headers.items()
+            if expected_header == header
+        )
+        if len(positions) > 1:
+            raise ValueError(
+                f"Reviewed fill-down header {header!r} is ambiguous across physical columns"
+            )
+        canonical_field = (
+            canonical_by_position.get(positions[0]) if positions else None
+        )
+        if canonical_field is not None:
+            if canonical_field in _FILL_DOWN_CANONICAL_FIELDS:
+                continue
+            raise ValueError(
+                f"Reviewed fill-down header {header!r} is not a higher-level hierarchy "
+                f"or provenance field; it maps to {canonical_field!r}"
+            )
+        if header not in KNOWN_FILL_DOWN_FIELDS:
+            raise ValueError(
+                f"Reviewed fill-down header {header!r} is not a higher-level hierarchy "
+                "or provenance field and is not an approved physical header"
+            )
+
+
+def validate_reviewed_nutrient_unit_controls(source_map: ReviewedSourceMap) -> None:
+    """Require explicit reviewed unit/basis conversion for every mapped nutrient rate."""
+
+    mapped_fields = set(source_map.fields)
+    mapped_fields.update(source_map.declared_constant_fields)
+    for arm in source_map.arms:
+        mapped_fields.update(arm.field_positions)
+        mapped_fields.update(arm.constants)
+    required_fields = mapped_fields.intersection(NUTRIENT_CANONICAL_UNITS)
+    control_fields = set(source_map.nutrient_unit_controls)
+    missing_fields = sorted(required_fields - control_fields)
+    unexpected_fields = sorted(control_fields - required_fields)
+    if missing_fields:
+        raise ValueError(
+            f"{missing_fields[0]} lacks a reviewed unit/basis control"
+        )
+    if unexpected_fields:
+        raise ValueError(
+            "Reviewed nutrient unit/basis controls target unmapped field(s): "
+            + ", ".join(unexpected_fields)
+        )
+    for field_name, control in source_map.nutrient_unit_controls.items():
+        expected_unit = NUTRIENT_CANONICAL_UNITS[field_name]
+        if control.canonical_field != field_name:
+            raise ValueError("Nutrient unit control canonical field does not match its key")
+        if control.canonical_unit != expected_unit:
+            raise ValueError(
+                f"{field_name} nutrient control must canonicalize to {expected_unit}"
+            )
+        if control.source_basis not in {"elemental", "oxide"}:
+            raise ValueError("Nutrient unit control source basis is unsupported")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (
+                control.source_unit,
+                control.conversion_rule,
+                control.review_id,
+            )
+        ):
+            raise ValueError("Nutrient unit control requires explicit reviewed evidence")
+        if not math.isfinite(control.conversion_factor) or control.conversion_factor <= 0:
+            raise ValueError("Nutrient unit conversion factor must be finite and positive")
+        if (
+            control.source_unit == control.canonical_unit
+            and control.conversion_factor != 1.0
+        ):
+            raise ValueError("Identity nutrient-unit conversion must use factor 1")
 
 
 def _field_raw_value(row: RawRow, position: int) -> str:
