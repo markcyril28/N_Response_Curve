@@ -171,7 +171,7 @@ nrc_run_marginal_contrasts <- function(stage) {
     return(nrc_skip_result("CONTRAST_NOT_DEFINED_IN_DATA"))
   }
   if (!"p.value" %in% names(contrasted)) {
-    return(nrc_failed_result("R_CONTRAST_ESTIMATION_FAILED", "Fallback contrast output missing p-values"))
+    return(nrc_failed_result("R_CONTRAST_ESTIMATION_FAILED", "Model-based contrast output missing p-values"))
   }
 
   results <- lapply(seq_len(nrow(contrasted)), function(index) {
