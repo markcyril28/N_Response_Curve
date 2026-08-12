@@ -204,7 +204,16 @@ def parse_numeric(
 
 
 def _combined_missing_status(*statuses: str) -> str:
-    for candidate in ("invalid_numeric", "not_stated", "not_applicable", "blank"):
+    for candidate in (
+        "invalid_numeric",
+        "unresolved_missing",
+        "below_detection",
+        "not_collected",
+        "structural_missing",
+        "not_stated",
+        "not_applicable",
+        "blank",
+    ):
         if candidate in statuses:
             return candidate
     return "blank"
@@ -215,6 +224,8 @@ def normalize_yield(
     yield_t_ha_raw: str | None,
     missing_values: Mapping[str, Any],
     *,
+    kg_missing_state_lookup: ReviewedLookupTable | None = None,
+    t_missing_state_lookup: ReviewedLookupTable | None = None,
     consistency_tolerance_t_ha: float | None = None,
     tolerance_review_id: str | None = None,
 ) -> YieldNormalization:
@@ -226,8 +237,16 @@ def normalize_yield(
         if not isinstance(tolerance_review_id, str) or not tolerance_review_id.strip():
             raise ValueError("A yield consistency tolerance requires nonempty review evidence")
 
-    kilogram = parse_numeric(yield_kg_ha_raw, missing_values)
-    tonnes = parse_numeric(yield_t_ha_raw, missing_values)
+    kilogram = parse_numeric(
+        yield_kg_ha_raw,
+        missing_values,
+        missing_state_lookup=kg_missing_state_lookup,
+    )
+    tonnes = parse_numeric(
+        yield_t_ha_raw,
+        missing_values,
+        missing_state_lookup=t_missing_state_lookup,
+    )
     kilogram_value = kilogram.value
     tonnes_value = tonnes.value
     if kilogram_value is not None and tonnes_value is not None:
@@ -255,7 +274,14 @@ def normalize_yield(
             review_required=True,
             review_reasons=("YIELD_REPRESENTATION_CONFLICT",),
         )
-    if kilogram_value is not None and tonnes.status in {"blank", "not_stated", "not_applicable"}:
+    missing_statuses = {
+        "blank",
+        "not_stated",
+        "not_applicable",
+        "not_collected",
+        "structural_missing",
+    }
+    if kilogram_value is not None and tonnes.status in missing_statuses:
         return YieldNormalization(
             kilogram_value / 1000.0,
             "parsed",
@@ -263,7 +289,7 @@ def normalize_yield(
             "kg_ha",
             conversion="kg_ha / 1000",
         )
-    if tonnes_value is not None and kilogram.status in {"blank", "not_stated", "not_applicable"}:
+    if tonnes_value is not None and kilogram.status in missing_statuses:
         return YieldNormalization(tonnes_value, "parsed", "t_provided", "t_ha")
     if kilogram_value is not None or tonnes_value is not None:
         return YieldNormalization(
