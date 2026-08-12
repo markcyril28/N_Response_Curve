@@ -1775,7 +1775,66 @@ def _review_gate_allows_reuse(
         or int(gate["issue_count"]) < 0
     ):
         return False
+    if (
+        schema_version == _REVIEW_GATE_SCHEMA_VERSION
+        and gate.get("policy_id") != _REVIEW_GATE_POLICY_ID
+    ):
+        return False
+    if schema_version == _REVIEW_GATE_AMENDED_SCHEMA_VERSION:
+        runtime_policy = existing_manifest.get("runtime_policy")
+        review_gate_policy = (
+            runtime_policy.get("review_gate_policy")
+            if isinstance(runtime_policy, Mapping)
+            else None
+        )
+        expected_policy_sha256 = (
+            review_gate_policy.get("artifact_sha256")
+            if isinstance(review_gate_policy, Mapping)
+            else None
+        )
+        expected_effective_version = (
+            review_gate_policy.get("prospective_effective_version")
+            if isinstance(review_gate_policy, Mapping)
+            else None
+        )
+        expected_policy_id = (
+            review_gate_policy.get("policy_id")
+            if isinstance(review_gate_policy, Mapping)
+            else None
+        )
+        if (
+            not isinstance(expected_policy_sha256, str)
+            or len(expected_policy_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in expected_policy_sha256)
+            or not isinstance(expected_effective_version, str)
+            or not expected_effective_version
+            or not isinstance(expected_policy_id, str)
+            or not expected_policy_id
+            or gate.get("review_gate_policy_sha256") != expected_policy_sha256
+            or gate.get("prospective_effective_version")
+            != expected_effective_version
+            or gate.get("policy_id") != expected_policy_id
+        ):
+            return False
     if mode == "full":
+        if schema_version == _REVIEW_GATE_AMENDED_SCHEMA_VERSION:
+            permitted_count = gate.get("permitted_disposition_count")
+            blocking_count = gate.get("blocking_issue_count")
+            if (
+                not isinstance(permitted_count, int)
+                or isinstance(permitted_count, bool)
+                or permitted_count < 0
+                or not isinstance(blocking_count, int)
+                or isinstance(blocking_count, bool)
+                or blocking_count < 0
+                or gate.get("issue_count") != permitted_count + blocking_count
+            ):
+                return False
+            return (
+                gate.get("decision") == "pass"
+                and blocking_count == 0
+                and gate.get("authoritative_release_allowed") is True
+            )
         return (
             gate.get("decision") == "pass"
             and gate.get("issue_count") == 0
