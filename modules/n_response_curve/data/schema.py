@@ -479,9 +479,14 @@ def classify_treatment(
     else:
         nutrient_control_class = "nonzero_n"
 
-    treatment_text_class = _text_treatment_class(treatment_raw, treatment_mapping)
+    treatment_text_class, treatment_alias_candidates = _text_treatment_class(
+        treatment_raw,
+        treatment_mapping,
+    )
     review_reasons: list[str] = []
-    if treatment_text_class == "unresolved":
+    if len(treatment_alias_candidates) > 1:
+        review_reasons.append("MULTIPLE_TREATMENT_ALIASES")
+    elif treatment_text_class == "unresolved":
         review_reasons.append("UNKNOWN_TREATMENT_ALIAS")
     if treatment_text_class == "absolute_control" and not is_absolute_control:
         review_reasons.append("ABSOLUTE_CONTROL_NUMERIC_CONTRADICTION")
