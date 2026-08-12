@@ -208,7 +208,14 @@ class FinalCleaningRule:
 
 @dataclass(frozen=True)
 class SourceCleaningPolicy:
-    """Approved ELG-12 cleaning policy for one registered source."""
+    """Approved ELG-12 cleaning policy for one registered source.
+
+    ``prespecification_status`` is the reviewer's explicit attestation that the
+    thresholds below were fixed before any primary fitted conclusion was
+    inspected, which decided Option D requires of every rule it authorizes. It
+    is a required, single-valued field so an artifact that cannot make that
+    attestation fails to load rather than loading as if it had.
+    """
 
     source_name: str
     policy_id: str
@@ -217,6 +224,7 @@ class SourceCleaningPolicy:
     reviewed_on: str
     default_action: str
     untrimmed_sensitivity_required: bool
+    prespecification_status: str
     rules: tuple[FinalCleaningRule, ...]
 
     def __post_init__(self) -> None:
@@ -235,6 +243,11 @@ class SourceCleaningPolicy:
             raise ValueError("Final cleaning policies must retain records that match no reviewed rule")
         if not self.untrimmed_sensitivity_required:
             raise ValueError("ELG-12 policies must preserve an untrimmed sensitivity membership")
+        if self.prespecification_status not in _PRESPECIFICATION_STATUSES:
+            raise ValueError(
+                "ELG-12 policies must attest that every threshold was prespecified "
+                "before the primary fitted conclusions were inspected"
+            )
         if not self.rules:
             raise ValueError(
                 "Final cleaning policies require at least one reviewed rule"
@@ -304,6 +317,122 @@ def _rule_matches(record: Mapping[str, Any], rule: FinalCleaningRule) -> bool:
             else number >= rule.upper_bound
         )
     return below or above
+
+
+def _group_key(record: Mapping[str, Any], grouping_scope: str) -> str | None:
+    value = record.get(_GROUPING_SCOPE_KEYS[grouping_scope])
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _exceedance_scores(
+    values: Sequence[float],
+    statistic: str,
+) -> tuple[float, ...] | None:
+    """Score each value in threshold multiples, or None when the spread is degenerate.
+
+    Both statistics are robust and deterministic, and both return a score that
+    is directly comparable to the reviewed threshold: a modified z-score in MAD
+    units, and a Tukey fence distance in interquartile-range units. A zero
+    spread makes every score infinite or undefined, which is a review hold
+    rather than a rule that quietly matches nothing.
+    """
+
+    if statistic == "modified_z_score":
+        centre = statistics.median(values)
+        deviation = statistics.median([abs(value - centre) for value in values])
+        if deviation <= 0.0:
+            return None
+        return tuple(
+            abs(_MODIFIED_Z_CONSTANT * (value - centre) / deviation) for value in values
+        )
+
+    lower_quartile, _, upper_quartile = statistics.quantiles(
+        values,
+        n=4,
+        method="inclusive",
+    )
+    spread = upper_quartile - lower_quartile
+    if spread <= 0.0:
+        return None
+    return tuple(
+        max(lower_quartile - value, value - upper_quartile, 0.0) / spread
+        for value in values
+    )
+
+
+def _distributional_outcomes(
+    records: Sequence[Mapping[str, Any]],
+    rule: FinalCleaningRule,
+) -> dict[str, str]:
+    """Decide one distributional rule for every record of one source."""
+
+    groups: dict[str, list[tuple[str, float]]] = {}
+    outcomes: dict[str, str] = {}
+    for record in records:
+        record_uid = str(record["record_uid"])
+        value = _finite_number(record.get(rule.field))
+        if value is None:
+            outcomes[record_uid] = _RULE_NOT_MATCHED
+            continue
+        assert rule.grouping_scope is not None
+        group_key = _group_key(record, rule.grouping_scope)
+        if group_key is None:
+            outcomes[record_uid] = "FINAL_CLEANING_DISTRIBUTIONAL_GROUPING_UNAVAILABLE"
+            continue
+        groups.setdefault(group_key, []).append((record_uid, value))
+
+    assert rule.minimum_group_size is not None and rule.threshold is not None
+    for members in groups.values():
+        if len(members) < rule.minimum_group_size:
+            for record_uid, _ in members:
+                outcomes[record_uid] = "FINAL_CLEANING_DISTRIBUTIONAL_SUPPORT_UNAVAILABLE"
+            continue
+        scores = _exceedance_scores(
+            [value for _, value in members],
+            str(rule.statistic),
+        )
+        if scores is None:
+            for record_uid, _ in members:
+                outcomes[record_uid] = "FINAL_CLEANING_DISTRIBUTION_DEGENERATE"
+            continue
+        for (record_uid, _), score in zip(members, scores):
+            outcomes[record_uid] = (
+                _RULE_MATCHED if score > rule.threshold else _RULE_NOT_MATCHED
+            )
+    return outcomes
+
+
+def _influence_outcomes(
+    records: Sequence[Mapping[str, Any]],
+    rule: FinalCleaningRule,
+) -> dict[str, str]:
+    """Hold every record an influence rule could reach.
+
+    Final analytical membership is decided in phase 2, before any curve is fit,
+    so no leverage or residual-influence diagnostic exists to compare against
+    the reviewed threshold here. An approved influence rule whose verdict is
+    unknown must not let its records pass into the primary view unexamined, so
+    every record carrying a value the rule targets becomes a review hold. The
+    untrimmed sensitivity still retains all of them.
+    """
+
+    return {
+        str(record["record_uid"]): (
+            _RULE_NOT_MATCHED
+            if _finite_number(record.get(rule.field)) is None
+            else "FINAL_CLEANING_INFLUENCE_EVALUATION_UNAVAILABLE"
+        )
+        for record in records
+    }
+
+
+def _grouped_rule_outcomes(
+    records: Sequence[Mapping[str, Any]],
+    rule: FinalCleaningRule,
+) -> dict[str, str]:
+    if rule.rule_type == "distributional_outlier":
+        return _distributional_outcomes(records, rule)
+    return _influence_outcomes(records, rule)
 
 
 def _decision_row(record: Mapping[str, Any]) -> dict[str, Any]:
