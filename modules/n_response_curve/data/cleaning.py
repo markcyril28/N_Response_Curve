@@ -484,7 +484,6 @@ def apply_final_cleaning(
     for source_record in records:
         record = dict(source_record)
         record_uid = record.get("record_uid")
-        source_name = record.get("source_name")
         if not isinstance(record_uid, str) or not record_uid:
             raise ValueError("Final cleaning requires a stable record_uid on every record")
         prepared.append(record)
