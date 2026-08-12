@@ -9,6 +9,17 @@ from typing import Any, Mapping
 
 CANONICAL_N_RATE_UNIT = "kg N ha-1"
 CANONICAL_YIELD_UNIT = "t ha-1"
+KNOWN_MISSING_STATE_CLASSES = frozenset(
+    {
+        "not_stated",
+        "not_applicable",
+        "not_collected",
+        "structural_missing",
+        "below_detection",
+        "invalid_numeric",
+        "unresolved_missing",
+    }
+)
 _IRRI_TOKEN = re.compile(r"(?<![\w.])irri(?![\w.])", flags=re.IGNORECASE)
 _UNIT_ALIASES = {
     "n_rate": {
