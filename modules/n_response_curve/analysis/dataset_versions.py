@@ -491,6 +491,8 @@ def build_dataset_versions(
     *,
     version_names: Sequence[str],
     recommendation_set_policy: Mapping[str, Any] | None = None,
+    configuration_sha256: str | None = None,
+    input_dataset_sha256: str | None = None,
 ) -> tuple[DatasetVersion, ...]:
     """Build enabled deterministic dataset views without copying or editing raw artifacts."""
 
@@ -500,17 +502,54 @@ def build_dataset_versions(
         raise ValueError(f"Unknown dataset version(s): {', '.join(sorted(unknown))}")
     if len(requested) != len(set(requested)):
         raise ValueError("Dataset version names must be unique")
+    if (configuration_sha256 is None) != (input_dataset_sha256 is None):
+        raise ValueError(
+            "Dataset-version identity requires both configuration and input-dataset SHA-256 values"
+        )
+    for label, value in (
+        ("configuration", configuration_sha256),
+        ("input dataset", input_dataset_sha256),
+    ):
+        if value is not None and (
+            len(value) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in value.lower()
+            )
+        ):
+            raise ValueError(f"Dataset-version {label} SHA-256 is malformed")
     rows = tuple(dict(record) for record in records)
     record_uids = [_record_uid(record) for record in rows]
     if len(record_uids) != len(set(record_uids)):
         raise ValueError("Canonical records may not have duplicate record_uids")
-    return tuple(
+    versions = tuple(
         _available_membership(
             version_id,
             rows,
             recommendation_set_policy=recommendation_set_policy,
         )
         for version_id in requested
+    )
+    return tuple(
+        replace(
+            version,
+            membership_sha256=_membership_hash(
+                version.version_id,
+                version.status,
+                version.record_uids,
+                version.reason_codes,
+                authority_status=version.authority_status,
+                authority_reason_codes=version.authority_reason_codes,
+                membership_diagnostics=version.membership_diagnostics,
+                membership_rule_id=DATASET_MEMBERSHIP_RULE_IDS[version.version_id],
+                configuration_sha256=configuration_sha256,
+                input_dataset_sha256=input_dataset_sha256,
+            ),
+            membership_rule_id=DATASET_MEMBERSHIP_RULE_IDS[version.version_id],
+            configuration_sha256=configuration_sha256,
+            input_dataset_sha256=input_dataset_sha256,
+        )
+        for version in versions
     )
 
 
