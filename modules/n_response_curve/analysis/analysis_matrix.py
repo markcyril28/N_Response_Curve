@@ -401,6 +401,48 @@ def first_stage_uncertainty_reasons(
     return tuple(sorted(reasons))
 
 
+def first_stage_policy_reasons(
+    rows: Sequence[Mapping[str, Any]],
+    outcome: str,
+    policy: Mapping[str, Any],
+) -> tuple[str, ...]:
+    if not policy:
+        return ("APPROVED_FIRST_STAGE_UNCERTAINTY_POLICY_REQUIRED",)
+    authority_sha256 = policy.get("authority_sha256")
+    if (
+        policy.get("review_status") != "approved"
+        or not isinstance(authority_sha256, str)
+        or len(authority_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in authority_sha256)
+    ):
+        return ("APPROVED_FIRST_STAGE_UNCERTAINTY_POLICY_REQUIRED",)
+    eligible_outcomes = policy.get("eligible_outcomes")
+    if not isinstance(eligible_outcomes, (list, tuple)) or outcome not in eligible_outcomes:
+        return ("FIRST_STAGE_OUTCOME_NOT_APPROVED",)
+    policy_id = policy.get("policy_id")
+    within_method = policy.get("within_model_variance_method")
+    model_selection_method = policy.get("model_selection_uncertainty_method")
+    if not all(
+        isinstance(value, str) and value
+        for value in (policy_id, within_method, model_selection_method)
+    ):
+        return ("APPROVED_FIRST_STAGE_UNCERTAINTY_POLICY_REQUIRED",)
+    expected_method_id = f"{policy_id}:{within_method}:{model_selection_method}"
+    method_field = f"{outcome}_first_stage_uncertainty_method_id"
+    observed_method_ids = {
+        str(row[method_field])
+        for row in rows
+        if isinstance(row.get(outcome), (int, float))
+        and not isinstance(row.get(outcome), bool)
+        and math.isfinite(float(row[outcome]))
+        and isinstance(row.get(method_field), str)
+        and row.get(method_field)
+    }
+    if observed_method_ids and observed_method_ids != {expected_method_id}:
+        return ("FIRST_STAGE_UNCERTAINTY_POLICY_MISMATCH",)
+    return ()
+
+
 def _reasons_for_candidate(
     *,
     version: DatasetVersion,
