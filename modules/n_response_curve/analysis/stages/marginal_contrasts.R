@@ -68,14 +68,20 @@ nrc_run_marginal_contrasts <- function(stage) {
 
   model_kind <- specification$model_kind
   outcome_kind <- specification$outcome_kind
+  if (is.null(model_kind) || is.null(outcome_kind)) {
+    return(nrc_skip_result("PREDECLARED_MODEL_SPECIFICATION_REQUIRED"))
+  }
+  if (!nrc_emmeans_available()) {
+    return(nrc_skip_result("MODEL_BASED_CONTRAST_ENGINE_UNAVAILABLE"))
+  }
   first_stage_weights <- NULL
   first_stage <- specification$first_stage_uncertainty
   if (!is.null(first_stage)) {
     weight_column <- first_stage$weight_column
-    if (is.null(weight_column) || !weight_column %in% names(stage$data)) {
+    if (is.null(weight_column) || !weight_column %in% names(analysis_data)) {
       return(nrc_skip_result("FIRST_STAGE_WEIGHT_COLUMN_REQUIRED"))
     }
-    first_stage_weights <- stage$data[[weight_column]]
+    first_stage_weights <- analysis_data[[weight_column]]
     if (!is.numeric(first_stage_weights) ||
         any(!is.finite(first_stage_weights)) ||
         any(first_stage_weights <= 0)) {
@@ -84,7 +90,7 @@ nrc_run_marginal_contrasts <- function(stage) {
   }
   fit <- nrc_fit_model(
     model_formula,
-    stage$data,
+    analysis_data,
     outcome_kind,
     model_kind,
     "Unsupported R model kind for marginal contrasts",
@@ -99,7 +105,7 @@ nrc_run_marginal_contrasts <- function(stage) {
       list(warnings = as.list(unique(warning_messages)))
     ))
   }
-  diagnostics <- nrc_model_diagnostics(fitted, warning_messages, nrow(stage$data))
+  diagnostics <- nrc_model_diagnostics(fitted, warning_messages, nrow(analysis_data))
   if (!isTRUE(diagnostics$converged)) {
     return(nrc_failed_result(
       "R_MODEL_NONCONVERGENCE",
