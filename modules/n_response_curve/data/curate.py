@@ -884,6 +884,52 @@ def _finalize_canonical_record(
     configured_yield_unit = str(
         configured_units.get("yield_curve", CANONICAL_YIELD_UNIT)
     )
+    nutrient_values: dict[str, float | None] = {}
+    nutrient_metadata: dict[str, dict[str, Any]] = {}
+    for field_name, prefix, parsed in (
+        ("inorganic_n_rate", "n_rate", n_parse),
+        ("recommended_n_rate", "recommended_n_rate", recommended_n_parse),
+        ("inorganic_p_rate", "p_rate", p_parse),
+        ("inorganic_k_rate", "k_rate", k_parse),
+    ):
+        control = nutrient_unit_controls.get(field_name)
+        if control is None:
+            nutrient_values[field_name] = parsed.value
+            nutrient_metadata[prefix] = {
+                "raw_value": parsed.value,
+                "source_unit": (
+                    configured_n_unit
+                    if field_name in {"inorganic_n_rate", "recommended_n_rate"}
+                    else None
+                ),
+                "source_basis": None,
+                "canonical_unit": NUTRIENT_CANONICAL_UNITS[field_name],
+                "conversion_rule": None,
+                "conversion_factor": None,
+                "review_id": None,
+                "unit_status": "review_required_unversioned",
+            }
+            continue
+        nutrient_values[field_name] = (
+            parsed.value * control.conversion_factor
+            if parsed.value is not None
+            else None
+        )
+        nutrient_metadata[prefix] = {
+            "raw_value": parsed.value,
+            "source_unit": control.source_unit,
+            "source_basis": control.source_basis,
+            "canonical_unit": control.canonical_unit,
+            "conversion_rule": control.conversion_rule,
+            "conversion_factor": control.conversion_factor,
+            "review_id": control.review_id,
+            "unit_status": (
+                "canonical_reviewed"
+                if control.conversion_factor == 1.0
+                and control.source_unit == control.canonical_unit
+                else "converted_reviewed"
+            ),
+        }
     row_country_raw = _optional_field(record, "country_code") or _optional_field(
         record,
         "country",
