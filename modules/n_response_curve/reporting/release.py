@@ -50,6 +50,19 @@ _FORBIDDEN_ARTIFACT_SUFFIXES = frozenset({".htm", ".html", ".svg"})
 _RESERVED_PACKAGE_PATHS = frozenset(
     {"CHECKSUMS.sha256", "report.md", "report.pdf", "run_manifest.json"}
 )
+_FULL_AUTHORITY_POLICY_VALUES = {
+    "role_combination_policy": "accountable_parties_must_be_distinct",
+    "substitution_policy": "no_substitution",
+    "recusal_policy": "matrix_approval_preclears_assigned_parties",
+    "dual_approval_policy": "single_accountable_party_approval",
+}
+
+
+def _governance_calendar_date(value: Any) -> date:
+    normalized = str(value)
+    if "T" in normalized:
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00")).date()
+    return date.fromisoformat(normalized)
 
 
 @dataclass(frozen=True)
@@ -511,9 +524,11 @@ def _recover_interrupted_promotion(target: Path) -> None:
     if not history_root.is_dir():
         return
     pending: list[tuple[Path, str]] = []
+    unjournaled: list[Path] = []
     for history_entry in sorted(path for path in history_root.iterdir() if path.is_dir()):
         state_path = history_entry / "promotion_state.json"
         if not state_path.is_file():
+            unjournaled.append(history_entry)
             continue
         try:
             payload = json.loads(state_path.read_text(encoding="utf-8"))
@@ -527,8 +542,27 @@ def _recover_interrupted_promotion(target: Path) -> None:
             or payload.get("state") not in {"prepared", "prior_archived", "complete"}
         ):
             raise ReportingError("Release-promotion recovery journal is malformed or misbound")
-        if payload["state"] != "complete":
-            pending.append((history_entry, str(payload["state"])))
+        state = str(payload["state"])
+        if state in {"prepared", "prior_archived"}:
+            pending.append((history_entry, state))
+    if unjournaled:
+        if pending or len(unjournaled) != 1:
+            raise ReportingError(
+                "Multiple incomplete release-promotion histories require manual review"
+            )
+        history_entry = unjournaled[0]
+        entry_names = {path.name for path in history_entry.iterdir()}
+        if (
+            not target.exists()
+            or (history_entry / "package").exists()
+            or entry_names - {"replacement_record.json", ".promotion_state.tmp"}
+        ):
+            raise ReportingError(
+                "Unjournaled release-promotion history cannot be recovered automatically"
+            )
+        verify_release_package(target)
+        shutil.rmtree(history_entry)
+        return
     if not pending:
         return
     if len(pending) != 1:
