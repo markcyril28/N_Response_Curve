@@ -407,19 +407,40 @@ def normalize_category_with_evidence(
     )
 
 
-def _text_treatment_class(treatment_raw: str | None, treatment_mapping: Mapping[str, list[str] | tuple[str, ...]]) -> str:
+def _text_treatment_class(
+    treatment_raw: str | None,
+    treatment_mapping: Mapping[str, list[str] | tuple[str, ...]],
+) -> tuple[str, tuple[str, ...]]:
     normalized = _normalized_text(treatment_raw).casefold()
     if not normalized:
-        return "unresolved"
-    candidates: list[tuple[int, str]] = []
+        return "unresolved", ()
+    candidates: list[tuple[int, int, str]] = []
     for canonical, raw_values in treatment_mapping.items():
         for raw in raw_values:
             token = str(raw).strip().casefold()
-            if token and re.search(rf"(?<!\w){re.escape(token)}(?!\w)", normalized):
-                candidates.append((len(token), canonical))
+            if not token:
+                continue
+            for match in re.finditer(
+                rf"(?<!\w){re.escape(token)}(?!\w)",
+                normalized,
+            ):
+                candidates.append((match.start(), match.end(), canonical))
     if not candidates:
-        return "unresolved"
-    return max(candidates, key=lambda item: (item[0], item[1]))[1]
+        return "unresolved", ()
+    noncontained = [
+        candidate
+        for candidate in candidates
+        if not any(
+            other[0] <= candidate[0]
+            and other[1] >= candidate[1]
+            and (other[1] - other[0]) > (candidate[1] - candidate[0])
+            for other in candidates
+        )
+    ]
+    canonical_candidates = tuple(sorted({item[2] for item in noncontained}))
+    if len(canonical_candidates) != 1:
+        return "unresolved", canonical_candidates
+    return canonical_candidates[0], canonical_candidates
 
 
 def _is_present_indicator(raw: str | None, missing_values: Mapping[str, Any]) -> bool:
