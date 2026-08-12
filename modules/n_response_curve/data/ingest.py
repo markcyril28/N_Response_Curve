@@ -48,6 +48,50 @@ class SourceAdapterSpec:
     expected_physical_columns: int
     expected_headers: Mapping[int, str]
     map_version: str
+    expected_header_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkbookCsvReconciliation:
+    """Reviewed evidence binding one configured workbook to its CSV export."""
+
+    source_name: str
+    workbook_sha256: str
+    csv_sha256: str
+    review_id: str
+
+
+COMBINED_NOPT_RCM_ADAPTER_SPEC = SourceAdapterSpec(
+    version="combined-nopt-rcm-csv-v1",
+    expected_physical_columns=228,
+    expected_headers={
+        1: "rcm_reference",
+        2: "nopt_reference",
+        8: "farmer_first_name",
+        9: "farmer_last_name",
+        31: "measured_p_h_1_1_h2o",
+        58: "fp_actual_n_kg_per_ha",
+        69: "rcm_recommended_n_rate",
+        85: "rcm_actual_n_kg_per_ha",
+        97: "fp_calculated_grainyield_fresh",
+        104: "rcm_measured_grainyield_dry",
+        113: "global_id",
+        117: "latitude",
+        118: "longitude",
+        140: "nrate",
+        148: "full_fert_yield",
+        149: "n0_yield",
+        216: "total_n_obs",
+        228: "soil_texture_method",
+    },
+    map_version="ph-combined-nopt-rcm-physical-v1",
+    expected_header_sha256=(
+        "82a1092162f42debc73134167b84ad025e8986b612d4b753dc5a6be85c13ca69"
+    ),
+)
+BUILTIN_ADAPTER_SPECS: Mapping[str, SourceAdapterSpec] = {
+    COMBINED_NOPT_RCM_ADAPTER_SPEC.version: COMBINED_NOPT_RCM_ADAPTER_SPEC,
+}
 
 
 @dataclass(frozen=True)
