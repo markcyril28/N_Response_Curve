@@ -548,6 +548,7 @@ def _validate_reviewed_source_map(
     if source_map.representation_basis_status not in {"reviewed", "review_required"}:
         raise ValueError("Reviewed source map has an unsupported representation-basis status")
     validate_reviewed_fill_down_policy(source_map)
+    validate_nutrient_unit_control_consistency(source_map)
     if source_map.representation_basis_status == "reviewed":
         validate_reviewed_nutrient_unit_controls(source_map)
     if (
@@ -608,7 +609,7 @@ def _validate_reviewed_source_map(
             raise ValueError(
                 f"Physical column {disposition.position} has an empty date conversion rule"
             )
-    if source.source_name == "ph_combined_nopt_rcm":
+    if _requires_complete_semantic_disposition(source):
         incomplete_semantic_positions = tuple(
             disposition.position
             for disposition in source_map.dispositions
