@@ -647,6 +647,61 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                         if variable_family is not None
                         else None
                     ),
+                    source_value_type=(
+                        _nonempty_text(
+                            raw.get("source_value_type"),
+                            where=(
+                                f"{where}.dispositions[{disposition_index}]"
+                                ".source_value_type"
+                            ),
+                        )
+                        if raw.get("source_value_type") is not None
+                        else None
+                    ),
+                    provider_semantics_status=(
+                        _nonempty_text(
+                            raw.get("provider_semantics_status"),
+                            where=(
+                                f"{where}.dispositions[{disposition_index}]"
+                                ".provider_semantics_status"
+                            ),
+                        )
+                        if raw.get("provider_semantics_status") is not None
+                        else None
+                    ),
+                    date_conversion_rule=(
+                        _nonempty_text(
+                            raw.get("date_conversion_rule"),
+                            where=(
+                                f"{where}.dispositions[{disposition_index}]"
+                                ".date_conversion_rule"
+                            ),
+                        )
+                        if raw.get("date_conversion_rule") is not None
+                        else None
+                    ),
+                    leakage_class=(
+                        _nonempty_text(
+                            raw.get("leakage_class"),
+                            where=(
+                                f"{where}.dispositions[{disposition_index}]"
+                                ".leakage_class"
+                            ),
+                        )
+                        if raw.get("leakage_class") is not None
+                        else None
+                    ),
+                    additional_use_status=(
+                        _nonempty_text(
+                            raw.get("additional_use_status"),
+                            where=(
+                                f"{where}.dispositions[{disposition_index}]"
+                                ".additional_use_status"
+                            ),
+                        )
+                        if raw.get("additional_use_status") is not None
+                        else None
+                    ),
                 )
             )
         raw_arms = record.get("arms", [])
