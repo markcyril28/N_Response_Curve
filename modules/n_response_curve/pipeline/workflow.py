@@ -563,10 +563,24 @@ def run_phase_four(
         recommendation_set_policy=effective_model_policy.get(
             "recommendation_set_policy"
         ),
+        configuration_sha256=sha256_file(config.config_path),
+        input_dataset_sha256=stable_json_sha256(
+            phase_three.sensitivity_input_records
+        ),
+    )
+    hypothesis_specifications = effective_analysis_hypotheses(
+        config,
+        analysis_policy,
     )
     source_combinations = build_source_combinations(
         config.enabled_sources,
         modes=config.source_combination_modes,
+    )
+    _validate_source_combination_authority(
+        source_combinations,
+        enabled_sources=config.enabled_sources,
+        hypothesis_specifications=hypothesis_specifications,
+        analysis_policy_bound=analysis_policy is not None,
     )
     derived_curve_views = build_derived_curve_views(
         phase_three.sensitivity_input_records,
@@ -597,10 +611,7 @@ def run_phase_four(
         interaction_orders=config.interaction_orders,
         support_policy=support_policy,
         source_families=config.enabled_sources,
-        hypothesis_specifications=effective_analysis_hypotheses(
-            config,
-            analysis_policy,
-        ),
+        hypothesis_specifications=hypothesis_specifications,
     )
     python_results = execute_python_candidates(
         registry.candidates,
@@ -625,6 +636,10 @@ def run_phase_four(
         ),
         None,
     )
+    recommendation_set_policy = effective_model_policy.get(
+        "recommendation_set_policy",
+        {},
+    )
     management_system_proximity = build_management_system_proximity(
         phase_three.input_records,
         curve_rows=phase_three.evidence.curve_rows,
@@ -647,6 +662,18 @@ def run_phase_four(
             primary_dataset_version.record_uids
             if primary_dataset_version is not None
             else ()
+        ),
+        membership_status_field=str(
+            recommendation_set_policy.get(
+                "membership_status_field",
+                "recommendation_set_membership_status",
+            )
+        ),
+        verified_membership_status=str(
+            recommendation_set_policy.get(
+                "verified_status",
+                "verified_context_comparable",
+            )
         ),
     )
     return PhaseFourResult(
