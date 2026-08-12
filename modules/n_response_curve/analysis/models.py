@@ -272,6 +272,22 @@ def _attempt(
         aicc=aicc,
         grouped_prediction_rmse=grouped_prediction_rmse,
         grouped_prediction_fold_count=grouped_prediction_fold_count,
+        grouped_prediction_basis=grouped_prediction_basis,
+        credibility_status=credibility_status,
+        credibility_policy_id=credibility_policy_id,
+        absolute_fit_normalized_rmse=absolute_fit_normalized_rmse,
+        influence_max_relative_parameter_shift=(
+            influence_max_relative_parameter_shift
+        ),
+        influence_fold_count=influence_fold_count,
+        parameter_precision_max_relative_se=(
+            parameter_precision_max_relative_se
+        ),
+        maximum_observed_step_decline_t_ha=maximum_observed_step_decline_t_ha,
+        asymptote_influence_max_relative_shift=(
+            asymptote_influence_max_relative_shift
+        ),
+        asymptote_influence_fold_count=asymptote_influence_fold_count,
         parameters=_frozen_mapping(parameters),
         curve_shape_class=curve_shape_class,
         optimum_status=optimum_status,
