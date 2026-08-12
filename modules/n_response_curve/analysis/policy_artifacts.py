@@ -2110,6 +2110,544 @@ def _first_stage_contextual_uncertainty_policy(
     )
 
 
+def _asymptote_support_policy(value: object) -> Mapping[str, Any]:
+    fields = (
+        "minimum_in_domain_attainment_fraction",
+        "maximum_asymptote_relative_se",
+        "maximum_influence_relative_shift",
+        "minimum_influence_fold_count",
+        "maximum_credible_model_relative_difference",
+        "maximum_associated_n_basis",
+    )
+    if value is None:
+        return MappingProxyType(
+            {
+                "policy_id": "MOD-08-withheld",
+                "review_status": "withheld",
+                **{field: None for field in fields},
+            }
+        )
+    raw = _exact_object(
+        value,
+        required_keys={"policy_id", "review_status", *fields},
+        where="curve model policy asymptote_support",
+    )
+    policy_id = _nonempty_text(
+        raw["policy_id"],
+        where="curve model policy asymptote_support.policy_id",
+    )
+    review_status = _review_status(
+        raw["review_status"],
+        where="curve model policy asymptote_support.review_status",
+    )
+    if review_status != "approved":
+        if any(raw[field] is not None for field in fields):
+            raise PolicyArtifactError(
+                "Withheld asymptote-support policy cannot supply scientific thresholds"
+            )
+        return MappingProxyType({"policy_id": policy_id, **dict(raw)})
+    attainment = _fraction(
+        raw["minimum_in_domain_attainment_fraction"],
+        where=(
+            "curve model policy asymptote_support."
+            "minimum_in_domain_attainment_fraction"
+        ),
+        include_zero=False,
+    )
+    relative_se = _finite_number(
+        raw["maximum_asymptote_relative_se"],
+        where="curve model policy asymptote_support.maximum_asymptote_relative_se",
+        minimum=0.0,
+    )
+    influence = _finite_number(
+        raw["maximum_influence_relative_shift"],
+        where=(
+            "curve model policy asymptote_support."
+            "maximum_influence_relative_shift"
+        ),
+        minimum=0.0,
+    )
+    concordance = _finite_number(
+        raw["maximum_credible_model_relative_difference"],
+        where=(
+            "curve model policy asymptote_support."
+            "maximum_credible_model_relative_difference"
+        ),
+        minimum=0.0,
+    )
+    fold_count = raw["minimum_influence_fold_count"]
+    if not isinstance(fold_count, int) or isinstance(fold_count, bool) or fold_count < 1:
+        raise PolicyArtifactError(
+            "Asymptote-support minimum influence fold count must be a positive integer"
+        )
+    n_basis = _nonempty_text(
+        raw["maximum_associated_n_basis"],
+        where="curve model policy asymptote_support.maximum_associated_n_basis",
+    )
+    if n_basis != "smallest_prediction_grid_rate_meeting_attainment_threshold":
+        raise PolicyArtifactError(
+            "MOD-08 maximum-associated-N basis is not executable"
+        )
+    return MappingProxyType(
+        {
+            "policy_id": policy_id,
+            "review_status": review_status,
+            "minimum_in_domain_attainment_fraction": attainment,
+            "maximum_asymptote_relative_se": relative_se,
+            "maximum_influence_relative_shift": influence,
+            "minimum_influence_fold_count": fold_count,
+            "maximum_credible_model_relative_difference": concordance,
+            "maximum_associated_n_basis": n_basis,
+        }
+    )
+
+
+_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"ceiling_level", "response_range"})
+
+
+def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType(
+            {
+                "policy_id": "MOD-07-withheld",
+                "review_status": "withheld",
+                "asymptote_fraction": None,
+                "reference_quantity": None,
+                "rate_label": None,
+                "uncertainty_method": None,
+                "scope": None,
+            }
+        )
+    raw = _exact_object(
+        value,
+        required_keys={
+            "policy_id",
+            "review_status",
+            "asymptote_fraction",
+            "reference_quantity",
+            "rate_label",
+            "uncertainty_method",
+            "scope",
+        },
+        where="curve model policy asymptote_reporting",
+    )
+    policy_id = _nonempty_text(
+        raw["policy_id"],
+        where="curve model policy asymptote_reporting.policy_id",
+    )
+    review_status = _review_status(
+        raw["review_status"],
+        where="curve model policy asymptote_reporting.review_status",
+    )
+    if review_status != "approved":
+        if any(
+            raw[field] is not None
+            for field in (
+                "asymptote_fraction",
+                "reference_quantity",
+                "rate_label",
+                "uncertainty_method",
+                "scope",
+            )
+        ):
+            raise PolicyArtifactError(
+                "Withheld asymptote-reporting policy cannot supply scientific controls"
+            )
+        return MappingProxyType({"policy_id": policy_id, **dict(raw)})
+    fraction = _fraction(
+        raw["asymptote_fraction"],
+        where="curve model policy asymptote_reporting.asymptote_fraction",
+        include_zero=False,
+    )
+    if fraction >= 1.0:
+        raise PolicyArtifactError(
+            "Asymptote-reporting fraction must be strictly below one"
+        )
+    # MOD-07 binds a fraction `q`, but a fraction is meaningless until the
+    # quantity it is a fraction of is named. The two candidates give different
+    # rates and one of them degenerates: a fraction of the ceiling *level* is
+    # already satisfied at N = 0 whenever the zero-N yield exceeds q * ceiling,
+    # collapsing the reported rate onto the domain floor, while a fraction of
+    # the *response range* is scale-free. The plan forbids resolving this in
+    # code, so the approver must state it and an unapproved value fails closed.
+    reference_quantity = _nonempty_text(
+        raw["reference_quantity"],
+        where="curve model policy asymptote_reporting.reference_quantity",
+    )
+    if reference_quantity not in _ASYMPTOTE_REFERENCE_QUANTITIES:
+        raise PolicyArtifactError(
+            "MOD-07 reporting policy reference_quantity must be one of "
+            + ", ".join(sorted(_ASYMPTOTE_REFERENCE_QUANTITIES))
+        )
+    rate_label = _nonempty_text(
+        raw["rate_label"],
+        where="curve model policy asymptote_reporting.rate_label",
+    )
+    uncertainty_method = _nonempty_text(
+        raw["uncertainty_method"],
+        where="curve model policy asymptote_reporting.uncertainty_method",
+    )
+    scope = _nonempty_text(
+        raw["scope"],
+        where="curve model policy asymptote_reporting.scope",
+    )
+    if rate_label != "N at q% of asymptote":
+        raise PolicyArtifactError(
+            "MOD-07 reporting policy must retain the approved asymptote-rate label"
+        )
+    if scope != "supported_mitscherlich_asymptote":
+        raise PolicyArtifactError(
+            "MOD-07 reporting policy scope must require a supported Mitscherlich asymptote"
+        )
+    return MappingProxyType(
+        {
+            "policy_id": policy_id,
+            "review_status": review_status,
+            "asymptote_fraction": fraction,
+            "reference_quantity": reference_quantity,
+            "rate_label": rate_label,
+            "uncertainty_method": uncertainty_method,
+            "scope": scope,
+        }
+    )
+
+
+def _efficiency_metric_policy(value: object) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType(
+            {
+                "policy_id": "EFF-01-withheld",
+                "review_status": "withheld",
+                "metric_id": None,
+                "basis": None,
+                "aggregation_level": None,
+            }
+        )
+    raw = _exact_object(
+        value,
+        required_keys={
+            "policy_id",
+            "review_status",
+            "metric_id",
+            "basis",
+            "aggregation_level",
+        },
+        where="curve model policy efficiency_metric",
+    )
+    policy_id = _nonempty_text(
+        raw["policy_id"],
+        where="curve model policy efficiency_metric.policy_id",
+    )
+    review_status = _review_status(
+        raw["review_status"],
+        where="curve model policy efficiency_metric.review_status",
+    )
+    if review_status != "approved":
+        if any(
+            raw[field] is not None
+            for field in ("metric_id", "basis", "aggregation_level")
+        ):
+            raise PolicyArtifactError(
+                "Withheld EFF-01 efficiency metric policy cannot supply controls"
+            )
+        return MappingProxyType(
+            {
+                "policy_id": policy_id,
+                "review_status": review_status,
+                "metric_id": None,
+                "basis": None,
+                "aggregation_level": None,
+            }
+        )
+    metric_id = _nonempty_text(
+        raw["metric_id"],
+        where="curve model policy efficiency_metric.metric_id",
+    )
+    basis = _nonempty_text(
+        raw["basis"],
+        where="curve model policy efficiency_metric.basis",
+    )
+    aggregation_level = _nonempty_text(
+        raw["aggregation_level"],
+        where="curve model policy efficiency_metric.aggregation_level",
+    )
+    if (
+        metric_id != "EFF-01-option-a-partial-factor-productivity"
+        or basis != "observed_reviewed_treatment_mean"
+        or aggregation_level != "record_by_n_level"
+    ):
+        raise PolicyArtifactError(
+            "EFF-01 efficiency metric policy must retain approved Option A semantics"
+        )
+    return MappingProxyType(
+        {
+            "policy_id": policy_id,
+            "review_status": review_status,
+            "metric_id": metric_id,
+            "basis": basis,
+            "aggregation_level": aggregation_level,
+        }
+    )
+
+
+def _efficiency_operating_point_policy(value: object) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType(
+            {
+                "policy_id": "EFF-03-withheld",
+                "review_status": "withheld",
+                "yield_retention_fraction": None,
+                "maximum_marginal_gain_t_ha_per_kg_n": None,
+                "marginal_gain_method": None,
+                "model_concordance_tolerance_n_kg_ha": None,
+                "zero_n_disposition": None,
+                "prediction_grid_points": None,
+                "prediction_grid_domain": None,
+                "prediction_grid_spacing": None,
+                "uncertainty_decision_rule": None,
+                "uncertainty_disposition": None,
+            }
+        )
+    raw = _exact_object(
+        value,
+        required_keys={
+            "policy_id",
+            "review_status",
+            "yield_retention_fraction",
+            "maximum_marginal_gain_t_ha_per_kg_n",
+            "marginal_gain_method",
+            "model_concordance_tolerance_n_kg_ha",
+            "zero_n_disposition",
+            "prediction_grid_points",
+            "prediction_grid_domain",
+            "prediction_grid_spacing",
+            "uncertainty_decision_rule",
+            "uncertainty_disposition",
+        },
+        where="curve model policy efficiency_operating_point",
+    )
+    policy_id = _nonempty_text(
+        raw["policy_id"],
+        where="curve model policy efficiency_operating_point.policy_id",
+    )
+    review_status = _review_status(
+        raw["review_status"],
+        where="curve model policy efficiency_operating_point.review_status",
+    )
+    if review_status != "approved":
+        if any(
+            raw[field] is not None
+            for field in (
+                "yield_retention_fraction",
+                "maximum_marginal_gain_t_ha_per_kg_n",
+                "marginal_gain_method",
+                "model_concordance_tolerance_n_kg_ha",
+                "zero_n_disposition",
+                "prediction_grid_points",
+                "prediction_grid_domain",
+                "prediction_grid_spacing",
+                "uncertainty_decision_rule",
+                "uncertainty_disposition",
+            )
+        ):
+            raise PolicyArtifactError(
+                "Withheld efficiency operating-point policy cannot supply thresholds"
+            )
+        return MappingProxyType({"policy_id": policy_id, **dict(raw)})
+    retention = _fraction(
+        raw["yield_retention_fraction"],
+        where=(
+            "curve model policy efficiency_operating_point."
+            "yield_retention_fraction"
+        ),
+        include_zero=False,
+    )
+    maximum_gain = _finite_number(
+        raw["maximum_marginal_gain_t_ha_per_kg_n"],
+        where=(
+            "curve model policy efficiency_operating_point."
+            "maximum_marginal_gain_t_ha_per_kg_n"
+        ),
+        minimum=0.0,
+    )
+    concordance = _finite_number(
+        raw["model_concordance_tolerance_n_kg_ha"],
+        where=(
+            "curve model policy efficiency_operating_point."
+            "model_concordance_tolerance_n_kg_ha"
+        ),
+        minimum=0.0,
+    )
+    marginal_gain_method = _nonempty_text(
+        raw["marginal_gain_method"],
+        where="curve model policy efficiency_operating_point.marginal_gain_method",
+    )
+    zero_n_disposition = _nonempty_text(
+        raw["zero_n_disposition"],
+        where="curve model policy efficiency_operating_point.zero_n_disposition",
+    )
+    prediction_grid_points = _positive_integer(
+        raw["prediction_grid_points"],
+        where=(
+            "curve model policy efficiency_operating_point."
+            "prediction_grid_points"
+        ),
+    )
+    if prediction_grid_points < 3:
+        raise PolicyArtifactError(
+            "EFF-03 operating-point policy requires at least three prediction-grid points"
+        )
+    if raw["prediction_grid_domain"] != "observed_n_domain":
+        raise PolicyArtifactError(
+            "curve model policy efficiency_operating_point.prediction_grid_domain "
+            "must be 'observed_n_domain'"
+        )
+    if raw["prediction_grid_spacing"] != "linear_inclusive_endpoints":
+        raise PolicyArtifactError(
+            "curve model policy efficiency_operating_point.prediction_grid_spacing "
+            "must be 'linear_inclusive_endpoints'"
+        )
+    uncertainty_decision_rule = _nonempty_text(
+        raw["uncertainty_decision_rule"],
+        where=(
+            "curve model policy efficiency_operating_point."
+            "uncertainty_decision_rule"
+        ),
+    )
+    if uncertainty_decision_rule != (
+        "point_estimate_thresholds_with_validated_fitted_mean_interval_reporting"
+    ):
+        raise PolicyArtifactError(
+            "curve model policy efficiency_operating_point.uncertainty_decision_rule "
+            "must use point-estimate thresholds with validated fitted-mean interval "
+            "reporting"
+        )
+    uncertainty_disposition = _nonempty_text(
+        raw["uncertainty_disposition"],
+        where=(
+            "curve model policy efficiency_operating_point."
+            "uncertainty_disposition"
+        ),
+    )
+    if marginal_gain_method != "adjacent_prediction_grid_difference":
+        raise PolicyArtifactError(
+            "EFF-03 operating-point policy must use the executable adjacent-grid marginal-gain method"
+        )
+    if zero_n_disposition != "exclude_from_operating_point_search":
+        raise PolicyArtifactError(
+            "EFF-03 operating-point policy must state the executable zero-N disposition"
+        )
+    if uncertainty_disposition != "require_available_for_all_credible_models":
+        raise PolicyArtifactError(
+            "EFF-03 operating-point policy must require uncertainty for every credible model"
+        )
+    return MappingProxyType(
+        {
+            "policy_id": policy_id,
+            "review_status": review_status,
+            "yield_retention_fraction": retention,
+            "maximum_marginal_gain_t_ha_per_kg_n": maximum_gain,
+            "marginal_gain_method": marginal_gain_method,
+            "model_concordance_tolerance_n_kg_ha": concordance,
+            "zero_n_disposition": zero_n_disposition,
+            "prediction_grid_points": prediction_grid_points,
+            "prediction_grid_domain": "observed_n_domain",
+            "prediction_grid_spacing": "linear_inclusive_endpoints",
+            "uncertainty_decision_rule": uncertainty_decision_rule,
+            "uncertainty_disposition": uncertainty_disposition,
+        }
+    )
+
+
+def _model_credibility_policy(value: object) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType({"review_status": "not_approved"})
+    raw = _exact_object(
+        value,
+        required_keys={
+            "policy_id",
+            "review_status",
+            "maximum_normalized_rmse",
+            "maximum_parameter_influence_relative_shift",
+            "minimum_influence_folds",
+            "maximum_parameter_relative_standard_error",
+            "parameter_scale_floor",
+            "maximum_observed_step_decline_t_ha",
+        },
+        where="curve model policy model_credibility",
+    )
+    policy_id = _nonempty_text(
+        raw["policy_id"],
+        where="curve model policy model_credibility.policy_id",
+    )
+    review_status = _review_status(
+        raw["review_status"],
+        where="curve model policy model_credibility.review_status",
+    )
+    minimum_influence_folds = _positive_integer(
+        raw["minimum_influence_folds"],
+        where=(
+            "curve model policy model_credibility.minimum_influence_folds"
+        ),
+    )
+    if minimum_influence_folds < 2:
+        raise PolicyArtifactError(
+            "curve model policy model_credibility.minimum_influence_folds "
+            "must be >= 2"
+        )
+    return MappingProxyType(
+        {
+            "policy_id": policy_id,
+            "review_status": review_status,
+            "maximum_normalized_rmse": _finite_number(
+                raw["maximum_normalized_rmse"],
+                where=(
+                    "curve model policy model_credibility."
+                    "maximum_normalized_rmse"
+                ),
+                minimum=0.0,
+                strictly_greater=True,
+            ),
+            "maximum_parameter_influence_relative_shift": _finite_number(
+                raw["maximum_parameter_influence_relative_shift"],
+                where=(
+                    "curve model policy model_credibility."
+                    "maximum_parameter_influence_relative_shift"
+                ),
+                minimum=0.0,
+                strictly_greater=True,
+            ),
+            "minimum_influence_folds": minimum_influence_folds,
+            "maximum_parameter_relative_standard_error": _finite_number(
+                raw["maximum_parameter_relative_standard_error"],
+                where=(
+                    "curve model policy model_credibility."
+                    "maximum_parameter_relative_standard_error"
+                ),
+                minimum=0.0,
+                strictly_greater=True,
+            ),
+            "parameter_scale_floor": _finite_number(
+                raw["parameter_scale_floor"],
+                where=(
+                    "curve model policy model_credibility.parameter_scale_floor"
+                ),
+                minimum=0.0,
+                strictly_greater=True,
+            ),
+            "maximum_observed_step_decline_t_ha": _finite_number(
+                raw["maximum_observed_step_decline_t_ha"],
+                where=(
+                    "curve model policy model_credibility."
+                    "maximum_observed_step_decline_t_ha"
+                ),
+                minimum=0.0,
+                strictly_greater=True,
+            ),
+        }
+    )
+
+
 def load_curve_model_policy(
     path: str | Path,
     *,
