@@ -1663,9 +1663,11 @@ __all__ = [
     "PhysicalColumnDisposition",
     "REQUIRED_REVIEWED_LOOKUP_FIELDS",
     "RestrictedDataPolicy",
+    "ReviewedNutrientUnitControl",
     "ReviewedSourceMap",
     "SourceArmMap",
     "curate_ingestion",
+    "disclosure_review_projection_sha256",
     "project_public_records",
     "validate_reviewed_curation_controls",
 ]
