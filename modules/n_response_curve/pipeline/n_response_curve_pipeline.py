@@ -83,6 +83,7 @@ class PhaseTwoResult:
     source_data_policy: SourceDataPolicyBundle | None = None
     final_cleaning: FinalCleaningResult | None = None
     untrimmed_analysis_eligibility: EligibilityResult | None = None
+    literature_verification: VerificationRound | None = None
 
 
 def _resource_snapshot(
@@ -119,11 +120,24 @@ def _load_analysis_policy(
         return None
     if config.analysis_policy_manifest_sha256 is None:
         raise ConfigError("Analysis policy manifest hash is unavailable")
+    active_factor_engines = {
+        config.engine_assignments[family]
+        for family in config.analysis_families
+        if family in _FACTOR_ANALYSIS_FAMILIES
+    }
+    required_factor_engine_pairs = tuple(
+        sorted(
+            (factor_name, engine)
+            for factor_name in config.explanatory_factors
+            for engine in active_factor_engines
+        )
+    )
     try:
         return load_analysis_policy_manifest(
             config.analysis_policy_manifest,
             expected_sha256=config.analysis_policy_manifest_sha256,
             project_root=config.project_root,
+            required_factor_engine_pairs=required_factor_engine_pairs,
         )
     except PolicyArtifactError as exc:
         raise ConfigError(f"Analysis policy validation failed: {exc}") from exc
