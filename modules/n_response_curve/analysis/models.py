@@ -2338,7 +2338,18 @@ def fit_candidate_model(
         supported_max_yield_t_ha=optimum_summary.supported_max_yield_t_ha,
         maximum_reference_basis=optimum_summary.maximum_reference_basis,
         maximum_proximity_status=optimum_summary.maximum_proximity_status,
+        observed_domain_boundary_status=(
+            optimum_summary.observed_domain_boundary_status
+        ),
+        observed_domain_boundary_n_kg_ha=(
+            optimum_summary.observed_domain_boundary_n_kg_ha
+        ),
+        observed_domain_boundary_yield_t_ha=(
+            optimum_summary.observed_domain_boundary_yield_t_ha
+        ),
         estimator_status=estimator_status,
+        level_replicate_counts=level_replicate_counts,
+        replication_balance_status=replication_balance_status,
         weighted_sensitivity_status=weighted_sensitivity_status,
         weighted_sensitivity_parameters=weighted_sensitivity_parameters,
         weighted_sensitivity_objective=weighted_sensitivity_objective,
