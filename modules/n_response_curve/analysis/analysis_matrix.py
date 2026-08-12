@@ -491,16 +491,6 @@ def _reasons_for_candidate(
             if complete_rows
             else ("pruned", ("NO_FACTOR_COMPLETE_CASES",), independent_studies, cell_counts, cell_study_counts)
         )
-    if analysis_family in _FITTED_FEATURE_INFERENTIAL_FAMILIES:
-        first_stage_reasons = first_stage_uncertainty_reasons(rows, curve_outcome)
-        if first_stage_reasons:
-            return (
-                "skipped",
-                first_stage_reasons,
-                independent_studies,
-                cell_counts,
-                cell_study_counts,
-            )
     if support_policy is None:
         return "pruned", ("SUPPORT_POLICY_REQUIRED",), independent_studies, cell_counts, cell_study_counts
     reasons: list[str] = []
