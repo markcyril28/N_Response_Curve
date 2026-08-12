@@ -991,6 +991,216 @@ def _parameter_mapping(model_name: str, values: np.ndarray) -> dict[str, float]:
     return {name: float(value) for name, value in zip(names, values, strict=True)}
 
 
+def _asymptote_influence_summary(
+    x: np.ndarray,
+    y: np.ndarray,
+    full_parameters: np.ndarray,
+    *,
+    minimum_yield: float,
+    maximum_yield: float,
+    gate: _ReviewedModelGate,
+) -> tuple[float | None, int]:
+    """Refit after omitting each N level and summarize asymptote sensitivity."""
+
+    levels = np.unique(x)
+    if levels.size < 5:
+        return None, 0
+    full_asymptote = float(full_parameters[0])
+    if not math.isfinite(full_asymptote) or abs(full_asymptote) <= np.finfo(float).eps:
+        return None, 0
+    relative_shifts: list[float] = []
+    for level in levels:
+        keep = x != level
+        refit, _ = _fit_parameters(
+            "mitscherlich",
+            x[keep],
+            y[keep],
+            minimum_yield=minimum_yield,
+            maximum_yield=maximum_yield,
+            tolerance=gate.optimizer_tolerance,
+            gate=gate,
+        )
+        if refit is None:
+            return None, len(relative_shifts)
+        relative_shifts.append(
+            abs(float(refit[0]) - full_asymptote) / abs(full_asymptote)
+        )
+    return max(relative_shifts), len(relative_shifts)
+
+
+def _parameter_influence_summary(
+    model_name: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    full_parameters: np.ndarray,
+    *,
+    minimum_yield: float,
+    maximum_yield: float,
+    gate: _ReviewedModelGate,
+    scale_floor: float,
+) -> tuple[float | None, int]:
+    levels = np.unique(x)
+    relative_shifts: list[float] = []
+    denominator = np.maximum(np.abs(full_parameters), scale_floor)
+    for level in levels:
+        keep = x != level
+        refit, _ = _fit_parameters(
+            model_name,
+            x[keep],
+            y[keep],
+            minimum_yield=minimum_yield,
+            maximum_yield=maximum_yield,
+            tolerance=gate.optimizer_tolerance,
+            gate=gate,
+        )
+        if refit is None:
+            continue
+        shift = np.max(np.abs(refit - full_parameters) / denominator)
+        if math.isfinite(float(shift)):
+            relative_shifts.append(float(shift))
+    return (
+        max(relative_shifts) if relative_shifts else None,
+        len(relative_shifts),
+    )
+
+
+def _parameter_precision_summary(
+    model_name: str,
+    x: np.ndarray,
+    parameters: np.ndarray,
+    *,
+    rss: float,
+    residual_df: int,
+    scale_floor: float,
+) -> float | None:
+    if residual_df <= 0 or not math.isfinite(rss) or rss < 0.0:
+        return None
+    try:
+        jacobian = _parameter_jacobian(
+            model_name,
+            x,
+            _parameter_mapping(model_name, parameters),
+        )
+        information = jacobian.T @ jacobian
+        if np.linalg.matrix_rank(information) < len(parameters):
+            return None
+        covariance = (rss / residual_df) * np.linalg.inv(information)
+        variances = np.diag(covariance)
+        if not np.isfinite(variances).all() or np.min(variances) < -1.0e-10:
+            return None
+        standard_errors = np.sqrt(np.maximum(variances, 0.0))
+        relative = standard_errors / np.maximum(np.abs(parameters), scale_floor)
+        value = float(np.max(relative))
+    except (FloatingPointError, ValueError, np.linalg.LinAlgError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _credibility_diagnostics(
+    model_name: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    parameters: np.ndarray,
+    *,
+    rss: float,
+    residual_df: int,
+    minimum_yield: float,
+    maximum_yield: float,
+    gate: _ReviewedModelGate,
+    policy: Mapping[str, Any],
+) -> tuple[
+    str,
+    str | None,
+    float | None,
+    float | None,
+    int,
+    float | None,
+    float | None,
+    tuple[str, ...],
+]:
+    credibility_policy, policy_reason = _reviewed_credibility_policy(policy)
+    if credibility_policy is None:
+        return (
+            "withheld_policy_unavailable",
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+            (policy_reason or "MODEL_CREDIBILITY_POLICY_UNAVAILABLE",),
+        )
+    yield_scale = max(
+        float(np.max(y) - np.min(y)),
+        credibility_policy.parameter_scale_floor,
+    )
+    normalized_rmse = math.sqrt(rss / len(y)) / yield_scale
+    influence, influence_folds = _parameter_influence_summary(
+        model_name,
+        x,
+        y,
+        parameters,
+        minimum_yield=minimum_yield,
+        maximum_yield=maximum_yield,
+        gate=gate,
+        scale_floor=credibility_policy.parameter_scale_floor,
+    )
+    precision = _parameter_precision_summary(
+        model_name,
+        x,
+        parameters,
+        rss=rss,
+        residual_df=residual_df,
+        scale_floor=credibility_policy.parameter_scale_floor,
+    )
+    maximum_observed_decline = float(
+        max(0.0, max((-value for value in np.diff(y)), default=0.0))
+    )
+    reasons: list[str] = []
+    if normalized_rmse > credibility_policy.maximum_normalized_rmse:
+        reasons.append("ABSOLUTE_FIT_THRESHOLD_FAILED")
+    if (
+        influence is None
+        or influence_folds < credibility_policy.minimum_influence_folds
+    ):
+        reasons.append("INFLUENCE_DIAGNOSTIC_UNAVAILABLE")
+    elif (
+        influence
+        > credibility_policy.maximum_parameter_influence_relative_shift
+    ):
+        reasons.append("INFLUENCE_STABILITY_THRESHOLD_FAILED")
+    if precision is None:
+        reasons.append("PARAMETER_PRECISION_DIAGNOSTIC_UNAVAILABLE")
+    elif (
+        precision
+        > credibility_policy.maximum_parameter_relative_standard_error
+    ):
+        reasons.append("PARAMETER_PRECISION_THRESHOLD_FAILED")
+    if (
+        maximum_observed_decline
+        > credibility_policy.maximum_observed_step_decline_t_ha
+    ):
+        reasons.append("OBSERVED_DIP_THRESHOLD_FAILED")
+    unavailable = any(reason.endswith("DIAGNOSTIC_UNAVAILABLE") for reason in reasons)
+    status = (
+        "withheld_diagnostics_unavailable"
+        if unavailable
+        else "failed"
+        if reasons
+        else "passed"
+    )
+    return (
+        status,
+        credibility_policy.policy_id,
+        normalized_rmse,
+        influence,
+        influence_folds,
+        precision,
+        maximum_observed_decline,
+        tuple(reasons),
+    )
+
+
 def _parameter_rank_is_full(
     model_name: str,
     x: np.ndarray,
