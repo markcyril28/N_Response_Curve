@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date
 import hashlib
 import math
 import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..data.provenance import stable_identifier, stable_json_sha256
+from ..data.schema import CANONICAL_N_RATE_UNIT, CANONICAL_YIELD_UNIT
 from ..reporting.plots import prediction_rows
 from .models import (
     MODEL_ORDER,
@@ -20,6 +22,9 @@ from .reviewed_methods import (
     ECONOMIC_DECISION_RULE,
     ECONOMIC_GRAIN_PRICE_TO_PER_TONNE,
     ECONOMIC_N_COST_UNIT,
+    UNCERTAINTY_METHOD_CONFIDENCE_LEVELS,
+    UNCERTAINTY_METHOD_REQUIRED_EVIDENCE,
+    UNCERTAINTY_METHOD_SPECS,
 )
 from .values import finite_number
 
