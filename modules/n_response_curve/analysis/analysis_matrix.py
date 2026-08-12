@@ -111,6 +111,9 @@ class AnalysisCandidate:
     factor_representations: Mapping[str, Mapping[str, Any]] = field(
         default_factory=dict
     )
+    model_specification: Mapping[str, Any] = field(default_factory=dict)
+    decision_alpha: float | None = None
+    first_stage_uncertainty_policy: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
