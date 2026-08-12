@@ -154,19 +154,53 @@ def _approved_efficiency_policy(
 
 def _partial_factor_productivity_rows(
     records: Iterable[Mapping[str, Any]],
+    *,
+    policy: Mapping[str, Any],
 ) -> tuple[dict[str, Any], ...]:
+    """Materialize EFF-01 Option A at the observed record-by-N-level grain."""
+
+    efficiency_policy = _approved_efficiency_policy(policy)
+    if efficiency_policy is None:
+        return ()
     """Materialize EFF-01 Option A at the observed record-by-N-level grain."""
 
     rows: list[dict[str, Any]] = []
     for record in records:
-        record_uid = str(record.get("record_uid") or "")
-        series_uid = str(record.get("response_series_uid") or "")
+        record_uid_value = record.get("record_uid")
+        series_uid_value = record.get("response_series_uid")
+        record_uid = (
+            record_uid_value.strip()
+            if isinstance(record_uid_value, str)
+            else ""
+        )
+        series_uid = (
+            series_uid_value.strip()
+            if isinstance(series_uid_value, str)
+            else ""
+        )
         n_rate = finite_number(record.get("n_rate_kg_ha"))
         yield_t_ha = finite_number(record.get("yield_t_ha"))
+        eligibility_tier = record.get("series_eligibility_tier") or record.get(
+            "eligibility_tier"
+        )
         if (
             not record_uid
             or not series_uid
             or record.get("series_status") != "resolved"
+            or eligibility_tier not in {"A", "B"}
+            or record.get("analytical_record_status") != "included"
+            or record.get("final_analytical_membership_status")
+            not in {"included", "included_flagged"}
+            or record.get("n_rate_parse_status") != "parsed"
+            or record.get("yield_parse_status") != "parsed"
+            or record.get("n_rate_unit_status")
+            not in {"canonical_reviewed", "converted_reviewed"}
+            or record.get("n_rate_canonical_unit") != CANONICAL_N_RATE_UNIT
+            or not isinstance(record.get("n_rate_unit_review_id"), str)
+            or not str(record["n_rate_unit_review_id"]).strip()
+            or record.get("yield_unit_status")
+            not in {"consistent", "kg_converted", "t_provided"}
+            or record.get("yield_canonical_unit") != CANONICAL_YIELD_UNIT
             or n_rate is None
             or n_rate <= 0.0
             or yield_t_ha is None
