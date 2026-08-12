@@ -721,6 +721,8 @@ def _normalize_hypotheses(
                 "analysis_family",
                 "engine",
                 "multiplicity_family_id",
+                "model_specification",
+                "alpha",
             )
             missing = [
                 name
@@ -738,15 +740,35 @@ def _normalize_hypotheses(
             if not isinstance(contrast, Mapping):
                 raise ValueError("Prespecified hypothesis contrast_specification must be a mapping")
             hypothesis_support = raw.get("support_policy", {})
+            model_specification = raw.get("model_specification", {})
             factor_representations = raw.get("factor_representations", {})
+            first_stage_uncertainty_policy = raw.get(
+                "first_stage_uncertainty_policy",
+                {},
+            )
             if not isinstance(hypothesis_support, Mapping):
                 raise ValueError("Prespecified hypothesis support_policy must be a mapping")
+            if not isinstance(model_specification, Mapping) or not model_specification:
+                raise ValueError(
+                    "Prespecified hypothesis model_specification must be a nonempty mapping"
+                )
+            alpha = raw.get("alpha")
+            if (
+                isinstance(alpha, bool)
+                or not isinstance(alpha, (int, float))
+                or not 0.0 < float(alpha) <= 1.0
+            ):
+                raise ValueError("Prespecified hypothesis alpha must be in (0, 1]")
             if not isinstance(factor_representations, Mapping) or any(
                 not isinstance(value, Mapping)
                 for value in factor_representations.values()
             ):
                 raise ValueError(
                     "Prespecified hypothesis factor_representations must map factors to mappings"
+                )
+            if not isinstance(first_stage_uncertainty_policy, Mapping):
+                raise ValueError(
+                    "Prespecified hypothesis first_stage_uncertainty_policy must be a mapping"
                 )
             hypothesis = PrespecifiedHypothesis(
                 specification_id=str(
@@ -761,6 +783,8 @@ def _normalize_hypotheses(
                 analysis_family=str(raw["analysis_family"]),
                 engine=str(raw["engine"]),
                 multiplicity_family_id=str(raw["multiplicity_family_id"]),
+                model_specification=_json_data(model_specification),
+                decision_alpha=float(alpha),
                 grouping=grouping,
                 support_rule_id=(
                     str(raw["support_rule_id"])
@@ -772,6 +796,9 @@ def _normalize_hypotheses(
                     str(name): _json_data(value)
                     for name, value in factor_representations.items()
                 },
+                first_stage_uncertainty_policy=_json_data(
+                    first_stage_uncertainty_policy
+                ),
             )
         else:
             raise ValueError("Prespecified hypotheses must be mappings or PrespecifiedHypothesis values")
@@ -800,6 +827,15 @@ def _normalize_hypotheses(
             raise ValueError(
                 "Prespecified hypothesis factor representations must belong to declared factors"
             )
+        if not hypothesis.model_specification:
+            raise ValueError(
+                "Prespecified hypothesis model_specification must be predeclared"
+            )
+        if (
+            hypothesis.decision_alpha is None
+            or not 0.0 < float(hypothesis.decision_alpha) <= 1.0
+        ):
+            raise ValueError("Prespecified hypothesis alpha must be in (0, 1]")
         if hypothesis.support_policy and not hypothesis.support_rule_id:
             raise ValueError(
                 "Prespecified hypothesis support_policy requires support_rule_id"
@@ -807,6 +843,11 @@ def _normalize_hypotheses(
         try:
             json.dumps(_json_data(hypothesis.contrast_specification), allow_nan=False, sort_keys=True)
             json.dumps(_json_data(hypothesis.support_policy), allow_nan=False, sort_keys=True)
+            json.dumps(
+                _json_data(hypothesis.model_specification),
+                allow_nan=False,
+                sort_keys=True,
+            )
             json.dumps(
                 _json_data(hypothesis.factor_representations),
                 allow_nan=False,
@@ -848,6 +889,13 @@ def _multiplicity_family_registry(
                 for member in members
             )
         )
+        alphas = {member.decision_alpha for member in members}
+        if None in alphas or len(alphas) != 1:
+            raise ValueError(
+                f"Multiplicity family {family_id!r} requires one shared predeclared alpha"
+            )
+        family_alpha = next(iter(alphas))
+        assert family_alpha is not None
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError(f"Multiplicity family {family_id!r} contains duplicate candidates")
         if len(specification_ids) != len(set(specification_ids)):
@@ -861,6 +909,7 @@ def _multiplicity_family_registry(
                 candidate_ids=candidate_ids,
                 hypothesis_ids=hypothesis_ids,
                 specification_ids=specification_ids,
+                alpha=float(family_alpha),
             )
         )
     return tuple(families)
@@ -896,6 +945,11 @@ def build_analysis_registry(
             raise ValueError(f"Analysis family has no primary engine assignment: {family}")
         if engine not in {"python", "r"}:
             raise ValueError(f"Analysis family has unknown engine assignment: {family}={engine}")
+        if family in INFERENTIAL_ANALYSIS_FAMILIES and engine != "r":
+            raise ValueError(
+                "Inferential analysis families require the R engine until a shared "
+                f"raw-test multiplicity contract is implemented: {family}={engine}"
+            )
     outcomes = tuple(curve_outcomes)
     if not outcomes or any(not isinstance(outcome, str) or not outcome for outcome in outcomes):
         raise ValueError("Curve outcomes must be a nonempty sequence of names")
@@ -934,6 +988,14 @@ def build_analysis_registry(
                 raise ValueError(f"Prespecified hypothesis refers to unconfigured analysis family: {hypothesis.hypothesis_id}")
             if hypothesis.engine != engine_assignments[hypothesis.analysis_family]:
                 raise ValueError(f"Prespecified hypothesis engine conflicts with primary ownership: {hypothesis.hypothesis_id}")
+            if (
+                hypothesis.analysis_family in _INTERACTION_ORDER_FAMILIES
+                and len(hypothesis.factor_names) not in orders
+            ):
+                raise ValueError(
+                    "Prespecified hypothesis exceeds configured interaction orders: "
+                    f"{hypothesis.hypothesis_id}"
+                )
             unknown_hypothesis_factors = set(hypothesis.factor_names) - set(known_factors)
             if unknown_hypothesis_factors:
                 raise ValueError(f"Prespecified hypothesis refers to unknown factor(s): {hypothesis.hypothesis_id}")
