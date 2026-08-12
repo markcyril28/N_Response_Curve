@@ -1646,6 +1646,30 @@ def curate_ingestion(
     return CurationResult(records=records, parent_row_uids=parent_row_uids)
 
 
+def _restricted_role_canonical_fields(record: Mapping[str, Any]) -> frozenset[str]:
+    """Name the canonical fields this record's own source map calls restricted.
+
+    The `SRC-08` automated disclosure control cannot rely on the restricted policy's
+    self-declared field lists alone: a column omitted from all three lists is invisible
+    to them. Each curated record carries its reviewed column dispositions, so the
+    restricted role travels with the row and is available wherever a projection is built.
+    """
+
+    dispositions = record.get("column_dispositions")
+    if not isinstance(dispositions, (tuple, list)):
+        return frozenset()
+    fields: set[str] = set()
+    for disposition in dispositions:
+        if not isinstance(disposition, Mapping):
+            continue
+        if disposition.get("role") != "restricted":
+            continue
+        canonical_field = disposition.get("canonical_field")
+        if isinstance(canonical_field, str) and canonical_field.strip():
+            fields.add(canonical_field.strip())
+    return frozenset(fields)
+
+
 def _project_public_records(
     records: Iterable[Mapping[str, Any]],
     *,
