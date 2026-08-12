@@ -62,7 +62,9 @@ class DuplicateRuleSet:
     probable_key_fields: tuple[str, ...]
     probable_numeric_tolerances: Mapping[str, float]
     casefold_fields: tuple[str, ...] = ()
+    source_names: tuple[str, ...] = ()
     probable_cross_source_only: bool = True
+    scope_kind: str = "source_local"
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,7 @@ class RepeatAdjudication:
     reviewed_on: str
     rationale: str
     review_id: str
+    management_split_assignments: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +170,17 @@ def _validate_duplicate_rules(rules: DuplicateRuleSet) -> None:
         set(rules.exact_key_fields) | set(rules.probable_key_fields)
     ):
         raise ValueError("Case-fold fields must belong to an exact or probable key")
+    if rules.scope_kind not in {"source_local", "cross_source"}:
+        raise ValueError("Duplicate rule scope_kind is invalid")
+    if rules.scope_kind == "cross_source":
+        if len(set(rules.source_names)) < 2:
+            raise ValueError(
+                "Cross-source duplicate rules require at least two source names"
+            )
+        if not rules.probable_cross_source_only:
+            raise ValueError(
+                "Cross-source duplicate rules must prohibit within-source probable matches"
+            )
 
 
 def _raw_context_value(record: Mapping[str, Any], dimension: str) -> str | None:
