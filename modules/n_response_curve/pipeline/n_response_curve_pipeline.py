@@ -617,7 +617,12 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
             config,
             source_data_policy=source_data_policy,
         )
-        _enforce_phase_two_qc_gate(config, phase_two)
+        _enforce_phase_two_qc_gate(
+            config,
+            phase_two,
+            review_gate_policy=policy_snapshot.review_gate_policy,
+        )
+        _enforce_literature_verification_gate(config, phase_two)
     run_log.debug(
         "phase_2_summary",
         canonical_rows=len(phase_two.curation.records),
