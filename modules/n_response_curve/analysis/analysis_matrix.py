@@ -597,6 +597,11 @@ def _candidate(
         curve_outcome=outcome,
         analysis_family=analysis_family,
         support_policy=effective_support_policy,
+        first_stage_uncertainty_policy=(
+            hypothesis.first_stage_uncertainty_policy
+            if hypothesis is not None
+            else {}
+        ),
     )
     specification = {
         "analysis_family": analysis_family,
@@ -615,6 +620,19 @@ def _candidate(
         ),
         "multiplicity_family_id": hypothesis.multiplicity_family_id if hypothesis is not None else None,
         "grouping": hypothesis.grouping if hypothesis is not None else (),
+        "model_specification": (
+            _json_data(hypothesis.model_specification)
+            if hypothesis is not None
+            else {}
+        ),
+        "decision_alpha": (
+            hypothesis.decision_alpha if hypothesis is not None else None
+        ),
+        "first_stage_uncertainty_policy": (
+            _json_data(hypothesis.first_stage_uncertainty_policy)
+            if hypothesis is not None
+            else {}
+        ),
         "support_rule_id": hypothesis.support_rule_id if hypothesis is not None else None,
         "factor_representations": (
             {
@@ -667,6 +685,19 @@ def _candidate(
                 name: _json_data(representation)
                 for name, representation in hypothesis.factor_representations.items()
             }
+            if hypothesis is not None
+            else {}
+        ),
+        model_specification=(
+            _json_data(hypothesis.model_specification)
+            if hypothesis is not None
+            else {}
+        ),
+        decision_alpha=(
+            hypothesis.decision_alpha if hypothesis is not None else None
+        ),
+        first_stage_uncertainty_policy=(
+            _json_data(hypothesis.first_stage_uncertainty_policy)
             if hypothesis is not None
             else {}
         ),
