@@ -112,7 +112,15 @@ nrc_run_mixed_models <- function(stage) {
   if (!identical(specification$engine, "r")) {
     return(nrc_failed_result("ENGINE_ASSIGNMENT_MISMATCH", "R stage received a non-R specification"))
   }
-  model_formula <- nrc_model_formula(specification, stage$data)
+  represented <- tryCatch(
+    nrc_apply_factor_representations(stage$data, specification),
+    error = function(error) error
+  )
+  if (inherits(represented, "error")) {
+    return(nrc_skip_result(conditionMessage(represented)))
+  }
+  analysis_data <- represented$data
+  model_formula <- nrc_model_formula(specification, analysis_data)
   if (is.null(model_formula)) {
     return(nrc_skip_result("MODEL_SPECIFICATION_REQUIRED"))
   }
