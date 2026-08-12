@@ -244,6 +244,18 @@ def _reviewed_series_arm_discriminator(
 ) -> tuple[str, ...]:
     source_arm_id = str(record.get("source_arm_id") or "").strip()
     source_arm_role = str(record.get("source_arm_role") or "").strip()
+    comparability_group = str(
+        record.get("source_arm_comparability_group_id") or ""
+    ).strip()
+    comparability_review = str(
+        record.get("source_arm_comparability_review_id") or ""
+    ).strip()
+    if comparability_group and comparability_review:
+        return (
+            "reviewed_source_arm_group",
+            comparability_review,
+            comparability_group,
+        )
     if source_arm_id and source_arm_role != "canonical_source_row":
         return ("source_arm", source_arm_id)
     if (
