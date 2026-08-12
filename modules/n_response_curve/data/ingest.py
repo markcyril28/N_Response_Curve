@@ -22,7 +22,13 @@ from .provenance import (
 )
 
 
-SUPPORTED_SHAPE_ADAPTERS = frozenset({"core-trial-csv-v1", "fixture-csv-v1"})
+SUPPORTED_SHAPE_ADAPTERS = frozenset(
+    {
+        "core-trial-csv-v1",
+        "fixture-csv-v1",
+        "combined-nopt-rcm-csv-v1",
+    }
+)
 KNOWN_REPRESENTATION_BASES = frozenset(
     {
         "observation_level",
