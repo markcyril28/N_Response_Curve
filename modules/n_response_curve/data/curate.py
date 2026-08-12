@@ -600,7 +600,11 @@ def validate_reviewed_curation_controls(
     *,
     source_maps: Mapping[str, ReviewedSourceMap],
     category_lookups: Mapping[str, ReviewedLookupTable],
+    source_category_lookups: Mapping[
+        str, Mapping[str, ReviewedLookupTable]
+    ] | None = None,
     required_lookup_fields: Iterable[str] = REQUIRED_REVIEWED_LOOKUP_FIELDS,
+    required_series_identity_dimensions: Iterable[str] = (),
 ) -> None:
     """Require complete reviewed source and normalization controls for an ingestion."""
 
@@ -620,23 +624,54 @@ def validate_reviewed_curation_controls(
         )
 
     normalized_required: list[str] = []
-    for field in required_lookup_fields:
-        if not isinstance(field, str) or not field.strip():
+    for required_field in required_lookup_fields:
+        if not isinstance(required_field, str) or not required_field.strip():
             raise ValueError("Required reviewed lookup fields must be nonempty strings")
-        normalized_required.append(field.strip())
+        normalized_required.append(required_field.strip())
     if len(normalized_required) != len(set(normalized_required)):
         raise ValueError("Required reviewed lookup fields must be unique")
 
-    missing_lookups = set(normalized_required) - set(category_lookups)
-    if missing_lookups:
+    configured_identity_dimensions = {
+        str(dimension).strip()
+        for dimension in required_series_identity_dimensions
+        if str(dimension).strip()
+    }
+    effective_identity_dimensions = set(configured_identity_dimensions)
+    if configured_identity_dimensions:
+        effective_identity_dimensions.update(_MANDATORY_SERIES_IDENTITY_DIMENSIONS)
+
+    scoped_lookups = source_category_lookups or {}
+    unknown_lookup_sources = set(scoped_lookups) - expected_sources
+    if unknown_lookup_sources:
         raise ValueError(
-            "Required reviewed category lookup(s) are missing: "
-            + ", ".join(sorted(missing_lookups))
+            "Source-specific category lookups reference source(s) absent from ingestion: "
+            + ", ".join(sorted(unknown_lookup_sources))
         )
-    for field, lookup in category_lookups.items():
-        if not isinstance(field, str) or not field.strip():
-            raise ValueError("Reviewed category lookup field names must be nonempty")
-        validate_reviewed_lookup_table(lookup)
+    required_identity_lookup_fields = {
+        lookup_field
+        for dimension in effective_identity_dimensions
+        if (
+            lookup_field := _SERIES_IDENTITY_LOOKUP_FIELDS.get(
+                str(dimension).strip()
+            )
+        )
+    }
+    for source_name in source_names:
+        effective_lookups = dict(category_lookups)
+        effective_lookups.update(scoped_lookups.get(source_name, {}))
+        missing_lookups = (
+            set(normalized_required) | required_identity_lookup_fields
+        ) - set(effective_lookups)
+        if missing_lookups:
+            raise ValueError(
+                "Required reviewed category lookup(s) are missing for "
+                f"source {source_name}: "
+                + ", ".join(sorted(missing_lookups))
+            )
+        for lookup_field, lookup in effective_lookups.items():
+            if not isinstance(lookup_field, str) or not lookup_field.strip():
+                raise ValueError("Reviewed category lookup field names must be nonempty")
+            validate_reviewed_lookup_table(lookup)
 
     treatment_lookup = category_lookups.get("treatment_class")
     if "treatment_class" in normalized_required:
