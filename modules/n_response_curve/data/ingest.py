@@ -561,12 +561,15 @@ def ingest_configured_sources(
 
 
 __all__ = [
+    "BUILTIN_ADAPTER_SPECS",
+    "COMBINED_NOPT_RCM_ADAPTER_SPEC",
     "IngestedSource",
     "IngestionResult",
     "RawColumn",
     "RawRow",
     "KNOWN_REPRESENTATION_BASES",
     "SourceAdapterSpec",
+    "WorkbookCsvReconciliation",
     "SUPPORTED_SHAPE_ADAPTERS",
     "ingest_configured_sources",
     "ingest_csv",
