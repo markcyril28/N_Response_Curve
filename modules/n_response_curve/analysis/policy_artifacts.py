@@ -1486,23 +1486,11 @@ def load_hypothesis_snapshot(
                             specification["dataset_version_id"],
                             where=f"{sensitivity_where}.dataset_version_id",
                         ),
-                        "source_view": _nonempty_text(
-                            specification["source_view"],
-                            where=f"{sensitivity_where}.source_view",
-                        ),
-                        "analysis_family": _nonempty_text(
-                            specification["analysis_family"],
-                            where=f"{sensitivity_where}.analysis_family",
-                        ),
-                        "factor_names": _string_tuple(
-                            specification["factor_names"],
-                            where=f"{sensitivity_where}.factor_names",
-                            allow_empty=status == "disabled",
-                        ),
-                        "grouping": _string_tuple(
-                            specification["grouping"],
-                            where=f"{sensitivity_where}.grouping",
-                        ),
+                        "source_view": sensitivity_source_view,
+                        "analysis_family": sensitivity_analysis_family,
+                        "factor_names": sensitivity_factor_names,
+                        "grouping": sensitivity_grouping,
+                        "model_specification": sensitivity_model_specification,
                         "support_rule_id": _nonempty_text(
                             specification["support_rule_id"],
                             where=f"{sensitivity_where}.support_rule_id",
@@ -1518,6 +1506,27 @@ def load_hypothesis_snapshot(
             raise PolicyArtifactError(
                 f"{where}.sensitivity_specifications must exactly cover sensitivities"
             )
+        if status == "enabled" and any(
+            str(specification["dataset_version_id"]) == "D12_no_numeric_n_inventory"
+            for specification in sensitivity_specifications
+        ):
+            raise PolicyArtifactError(
+                f"{where} ANA-01 D12_no_numeric_n_inventory is inventory-only and "
+                "cannot be an enabled analysis sensitivity"
+            )
+        if status == "enabled" and evidence_role == "primary":
+            has_required_d01_sensitivity = any(
+                str(specification["sensitivity_id"])
+                == "D01_strict_primary_zero_n"
+                and str(specification["dataset_version_id"])
+                == "D01_strict_primary_zero_n"
+                for specification in sensitivity_specifications
+            )
+            if not has_required_d01_sensitivity:
+                raise PolicyArtifactError(
+                    f"{where} ANA-01 primary evidence requires the "
+                    "D01_strict_primary_zero_n dataset sensitivity"
+                )
         try:
             claim_policy = validate_claim_policy(
                 record.get("claim_policy"),
@@ -1530,6 +1539,10 @@ def load_hypothesis_snapshot(
             record.get("dataset_version_id"),
             where=f"{where}.dataset_version_id",
         )
+        source_view = _nonempty_text(
+            record.get("source_view"),
+            where=f"{where}.source_view",
+        )
         if (
             status == "enabled"
             and evidence_role == "primary"
@@ -1538,6 +1551,30 @@ def load_hypothesis_snapshot(
             raise PolicyArtifactError(
                 f"{where} primary evidence must use D02_strict_primary_zero_optional"
             )
+        if status == "enabled" and source_view != "all_families_deduplicated":
+            raise PolicyArtifactError(
+                f"{where}.source_view must use the ANA-02 all_families_deduplicated "
+                "primary source pool; source-combination inference is deferred"
+            )
+        outcome = _nonempty_text(record.get("outcome"), where=f"{where}.outcome")
+        if status == "enabled" and outcome == "economic_optimum_n_kg_ha":
+            raise PolicyArtifactError(f"{where} ANA-03 keeps {outcome} disabled")
+        if (
+            status == "enabled"
+            and outcome in _ANA03_PRIMARY_OUTCOMES
+            and evidence_role != "primary"
+        ):
+            raise PolicyArtifactError(
+                f"{where} ANA-03 requires {outcome} to use the primary evidence role"
+            )
+        if (
+            status == "enabled"
+            and outcome in _ANA03_SECONDARY_OUTCOMES
+            and evidence_role != "secondary"
+        ):
+            raise PolicyArtifactError(
+                f"{where} ANA-03 requires {outcome} to use the secondary evidence role"
+            )
         hypotheses.append(
             EffectiveHypothesis(
                 hypothesis_id=hypothesis_id,
@@ -1545,32 +1582,20 @@ def load_hypothesis_snapshot(
                 disabled_reason=disabled_reason or None,
                 evidence_role=evidence_role,
                 dataset_version_id=dataset_version_id,
-                source_view=_nonempty_text(
-                    record.get("source_view"),
-                    where=f"{where}.source_view",
-                ),
+                source_view=source_view,
                 population=_nonempty_text(
                     record.get("population"),
                     where=f"{where}.population",
                 ),
-                outcome=_nonempty_text(record.get("outcome"), where=f"{where}.outcome"),
+                outcome=outcome,
                 estimand_id=_nonempty_text(
                     record.get("estimand_id"),
                     where=f"{where}.estimand_id",
                 ),
-                analysis_family=_nonempty_text(
-                    record.get("analysis_family"),
-                    where=f"{where}.analysis_family",
-                ),
-                factor_names=_string_tuple(
-                    record.get("factor_names"),
-                    where=f"{where}.factor_names",
-                    allow_empty=status == "disabled",
-                ),
-                grouping=_string_tuple(
-                    record.get("grouping"),
-                    where=f"{where}.grouping",
-                ),
+                analysis_family=analysis_family,
+                factor_names=factor_names,
+                grouping=grouping,
+                model_specification=model_specification,
                 support_rule_id=_nonempty_text(
                     record.get("support_rule_id"),
                     where=f"{where}.support_rule_id",
