@@ -3339,6 +3339,7 @@ def _logged_stage_writer(
 def _policy_stage_writer(
     policy_snapshot: RuntimePolicySnapshot,
     manifest: dict[str, Any],
+    release_approval: ReleaseApproval | None = None,
 ) -> Callable[[Path], tuple[Path, ...]]:
     def write_policy_snapshot(stage_root: Path) -> tuple[Path, ...]:
         written: list[Path] = []
@@ -3368,6 +3369,35 @@ def _policy_stage_writer(
                 "archived_artifact_path"
             ] = authority_destination.relative_to(stage_root).as_posix()
             written.append(authority_destination)
+        review_gate_policy = policy_snapshot.review_gate_policy
+        if review_gate_policy is not None:
+            review_destination = (
+                stage_root / "governance" / "review_gate_policy.json"
+            )
+            review_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(review_gate_policy.artifact_path, review_destination)
+            if sha256_file(review_destination) != review_gate_policy.artifact_sha256:
+                raise ReportingError(
+                    "Archived review-gate policy does not match its validated source"
+                )
+            manifest["runtime_policy"]["review_gate_policy"][
+                "archived_artifact_path"
+            ] = review_destination.relative_to(stage_root).as_posix()
+            written.append(review_destination)
+        if release_approval is not None:
+            release_destination = (
+                stage_root / "governance" / "release_approval.json"
+            )
+            release_destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(release_approval.artifact_path, release_destination)
+            if sha256_file(release_destination) != release_approval.artifact_sha256:
+                raise ReportingError(
+                    "Archived release approval does not match its validated source"
+                )
+            manifest["release_approval"]["archived_artifact_path"] = (
+                release_destination.relative_to(stage_root).as_posix()
+            )
+            written.append(release_destination)
         return tuple(written)
 
     return write_policy_snapshot
