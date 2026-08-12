@@ -1012,16 +1012,11 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
             artifact_path=None,
             artifact_sha256=None,
             authority_matrix=authority_matrix,
+            review_gate_policy=review_gate_policy,
         )
 
-    snapshot_path = (
-        config.paths["run_metadata_root"]
-        / "approvals"
-        / "policy_snapshots"
-        / "full.json"
-    ).resolve()
-    if not snapshot_path.is_relative_to(config.project_root):
-        raise ConfigError("Approved policy snapshot path escapes the project root")
+    if snapshot_path is None or authority_matrix is None:
+        raise ConfigError("Authoritative policy authority was not resolved")
     snapshot = _validate_approved_snapshot(
         config,
         path=snapshot_path,
@@ -1039,7 +1034,17 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
             "Approved runtime snapshot signer is not the accountable runtime-integrity "
             "party in the OPS-08 authority matrix"
         )
-    return replace(snapshot, authority_matrix=authority_matrix)
+    if _approval_calendar_date(
+        snapshot.approval["approved_at"]
+    ) < _approval_calendar_date(authority_matrix.effective_from):
+        raise ConfigError(
+            "Approved runtime snapshot predates the effective OPS-08 authority matrix"
+        )
+    return replace(
+        snapshot,
+        authority_matrix=authority_matrix,
+        review_gate_policy=review_gate_policy,
+    )
 
 
 def write_policy_snapshot_template(
@@ -1049,7 +1054,21 @@ def write_policy_snapshot_template(
     """Write an explicitly unapproved review template; never an approval record."""
 
     destination_path = Path(destination).resolve()
-    content = _policy_content(config)
+    review_gate_path = _review_gate_policy_path(config)
+    authority_matrix = None
+    if config.run_mode == "full" or review_gate_path.is_file():
+        authority_matrix = load_approval_authority_matrix(
+            _authority_matrix_path(config)
+        )
+    review_gate_policy = None
+    if review_gate_path.is_file():
+        if authority_matrix is None:
+            raise ConfigError("Review-gate authority matrix was not resolved")
+        review_gate_policy = load_review_gate_policy(
+            review_gate_path,
+            authority_matrix=authority_matrix,
+        )
+    content = _policy_content(config, review_gate_policy, authority_matrix)
     payload = {
         "schema_version": _POLICY_SNAPSHOT_SCHEMA_VERSION,
         "status": "REVIEW_REQUIRED",
@@ -1088,10 +1107,73 @@ def write_approval_authority_matrix_template(destination: str | Path) -> Path:
             }
             for gate in _AUTHORITY_GATES
         },
-        "role_combination_policy": "",
-        "substitution_policy": "",
-        "recusal_policy": "",
-        "dual_approval_policy": "",
+        **dict(_AUTHORITY_POLICY_VALUES),
+    }
+    destination_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination_path
+
+
+def write_review_gate_policy_template(destination: str | Path) -> Path:
+    """Write a non-approval template for the prospective disposition state map."""
+
+    destination_path = Path(destination).resolve()
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": _REVIEW_GATE_POLICY_SCHEMA_VERSION,
+        "status": "REVIEW_REQUIRED",
+        "policy_id": "",
+        "prospective_effective_version": "",
+        "effective_from": "",
+        "approved_by": "",
+        "approved_at": "",
+        "approval_source": "",
+        "fatal_issue_states": list(_FATAL_REVIEW_ISSUE_STATES),
+        "permitted_resolved_dispositions": [],
+        "source_accountability_policy": (
+            "retain_in_authoritative_source_accountability_ledger"
+        ),
+        "analytical_leakage_policy": "prohibit_analysis_use",
+    }
+    destination_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination_path
+
+
+def write_release_approval_template(
+    destination: str | Path,
+    *,
+    run_id: str,
+    release_target: str,
+    run_identity_sha256: str,
+    authority_matrix_sha256: str,
+) -> Path:
+    """Write a non-approval release record bound to a computed promotion request."""
+
+    for field, value in (
+        ("run identity SHA-256", run_identity_sha256),
+        ("authority matrix SHA-256", authority_matrix_sha256),
+    ):
+        if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ConfigError(f"Release approval template {field} is malformed")
+    destination_path = Path(destination).resolve()
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": _RELEASE_APPROVAL_SCHEMA_VERSION,
+        "status": "REVIEW_REQUIRED",
+        "record_id": "",
+        "scope": "release_promotion",
+        "run_id": run_id,
+        "release_target": release_target,
+        "run_identity_sha256": run_identity_sha256,
+        "authority_matrix_sha256": authority_matrix_sha256,
+        "approved_by": "",
+        "approved_at": "",
+        "approval_source": "",
     }
     destination_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
