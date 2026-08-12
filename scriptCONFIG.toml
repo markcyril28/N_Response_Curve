@@ -308,7 +308,7 @@ encoding = "cp1252"
 data_classification = "restricted"
 availability = "available"
 confirmation_status = "pending"
-shape_adapter_version = "unassigned"
+shape_adapter_version = "combined-nopt-rcm-csv-v1"
 
 [sources.ltcce]
 source_type = "ltcce"
