@@ -1612,19 +1612,13 @@ def _collect_review_issues(
             row.get("eligibility_reason_codes", row.get("reason_codes", ())),
             "PHASE_TWO_REVIEW_REQUIRED",
         )
-        issue_state = (
-            "unresolved"
-            if any("UNRESOLVED" in reason or "REVIEW" in reason for reason in reasons)
-            else "excluded_series"
-            if row.get("analytical_record_status") not in {None, "included"}
-            else "warning"
-        )
+        disposition = phase_two_review_disposition(row)
         add_issue(
-            stage="phase_2",
-            issue_scope="record",
+            stage=disposition["stage"],
+            issue_scope=disposition["issue_scope"],
             subject_id=str(row.get("record_uid") or "unidentified-record"),
-            issue_state=issue_state,
-            status=str(row.get("eligibility_tier") or "review"),
+            issue_state=disposition["issue_state"],
+            status=disposition["status"],
             reason_codes=reasons,
         )
 
