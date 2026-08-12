@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+CALLER_CWD="$PWD"
 CONFIG_FILE="$PROJECT_ROOT/scriptCONFIG.toml"
 MODULE_SCRIPT="$PROJECT_ROOT/modules/n_response_curve_pipeline.py"
 LOG_HELPER="$PROJECT_ROOT/modules/n_response_curve/logging/run_logging.sh"
@@ -18,6 +19,19 @@ preflight_die() {
   printf 'script.sh: %s\n' "$*" >&2
   exit 2
 }
+
+if (($#)); then
+  if [[ "$#" -eq 2 && "$1" == "--config" && -n "$2" ]]; then
+    CONFIG_FILE="$2"
+  elif [[ "$#" -eq 1 && "$1" == --config=* && -n "${1#--config=}" ]]; then
+    CONFIG_FILE="${1#--config=}"
+  else
+    preflight_die "supported arguments are: --config <path>"
+  fi
+  if [[ "$CONFIG_FILE" != /* ]]; then
+    CONFIG_FILE="$CALLER_CWD/$CONFIG_FILE"
+  fi
+fi
 
 [[ -f "$CONFIG_FILE" ]] || preflight_die "missing configuration: $CONFIG_FILE"
 [[ -f "$MODULE_SCRIPT" ]] || preflight_die "missing pipeline entry point: $MODULE_SCRIPT"
@@ -51,7 +65,7 @@ nrc_log INFO "launcher_started" \
 
 nrc_log INFO "launcher_handoff" "python_bin=$PYTHON_BIN"
 set +e
-"$PYTHON_BIN" "$MODULE_SCRIPT" --config "$CONFIG_FILE" "$@"
+"$PYTHON_BIN" "$MODULE_SCRIPT" --config "$CONFIG_FILE"
 status=$?
 set -e
 if [[ "$status" -eq 0 ]]; then
