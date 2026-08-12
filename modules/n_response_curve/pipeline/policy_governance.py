@@ -530,6 +530,18 @@ def load_approval_authority_matrix(path: str | Path) -> ApprovalAuthorityMatrix:
             "dual_approval_policy",
         )
     }
+    if policies != dict(_AUTHORITY_POLICY_VALUES):
+        raise ConfigError(
+            "Approval authority matrix governance policies do not match the "
+            "supported fail-closed policy values"
+        )
+    accountable_parties = [
+        assignment["accountable_party"] for assignment in gate_authorities.values()
+    ]
+    if len(accountable_parties) != len(set(accountable_parties)):
+        raise ConfigError(
+            "Approval authority matrix requires distinct accountable parties for every gate"
+        )
     return ApprovalAuthorityMatrix(
         matrix_id=matrix_id,
         effective_from=effective_from,
