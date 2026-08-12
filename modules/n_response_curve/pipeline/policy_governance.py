@@ -479,6 +479,14 @@ def load_approval_authority_matrix(path: str | Path) -> ApprovalAuthorityMatrix:
             field="matrix approval source",
         ),
     }
+    effective_date = _approval_calendar_date(effective_from)
+    approval_date = _approval_calendar_date(approval["approved_at"])
+    if approval_date > effective_date:
+        raise ConfigError(
+            "Approval authority matrix cannot become effective before its approval date"
+        )
+    if effective_date > date.today():
+        raise ConfigError("Approval authority matrix is not yet effective")
     raw_gates = payload["gate_authorities"]
     if not isinstance(raw_gates, Mapping) or set(raw_gates) != set(_AUTHORITY_GATES):
         raise ConfigError(
