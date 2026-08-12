@@ -243,14 +243,32 @@ nrc_apply_multiplicity <- function(rows, specification) {
   }
   method <- multiplicity$method
   family_id <- multiplicity$family_id
-  if (is.null(method)) {
-    method <- "BH"
+  expected_test_ids <- as.character(unlist(multiplicity$expected_test_ids))
+  decision_alpha <- multiplicity$alpha
+  if (is.null(method) || !length(expected_test_ids) || is.null(decision_alpha)) {
+    return(rows)
   }
-  indexes <- which(vapply(
-    rows,
-    function(row) !is.null(row$p.value) && is.finite(as.numeric(row$p.value)),
-    logical(1)
-  ))
+  rows <- lapply(rows, function(row) {
+    row$multiplicity_included <- FALSE
+    row
+  })
+  test_ids <- vapply(rows, function(row) {
+    if (!is.null(row$estimand_id) && nzchar(as.character(row$estimand_id))) {
+      return(as.character(row$estimand_id))
+    }
+    if (!is.null(row$term) && nzchar(as.character(row$term))) {
+      return(as.character(row$term))
+    }
+    ""
+  }, character(1))
+  indexes <- which(
+    test_ids %in% expected_test_ids &
+      vapply(
+        rows,
+        function(row) !is.null(row$p.value) && is.finite(as.numeric(row$p.value)),
+        logical(1)
+      )
+  )
   if (!length(indexes)) {
     return(rows)
   }
@@ -262,6 +280,26 @@ nrc_apply_multiplicity <- function(rows, specification) {
     rows[[index]]$multiplicity_method <- method
     rows[[index]]$multiplicity_family_id <- family_id
     rows[[index]]$multiplicity_status <- "pending_central_reconciliation"
+    rows[[index]]$multiplicity_included <- TRUE
+    rows[[index]]$multiplicity_test_id <- test_ids[[index]]
+    rows[[index]]$decision_alpha <- as.numeric(decision_alpha)
   }
   rows
+}
+
+nrc_multiplicity_reason <- function(rows, specification) {
+  multiplicity <- specification$multiplicity
+  if (is.null(multiplicity)) {
+    return(NULL)
+  }
+  expected <- sort(unique(as.character(unlist(multiplicity$expected_test_ids))))
+  observed <- sort(vapply(
+    Filter(function(row) isTRUE(row$multiplicity_included), rows),
+    function(row) as.character(row$multiplicity_test_id),
+    character(1)
+  ))
+  if (!length(expected) || !identical(observed, expected)) {
+    return("PREDECLARED_MULTIPLICITY_TEST_RESULT_MISMATCH")
+  }
+  NULL
 }
