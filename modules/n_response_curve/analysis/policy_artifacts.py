@@ -987,12 +987,84 @@ def load_support_table(
         if not isinstance(sensitivity_raw, list) or not sensitivity_raw:
             raise PolicyArtifactError(f"{where}.sensitivity_checks must be a nonempty array")
         sensitivities: list[Mapping[str, Any]] = []
+        sensitivity_fields: set[str] = set()
+        integer_threshold_fields = {
+            "minimum_independent_series",
+            "minimum_independent_studies",
+            "minimum_observations_per_cell",
+            "minimum_class_events_per_parameter",
+            "minimum_residual_df",
+            "maximum_factor_cardinality",
+            "maximum_loso_studies",
+        }
+        fraction_threshold_fields = {"maximum_missing_fraction"}
         for sensitivity_index, sensitivity in enumerate(sensitivity_raw):
             if not isinstance(sensitivity, Mapping) or not sensitivity:
                 raise PolicyArtifactError(
                     f"{where}.sensitivity_checks[{sensitivity_index}] must be a nonempty object"
                 )
-            sensitivities.append(MappingProxyType(dict(sensitivity)))
+            sensitivity_where = (
+                f"{where}.sensitivity_checks[{sensitivity_index}]"
+            )
+            sensitivity_contract = _exact_object(
+                sensitivity,
+                required_keys={"field", "values"},
+                where=sensitivity_where,
+            )
+            field = _nonempty_text(
+                sensitivity_contract["field"],
+                where=f"{sensitivity_where}.field",
+            )
+            if field not in integer_threshold_fields | fraction_threshold_fields:
+                raise PolicyArtifactError(
+                    f"{sensitivity_where}.field names an unsupported threshold field"
+                )
+            if field in sensitivity_fields:
+                raise PolicyArtifactError(
+                    f"{where}.sensitivity_checks must use unique threshold fields"
+                )
+            sensitivity_fields.add(field)
+            raw_values = sensitivity_contract["values"]
+            if not isinstance(raw_values, list) or not raw_values:
+                raise PolicyArtifactError(
+                    f"{sensitivity_where}.values must be a nonempty array"
+                )
+            if len(raw_values) > 8:
+                raise PolicyArtifactError(
+                    f"{sensitivity_where}.values must contain at most 8 thresholds"
+                )
+            values: list[int | float] = []
+            for value_index, value in enumerate(raw_values):
+                value_where = f"{sensitivity_where}.values[{value_index}]"
+                if field in integer_threshold_fields:
+                    values.append(_positive_integer(value, where=value_where))
+                else:
+                    values.append(_fraction(value, where=value_where))
+            if len(values) != len(set(values)):
+                raise PolicyArtifactError(
+                    f"{sensitivity_where}.values must contain unique thresholds"
+                )
+            sensitivities.append(
+                MappingProxyType(
+                    {
+                        "field": field,
+                        "values": tuple(values),
+                    }
+                )
+            )
+        factor_type = _nonempty_text(
+            record.get("factor_type"),
+            where=f"{where}.factor_type",
+        )
+        if factor_type not in {
+            "numeric",
+            "categorical",
+            "ordinal",
+            "boolean",
+            "mixed",
+            "none",
+        }:
+            raise PolicyArtifactError(f"{where}.factor_type is unsupported")
         rules.append(
             SupportRule(
                 rule_id=_nonempty_text(record.get("rule_id"), where=f"{where}.rule_id"),
