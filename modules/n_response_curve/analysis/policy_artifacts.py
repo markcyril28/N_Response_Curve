@@ -3115,7 +3115,7 @@ def load_analysis_policy_manifest(
             )
         resolved[name] = (component_path, component_sha256.lower())
 
-    return load_analysis_policy_bundle(
+    bundle = load_analysis_policy_bundle(
         support_path=resolved["support_table"][0],
         support_sha256=resolved["support_table"][1],
         representation_path=resolved["factor_representations"][0],
@@ -3128,6 +3128,7 @@ def load_analysis_policy_manifest(
         model_policy_sha256=resolved["curve_model_policy"][1],
         required_factor_engine_pairs=required_factor_engine_pairs,
     )
+    return replace(bundle, manifest_authority=manifest_authority)
 
 
 __all__ = [
