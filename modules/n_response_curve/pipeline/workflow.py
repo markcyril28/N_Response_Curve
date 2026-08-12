@@ -3661,6 +3661,27 @@ def release_phases_three_to_five(
         if phase_two.source_data_policy is not None
         else {"status": "not_configured"}
     )
+    literature_verification_rows = _literature_verification_rows(phase_two)
+    literature_verification_evidence = (
+        {
+            "status": literature_verification_rows[0]["status"],
+            "policy_version": literature_verification_rows[0]["policy_version"],
+            "policy_review_id": literature_verification_rows[0]["policy_review_id"],
+            "policy_sha256": literature_verification_rows[0]["policy_sha256"],
+            "round_number": literature_verification_rows[0]["round_number"],
+            "selected_record_count": literature_verification_rows[0][
+                "selected_record_count"
+            ],
+            "completed_result_count": literature_verification_rows[0][
+                "completed_result_count"
+            ],
+            "limitation_reasons": literature_verification_rows[0][
+                "limitation_reasons"
+            ],
+        }
+        if literature_verification_rows
+        else {"status": "not_configured"}
+    )
     identity_payload = {
         "config_sha256": sha256_file(config.config_path),
         "code_sha256": _code_fingerprint(),
@@ -3681,12 +3702,31 @@ def release_phases_three_to_five(
         "series_identity_dimensions": list(config.series_identity_dimensions),
         "source_artifact_sha256": dict(integrity.artifact_sha256),
         "source_data_policy": source_policy_evidence,
+        "literature_verification": literature_verification_evidence,
         "analysis_policy": analysis_policy_evidence,
         "effective_curve_model_policy_sha256": (
             phase_three.model_policy_sha256
         ),
     }
     run_identity_sha256 = stable_json_sha256(identity_payload)
+    release_approval: ReleaseApproval | None = None
+    if config.run_mode == "full":
+        if policy_snapshot.authority_matrix is None:
+            raise ConfigError(
+                "Authoritative release requires the approved OPS-08 authority matrix"
+            )
+        release_approval = load_release_approval(
+            (
+                config.paths["run_metadata_root"]
+                / "approvals"
+                / "release_records"
+                / f"{run_id}.json"
+            ),
+            authority_matrix=policy_snapshot.authority_matrix,
+            run_id=run_id,
+            release_target=target.relative_to(config.project_root).as_posix(),
+            run_identity_sha256=run_identity_sha256,
+        )
     source_registry = _source_registry(
         config,
         integrity.artifact_sha256,
