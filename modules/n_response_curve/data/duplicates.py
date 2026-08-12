@@ -1072,6 +1072,28 @@ def resolve_response_series(
         comparison_keys[key] = comparison_key
         candidate_groups.setdefault(key, []).append(record)
 
+    candidate_groups, comparison_keys, used_repeat_adjudications = (
+        _apply_reviewed_management_splits(
+            candidate_groups,
+            comparison_keys,
+            reviewed_repeats,
+        )
+    )
+
+    comparison_set_contexts: dict[str, set[tuple[object, ...]]] = {}
+    for key, group in candidate_groups.items():
+        for record in group:
+            comparison_set_uid = _reviewed_comparison_set_uid(record)
+            if comparison_set_uid:
+                comparison_set_contexts.setdefault(comparison_set_uid, set()).add(
+                    comparison_keys[key]
+                )
+    conflicting_comparison_sets = {
+        comparison_set_uid
+        for comparison_set_uid, contexts in comparison_set_contexts.items()
+        if len(contexts) > 1
+    }
+
     aggregates: list[dict[str, Any]] = []
     used_repeat_adjudications: set[tuple[str, ...]] = set()
     for key, group in sorted(
