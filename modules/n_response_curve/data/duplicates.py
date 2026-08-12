@@ -689,6 +689,102 @@ def _initialize_duplicate_statuses(
         )
 
 
+def _initialize_dispatched_duplicate_statuses(
+    records: list[dict[str, Any]],
+    *,
+    rules: DuplicateRuleSet | tuple[DuplicateRuleSet, ...] | None,
+    adjudications: Iterable[DuplicateAdjudication],
+    designated_reviewers: Iterable[str],
+) -> None:
+    if rules is None or isinstance(rules, DuplicateRuleSet):
+        _initialize_duplicate_statuses(
+            records,
+            rules=rules,
+            adjudications=adjudications,
+            designated_reviewers=designated_reviewers,
+        )
+        return
+
+    rule_sets = tuple(rules)
+    if not rule_sets:
+        _initialize_duplicate_statuses(
+            records,
+            rules=None,
+            adjudications=(),
+            designated_reviewers=designated_reviewers,
+        )
+        return
+
+    assigned_sources: dict[str, str] = {}
+    versions: set[str] = set()
+    for rule_set in rule_sets:
+        _validate_duplicate_rules(rule_set)
+        if rule_set.version in versions:
+            raise ValueError("Duplicate rule-set versions must be unique")
+        versions.add(rule_set.version)
+        if not rule_set.source_names:
+            raise ValueError(
+                "Dispatched duplicate rule sets require explicit source_names"
+            )
+        if rule_set.scope_kind == "cross_source":
+            continue
+        for source_name in rule_set.source_names:
+            normalized = _nonempty(source_name, label="Duplicate rule source name")
+            if normalized in assigned_sources:
+                raise ValueError("Duplicate rule source scopes overlap")
+            assigned_sources[normalized] = rule_set.version
+
+    local_rule_sets = tuple(
+        rule_set for rule_set in rule_sets if rule_set.scope_kind == "source_local"
+    )
+    cross_source_rule_sets = tuple(
+        rule_set for rule_set in rule_sets if rule_set.scope_kind == "cross_source"
+    )
+    records_by_version: dict[str, list[dict[str, Any]]] = {
+        rule_set.version: [] for rule_set in local_rule_sets
+    }
+    for record in records:
+        source_name = str(record.get("source_name") or "").strip()
+        version = assigned_sources.get(source_name)
+        if version is None:
+            raise ValueError(
+                "Every record source must have exactly one dispatched duplicate rule set"
+            )
+        records_by_version[version].append(record)
+
+    all_adjudications = tuple(adjudications)
+    reviewers = tuple(designated_reviewers)
+    for rule_set in local_rule_sets:
+        _initialize_duplicate_statuses(
+            records_by_version[rule_set.version],
+            rules=rule_set,
+            adjudications=tuple(
+                adjudication
+                for adjudication in all_adjudications
+                if adjudication.rules_version == rule_set.version
+            ),
+            designated_reviewers=reviewers,
+        )
+    for rule_set in cross_source_rule_sets:
+        source_scope = set(rule_set.source_names)
+        scoped_records = [
+            record
+            for record in records
+            if str(record.get("source_name") or "").strip() in source_scope
+        ]
+        _initialize_duplicate_statuses(
+            scoped_records,
+            rules=rule_set,
+            adjudications=tuple(
+                adjudication
+                for adjudication in all_adjudications
+                if adjudication.rules_version == rule_set.version
+            ),
+            designated_reviewers=reviewers,
+            reset_status=False,
+        )
+
+
 def _validated_repeat_adjudications(
     adjudications: Iterable[RepeatAdjudication],
     *,
