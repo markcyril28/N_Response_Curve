@@ -1221,9 +1221,6 @@ def _curate_source(
     records: list[dict[str, Any]] = []
     previous_source_row_number = 1
     source_arms = _source_arms(effective_map)
-    recommendation_context_verified = {
-        arm.role for arm in source_arms
-    }.issuperset({"management_comparison", "response_candidate"})
 
     for raw_row in source.rows:
         if any(
