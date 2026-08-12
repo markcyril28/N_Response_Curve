@@ -444,10 +444,28 @@ def _enforce_phase_two_qc_gate(
 
     if config.run_mode not in {"validate", "full"}:
         return
-    review_rows = phase_two.qc.review_rows
+    review_rows = tuple(phase_two.qc.review_rows)
     if not review_rows:
         return
-    affected_uids = sorted(str(row.get("record_uid", "unresolved")) for row in review_rows)
+    if review_gate_policy is None:
+        blocking_rows = review_rows
+    else:
+        analysis_uids = {
+            str(row.get("record_uid"))
+            for row in phase_two.analysis_eligibility.ledger
+            if row.get("record_uid")
+        }
+        blocking_rows = tuple(
+            row
+            for row in review_rows
+            if not review_gate_policy.permits(phase_two_review_disposition(row))
+            or str(row.get("record_uid") or "") in analysis_uids
+        )
+    if not blocking_rows:
+        return
+    affected_uids = sorted(
+        str(row.get("record_uid", "unresolved")) for row in blocking_rows
+    )
     preview = ", ".join(affected_uids[:20])
     if len(affected_uids) > 20:
         preview += f", ... ({len(affected_uids) - 20} more)"
