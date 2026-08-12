@@ -9,13 +9,27 @@ test_that("supported continuous R formulas produce tidy model output", {
         analysis_family = "one_factor_inferential",
         engine = "r",
         support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 3L),
         model_kind = "lm",
         outcome_kind = "continuous",
         model_formula = "outcome ~ water_regime",
+        model_specification = list(
+          interval_method = "wald_95",
+          multiplicity_test_ids = list("water_regimerainfed")
+        ),
+        factor_representations = list(
+          water_regime = list(
+            data_type = "categorical",
+            reference_level = "irrigated",
+            approved_levels = list("irrigated", "rainfed")
+          )
+        ),
         multiplicity = list(
           method = "BH",
           family_id = "primary-yield-one-factor",
-          family_scope_complete = TRUE
+          family_scope_complete = TRUE,
+          alpha = 0.05,
+          expected_test_ids = list("water_regimerainfed")
         )
       )
     ),
@@ -34,7 +48,10 @@ test_that("supported continuous R formulas produce tidy model output", {
     "residual_summary", "influence", "contrast_coding"
   ) %in% names(result$metadata$diagnostics)))
   expect_identical(result$metadata$diagnostics$dropped_row_count, 0L)
-  p_rows <- Filter(function(row) !is.null(row$p.value), result$results)
+  p_rows <- Filter(
+    function(row) isTRUE(row$multiplicity_included),
+    result$results
+  )
   expect_true(all(vapply(p_rows, function(row) !is.null(row$p.value_raw), logical(1))))
   expect_true(all(vapply(p_rows, function(row) is.null(row$p.value_adjusted), logical(1))))
   expect_true(all(vapply(
@@ -47,6 +64,65 @@ test_that("supported continuous R formulas produce tidy model output", {
     function(row) identical(row$multiplicity_family_id, "primary-yield-one-factor"),
     logical(1)
   )))
+  by_term <- stats::setNames(result$results, vapply(
+    result$results,
+    function(row) row$term,
+    character(1)
+  ))
+  expect_false(by_term[["(Intercept)"]]$multiplicity_included)
+  expect_true(by_term[["water_regimerainfed"]]$multiplicity_included)
+  expect_identical(
+    by_term[["water_regimerainfed"]]$multiplicity_test_id,
+    "water_regimerainfed"
+  )
+  expect_identical(by_term[["water_regimerainfed"]]$decision_alpha, 0.05)
+  expect_identical(by_term[["water_regimerainfed"]]$interval_status, "available")
+  expect_true(all(c("conf.low", "conf.high") %in% names(by_term[["water_regimerainfed"]])))
+})
+
+test_that("reviewed categorical reference levels are applied before model fitting", {
+  stage <- list(
+    contract = list(
+      specification = list(
+        analysis_family = "one_factor_inferential",
+        engine = "r",
+        support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 3L),
+        model_kind = "lm",
+        outcome_kind = "continuous",
+        model_formula = "outcome ~ water_regime",
+        factor_representations = list(
+          water_regime = list(
+            data_type = "categorical",
+            reference_level = "irrigated",
+            approved_levels = list("irrigated", "rainfed")
+          )
+        )
+      )
+    ),
+    data = data.frame(
+      outcome = c(4.9, 5.1, 5.0, 6.1, 6.0, 6.2),
+      water_regime = rep(c("rainfed", "irrigated"), each = 3L)
+    )
+  )
+
+  result <- nrc_run_mixed_models(stage)
+
+  expect_identical(result$status, "completed")
+  expect_true("water_regimerainfed" %in% vapply(
+    result$results,
+    function(row) row$term,
+    character(1)
+  ))
+  expect_false("water_regimeirrigated" %in% vapply(
+    result$results,
+    function(row) row$term,
+    character(1)
+  ))
+  expect_identical(
+    result$metadata$factor_references$water_regime,
+    "irrigated"
+  )
 })
 
 test_that("variance-aware two-stage specifications consume positive first-stage weights", {
@@ -56,6 +132,7 @@ test_that("variance-aware two-stage specifications consume positive first-stage 
         analysis_family = "one_factor_inferential",
         engine = "r",
         support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 3L),
         model_kind = "lm",
         outcome_kind = "continuous",
         model_formula = "outcome ~ water_regime",
@@ -90,6 +167,7 @@ test_that("supported multiclass outcomes use an explicit multinomial model", {
         analysis_family = "one_factor_inferential",
         engine = "r",
         support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 3L),
         model_kind = "multinom",
         outcome_kind = "categorical",
         model_formula = "outcome ~ water_regime"
@@ -116,4 +194,32 @@ test_that("missing formulas remain explicit skips", {
 
   expect_identical(result$status, "skipped")
   expect_identical(result$results[[1L]]$reason_codes[[1L]], "MODEL_SPECIFICATION_REQUIRED")
+})
+
+test_that("the reviewed residual-df threshold controls R model dispatch", {
+  stage <- list(
+    contract = list(
+      specification = list(
+        analysis_family = "one_factor_inferential",
+        engine = "r",
+        support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 5L),
+        model_kind = "lm",
+        outcome_kind = "continuous",
+        model_formula = "outcome ~ water_regime"
+      )
+    ),
+    data = data.frame(
+      outcome = c(5, 6, 7, 8, 9, 10),
+      water_regime = rep(c("rainfed", "irrigated"), each = 3L)
+    )
+  )
+
+  result <- nrc_run_mixed_models(stage)
+
+  expect_identical(result$status, "skipped")
+  expect_identical(
+    result$results[[1L]]$reason_codes[[1L]],
+    "INSUFFICIENT_RESIDUAL_INFORMATION"
+  )
 })
