@@ -673,27 +673,27 @@ def validate_reviewed_curation_controls(
                 raise ValueError("Reviewed category lookup field names must be nonempty")
             validate_reviewed_lookup_table(lookup)
 
-    treatment_lookup = category_lookups.get("treatment_class")
-    if "treatment_class" in normalized_required:
-        if treatment_lookup is None:
-            raise ValueError("Required reviewed treatment lookup is missing")
-        treatment_classes = set(treatment_lookup.aliases)
-        unknown_treatment_classes = (
-            treatment_classes - _KNOWN_TREATMENT_LOOKUP_CLASSES
-        )
-        if unknown_treatment_classes:
-            raise ValueError(
-                "Reviewed treatment lookup contains unsupported canonical class(es): "
-                + ", ".join(sorted(unknown_treatment_classes))
+        treatment_lookup = effective_lookups.get("treatment_class")
+        if "treatment_class" in normalized_required:
+            if treatment_lookup is None:
+                raise ValueError("Required reviewed treatment lookup is missing")
+            treatment_classes = set(treatment_lookup.aliases)
+            unknown_treatment_classes = (
+                treatment_classes - _KNOWN_TREATMENT_LOOKUP_CLASSES
             )
-        missing_treatment_classes = (
-            _REQUIRED_TREATMENT_LOOKUP_CLASSES - treatment_classes
-        )
-        if missing_treatment_classes:
-            raise ValueError(
-                "Reviewed treatment lookup is missing required canonical class(es): "
-                + ", ".join(sorted(missing_treatment_classes))
+            if unknown_treatment_classes:
+                raise ValueError(
+                    "Reviewed treatment lookup contains unsupported canonical class(es): "
+                    + ", ".join(sorted(unknown_treatment_classes))
+                )
+            missing_treatment_classes = (
+                _REQUIRED_TREATMENT_LOOKUP_CLASSES - treatment_classes
             )
+            if missing_treatment_classes:
+                raise ValueError(
+                    "Reviewed treatment lookup is missing required canonical class(es): "
+                    + ", ".join(sorted(missing_treatment_classes))
+                )
 
     for source in ingestion.sources:
         _validate_reviewed_source_map(source, source_maps[source.source_name])
