@@ -293,6 +293,17 @@ def _support_policy_values(
             "Support policy 'maximum_missing_fraction' must be numeric in [0, 1]"
         )
     normalized["maximum_missing_fraction"] = float(maximum_missing_fraction)
+    if "maximum_loso_studies" in policy:
+        maximum_loso_studies = policy["maximum_loso_studies"]
+        if (
+            isinstance(maximum_loso_studies, bool)
+            or not isinstance(maximum_loso_studies, int)
+            or maximum_loso_studies < 2
+        ):
+            raise ValueError(
+                "Support policy 'maximum_loso_studies' must be an integer >= 2"
+            )
+        normalized["maximum_loso_studies"] = maximum_loso_studies
     return normalized
 
 
