@@ -324,6 +324,7 @@ def _classify_candidate(
     else:
         sensitivity_failures = False
         sensitivity_binding_mismatch = False
+        sensitivity_direction_reversal = False
         for sensitivity_id in required_sensitivities:
             evidence = sensitivity_evidence[sensitivity_id]
             if not _evidence_binding_matches(
@@ -336,6 +337,13 @@ def _classify_candidate(
                 sensitivity_binding_mismatch = True
                 continue
             sensitivity_effect = _finite_number(evidence.get(effect_field))
+            if (
+                effect is not None
+                and sensitivity_effect is not None
+                and effect * sensitivity_effect < 0.0
+            ):
+                sensitivity_direction_reversal = True
+                sensitivity_failures = True
             if sensitivity_effect is None or not _meaningful(
                 sensitivity_effect,
                 direction=str(policy["meaningful_direction"]),
@@ -350,6 +358,8 @@ def _classify_candidate(
             reasons.append("SENSITIVITY_EVIDENCE_BINDING_MISMATCH")
         elif sensitivity_failures:
             row["sensitivity_stability_status"] = "not_supported"
+            if sensitivity_direction_reversal:
+                reasons.append("SENSITIVITY_DIRECTION_REVERSAL")
             reasons.append("SENSITIVITY_STABILITY_NOT_MET")
         else:
             row["sensitivity_stability_status"] = "supported"
