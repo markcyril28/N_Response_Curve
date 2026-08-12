@@ -3764,6 +3764,11 @@ def release_phases_three_to_five(
         "runtime_policy": policy_snapshot.manifest_payload(
             project_root=config.project_root
         ),
+        "release_approval": (
+            release_approval.manifest_payload(project_root=config.project_root)
+            if release_approval is not None
+            else {"status": "not_required_for_bounded_test_release"}
+        ),
         "output_profile": {
             "table_formats": list(config.output_formats),
             "figure_formats": list(config.figure_formats),
@@ -3804,6 +3809,7 @@ def release_phases_three_to_five(
             "artifact_sha256": dict(integrity.artifact_sha256),
         },
         "source_data_policy": source_policy_evidence,
+        "literature_verification": literature_verification_evidence,
         "source_registry": source_registry,
         "contextual_coverage": contextual_coverage,
         "canonical_rows": len(phase_two.curation.records),
