@@ -452,6 +452,7 @@ def _reasons_for_candidate(
     curve_outcome: str,
     analysis_family: str,
     support_policy: Mapping[str, int | float] | None,
+    first_stage_uncertainty_policy: Mapping[str, Any],
 ) -> tuple[str, tuple[str, ...], int, Mapping[str, int], Mapping[str, int]]:
     if version.status != "available":
         return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}, {}
