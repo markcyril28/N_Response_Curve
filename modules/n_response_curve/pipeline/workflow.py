@@ -1195,7 +1195,7 @@ def _reconcile_multiplicity_families(
         else "incomplete"
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "method": "BH",
         "status": overall_status,
         "family_count": len(families),
