@@ -3584,6 +3584,28 @@ def _strict_release_validator(
             raise ReportingError(
                 "Authoritative release is blocked because its complete review gate is missing, incomplete, failed, or not bound to this run"
             )
+        release_approval = manifest.get("release_approval")
+        authority_matrix = (
+            runtime_policy.get("approval_authority_matrix")
+            if isinstance(runtime_policy, Mapping)
+            else None
+        )
+        if (
+            not isinstance(release_approval, Mapping)
+            or release_approval.get("status") != "approved"
+            or release_approval.get("scope") != "release_promotion"
+            or release_approval.get("run_id") != manifest.get("run_id")
+            or release_approval.get("run_identity_sha256") != run_identity_sha256
+            or not isinstance(authority_matrix, Mapping)
+            or release_approval.get("authority_matrix_sha256")
+            != authority_matrix.get("artifact_sha256")
+            or not isinstance(release_approval.get("archived_artifact_path"), str)
+            or not release_approval.get("archived_artifact_path")
+        ):
+            raise ReportingError(
+                "Authoritative release is blocked because release-owner approval is "
+                "missing, stale, or not bound to this run and authority matrix"
+            )
 
     return validate_release
 
