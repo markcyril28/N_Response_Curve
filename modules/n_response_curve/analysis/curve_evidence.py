@@ -1924,6 +1924,162 @@ def _economic_optimum_rows(
     return tuple(rows)
 
 
+def _approved_observed_maximum_tie_policy(
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Return the approved observed-maximum tie policy, or None."""
+
+    raw = policy.get("observed_maximum_tie_policy")
+    if not isinstance(raw, Mapping):
+        return None
+    tolerance = finite_number(raw.get("yield_equivalence_tolerance_t_ha"))
+    authority = policy.get("scientific_policy_authority")
+    artifact_sha256 = (
+        authority.get("artifact_sha256") if isinstance(authority, Mapping) else None
+    )
+    if (
+        raw.get("review_status") != "approved"
+        or not isinstance(raw.get("policy_id"), str)
+        or not str(raw["policy_id"]).strip()
+        or tolerance is None
+        or tolerance < 0.0
+        or raw.get("tie_rule") not in {"retain_all_tied_rates", "lowest_tied_rate"}
+        or not isinstance(authority, Mapping)
+        or not isinstance(authority.get("approved_by"), str)
+        or not str(authority["approved_by"]).strip()
+        or not isinstance(authority.get("approved_on"), str)
+        or not str(authority["approved_on"]).strip()
+        or not isinstance(artifact_sha256, str)
+        or len(artifact_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in artifact_sha256)
+    ):
+        return None
+    return {**dict(raw), "yield_equivalence_tolerance_t_ha": tolerance}
+
+
+def _observed_maximum_rate(
+    complete: Sequence[tuple[float, float]],
+    observed_max: float,
+    policy: Mapping[str, Any],
+) -> tuple[float | None, str, str, tuple[float, ...]]:
+    """Report the N rate of the observed maximum without inventing a tie rule.
+
+    Deciding whether two yields tie needs an approved equivalence tolerance:
+    raw float equality would call agronomically indistinguishable values
+    distinct, and would fail the unsafe way by presenting a real tie as a unique
+    observed maximum. Collapsing a tie to one rate is likewise a policy choice
+    that no approved record currently makes, so absent that policy this returns
+    no single rate and instead carries every exactly-tied rate as evidence.
+    """
+
+    exact_rates = tuple(
+        sorted(
+            {
+                float(n_rate)
+                for n_rate, yield_value in complete
+                if yield_value == observed_max
+            }
+        )
+    )
+    tie_policy = _approved_observed_maximum_tie_policy(policy)
+    if tie_policy is None:
+        return (
+            None,
+            "none",
+            "unavailable_no_approved_yield_equivalence_tolerance",
+            exact_rates,
+        )
+    tolerance = float(tie_policy["yield_equivalence_tolerance_t_ha"])
+    equivalent_rates = tuple(
+        sorted(
+            {
+                float(n_rate)
+                for n_rate, yield_value in complete
+                if abs(yield_value - observed_max) <= tolerance
+            }
+        )
+    )
+    if len(equivalent_rates) == 1:
+        return (
+            equivalent_rates[0],
+            "single_observed_maximum",
+            "available_single_observed_maximum",
+            equivalent_rates,
+        )
+    if tie_policy["tie_rule"] == "lowest_tied_rate":
+        return (
+            equivalent_rates[0],
+            "tied_observed_maximum_lowest_rate",
+            "available_approved_tie_rule",
+            equivalent_rates,
+        )
+    return (
+        None,
+        "tied_observed_maximum_retained",
+        "unavailable_tied_rates_retained",
+        equivalent_rates,
+    )
+
+
+def _maximum_associated_rate(
+    attempt: ModelAttempt,
+) -> tuple[float | None, str, str]:
+    """Return the N rate a supported maximum sits at, with its labelled basis.
+
+    Only a supported finite maximum earns a rate here. An asymptotic curve has
+    no finite maximum, so under decided MOD-07 Option A its rate comes from the
+    separate `q`-of-asymptote reporting path, and only after MOD-08 support
+    passes. Until that policy is bound the rate stays unavailable rather than
+    borrowing the observed maximum or the domain edge, either of which would
+    silently answer a question the approved policy has not yet answered.
+    """
+
+    if attempt.optimum_status == "IDENTIFIABLE_INTERIOR_MAXIMUM":
+        return (
+            attempt.agronomic_optimum_n_kg_ha,
+            "finite_interior_maximum",
+            "available_supported_finite_maximum",
+        )
+    if attempt.optimum_status == "IDENTIFIABLE_PLATEAU_ONSET":
+        return (
+            attempt.plateau_onset_n_kg_ha,
+            "plateau_onset",
+            "available_supported_plateau_onset",
+        )
+    if attempt.maximum_reference_basis == "supported_attainable_asymptote":
+        # MOD-08 support passed; the finite rate itself is MOD-07's to supply.
+        return (
+            None,
+            "none",
+            "pending_mod07_asymptote_fraction_policy",
+        )
+    return (None, "none", "unavailable_no_supported_finite_maximum")
+
+
+def _attainable_yield(attempt: ModelAttempt) -> tuple[float | None, str, str]:
+    """Return attainable yield only from an already-supported maximum.
+
+    A fitted asymptote reaches this field solely through the MOD-08 promotion,
+    which requires the approved in-domain attainment, uncertainty, influence,
+    and credible-model concordance gates to have passed. Absent that promotion
+    the ceiling stays in `fitted_asymptote_yield_t_ha` as model-implied only.
+    """
+
+    if attempt.maximum_reference_basis == "supported_attainable_asymptote":
+        return (
+            attempt.supported_max_yield_t_ha,
+            "in_domain_fitted_attainment_threshold",
+            "available_supported_asymptote",
+        )
+    if attempt.finite_maximum_yield_t_ha is not None:
+        return (
+            attempt.finite_maximum_yield_t_ha,
+            "supported_finite_maximum",
+            "available_supported_finite_maximum",
+        )
+    return (None, "none", "unavailable_no_supported_maximum")
+
+
 def _curve_row(
     fit_rows: Sequence[Mapping[str, Any]],
     evidence_rows: Sequence[Mapping[str, Any]],
