@@ -250,6 +250,13 @@ def ingest_csv(
                 raise ConfigError(
                     f"Source header physical column count is {len(header)}, expected {expected_physical_columns}: {path}"
                 )
+            if (
+                expected_header_sha256 is not None
+                and stable_json_sha256(header) != expected_header_sha256
+            ):
+                raise ConfigError(
+                    f"Source header SHA-256 differs from the versioned adapter contract: {path}"
+                )
             for position, expected_header in (expected_headers or {}).items():
                 if not isinstance(position, int) or position < 1 or position > len(header):
                     raise ConfigError(f"Configured header position is outside source shape: {position}")
