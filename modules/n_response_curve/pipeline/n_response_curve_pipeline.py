@@ -23,7 +23,13 @@ from n_response_curve.data.cleaning import (
 from n_response_curve.data.curate import CurationResult, curate_ingestion
 from n_response_curve.data.duplicates import SeriesResolution, resolve_response_series
 from n_response_curve.data.eligibility import EligibilityResult, assign_eligibility
-from n_response_curve.data.ingest import IngestionResult, ingest_configured_sources
+from n_response_curve.data.ingest import (
+    BUILTIN_ADAPTER_SPECS,
+    IngestionResult,
+    SourceAdapterSpec,
+    WorkbookCsvReconciliation,
+    ingest_configured_sources,
+)
 from n_response_curve.data.policy_artifacts import (
     SourceDataPolicyBundle,
     SourceDataPolicyError,
