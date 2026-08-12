@@ -1,3 +1,7 @@
+nrc_emmeans_available <- function() {
+  requireNamespace("emmeans", quietly = TRUE)
+}
+
 nrc_run_marginal_contrasts <- function(stage) {
   specification <- stage$contract$specification
   contrast_specification <- specification$contrast_specification
@@ -15,7 +19,15 @@ nrc_run_marginal_contrasts <- function(stage) {
   if (is.null(adjustment)) {
     adjustment <- "BH"
   }
-  model_formula <- nrc_model_formula(specification, stage$data)
+  represented <- tryCatch(
+    nrc_apply_factor_representations(stage$data, specification),
+    error = function(error) error
+  )
+  if (inherits(represented, "error")) {
+    return(nrc_skip_result(conditionMessage(represented)))
+  }
+  analysis_data <- represented$data
+  model_formula <- nrc_model_formula(specification, analysis_data)
   if (is.null(model_formula)) {
     return(nrc_skip_result("MODEL_SPECIFICATION_REQUIRED"))
   }
@@ -30,19 +42,19 @@ nrc_run_marginal_contrasts <- function(stage) {
           !nzchar(treatment) || !nzchar(comparator) || identical(treatment, comparator)) {
       return(nrc_skip_result("PRESPECIFIED_MANAGEMENT_CONTRAST_REQUIRED"))
     }
-    observed_levels <- unique(as.character(stage$data[[factor_name]]))
+    observed_levels <- unique(as.character(analysis_data[[factor_name]]))
     if (!all(c(treatment, comparator) %in% observed_levels)) {
       return(nrc_skip_result("PRESPECIFIED_CONTRAST_LEVELS_UNAVAILABLE"))
     }
     if (isTRUE(contrast_specification$same_context_required)) {
       dependence_unit <- contrast_specification$dependence_unit
       if (is.null(dependence_unit) || !is.character(dependence_unit) ||
-            length(dependence_unit) != 1L || !dependence_unit %in% names(stage$data)) {
+            length(dependence_unit) != 1L || !dependence_unit %in% names(analysis_data)) {
         return(nrc_skip_result("VERIFIED_SAME_CONTEXT_ESTIMAND_REQUIRED"))
       }
       context_levels <- split(
-        as.character(stage$data[[factor_name]]),
-        as.character(stage$data[[dependence_unit]])
+        as.character(analysis_data[[factor_name]]),
+        as.character(analysis_data[[dependence_unit]])
       )
       if (!length(context_levels) || any(vapply(
         context_levels,
