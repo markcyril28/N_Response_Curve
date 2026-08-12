@@ -3228,6 +3228,22 @@ def _report_sections(
     target_counts = _field_counts(series_evidence_rows, "target_yield_status")
     management_status_counts = Counter(row.status for row in phase_four.management_system_proximity)
     management_target_counts = Counter(row.target_gap_status for row in phase_four.management_system_proximity)
+    efficiency_status_counts = _field_counts(
+        phase_three.evidence.efficiency_rows,
+        "status",
+    )
+    operating_point_status_counts = _field_counts(
+        phase_three.evidence.efficiency_operating_point_rows,
+        "status",
+    )
+    asymptote_support_status_counts = _field_counts(
+        phase_three.evidence.asymptote_support_rows,
+        "status",
+    )
+    asymptote_reporting_status_counts = _field_counts(
+        phase_three.evidence.asymptote_reporting_rows,
+        "status",
+    )
     unsupported_reasons = _unsupported_reason_counts(series_evidence_rows)
     baseline_metrics_enabled = (
         phase_three.model_policy.get("baseline_response_policy")
