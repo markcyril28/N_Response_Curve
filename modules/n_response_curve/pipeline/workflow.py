@@ -1726,6 +1726,7 @@ def _collect_review_issues(
 
 
 _REVIEW_GATE_SCHEMA_VERSION = "ops-03-review-gate-v1"
+_REVIEW_GATE_AMENDED_SCHEMA_VERSION = "ops-09-review-gate-v2"
 _REVIEW_GATE_POLICY_ID = "OPS-03-option-b"
 _REVIEW_GATE_EXPECTED_LEDGERS = (
     "phase_2_review",
@@ -1733,6 +1734,8 @@ _REVIEW_GATE_EXPECTED_LEDGERS = (
     "model_attempts",
     "runtime_warnings",
     "analysis_terminal_statuses",
+    "multiplicity_reconciliation",
+    "claim_classification",
 )
 
 
@@ -1757,9 +1760,12 @@ def _review_gate_allows_reuse(
         return False
     if tuple(observed_ledgers) != _REVIEW_GATE_EXPECTED_LEDGERS:
         return False
+    schema_version = gate.get("schema_version")
     if (
-        gate.get("schema_version") != _REVIEW_GATE_SCHEMA_VERSION
-        or gate.get("policy_id") != _REVIEW_GATE_POLICY_ID
+        schema_version
+        not in {_REVIEW_GATE_SCHEMA_VERSION, _REVIEW_GATE_AMENDED_SCHEMA_VERSION}
+        or not isinstance(gate.get("policy_id"), str)
+        or not gate.get("policy_id")
         or gate.get("mode") != mode
         or gate.get("run_identity_sha256") != run_identity_sha256
         or gate.get("policy_content_sha256") != policy_content_sha256
