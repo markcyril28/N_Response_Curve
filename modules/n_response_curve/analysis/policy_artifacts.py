@@ -1073,10 +1073,7 @@ def load_support_table(
                     record.get("analysis_family"),
                     where=f"{where}.analysis_family",
                 ),
-                factor_type=_nonempty_text(
-                    record.get("factor_type"),
-                    where=f"{where}.factor_type",
-                ),
+                factor_type=factor_type,
                 minimum_independent_series=_positive_integer(
                     record.get("minimum_independent_series"),
                     where=f"{where}.minimum_independent_series",
@@ -1104,6 +1101,10 @@ def load_support_table(
                 maximum_factor_cardinality=_positive_integer(
                     record.get("maximum_factor_cardinality"),
                     where=f"{where}.maximum_factor_cardinality",
+                ),
+                maximum_loso_studies=_positive_integer(
+                    record.get("maximum_loso_studies"),
+                    where=f"{where}.maximum_loso_studies",
                 ),
                 sensitivity_checks=tuple(sensitivities),
             )
@@ -1340,13 +1341,49 @@ def load_hypothesis_snapshot(
             raise PolicyArtifactError(
                 f"{where}.evidence_role must be primary, secondary, sensitivity, or exploratory"
             )
+        analysis_family = _nonempty_text(
+            record.get("analysis_family"),
+            where=f"{where}.analysis_family",
+        )
         engine = _nonempty_text(record.get("engine"), where=f"{where}.engine")
         if engine not in _ANALYSIS_ENGINES:
             raise PolicyArtifactError(f"{where}.engine must be python or r")
+        if (
+            status == "enabled"
+            and analysis_family in INFERENTIAL_ANALYSIS_FAMILIES
+            and engine != "r"
+        ):
+            raise PolicyArtifactError(
+                f"{where} enabled inferential hypotheses require the R engine until "
+                "a shared Python raw-test multiplicity contract is implemented"
+            )
         alpha = _fraction(
             record.get("alpha"),
             where=f"{where}.alpha",
             include_zero=False,
+        )
+        factor_names = _string_tuple(
+            record.get("factor_names"),
+            where=f"{where}.factor_names",
+            allow_empty=status == "disabled",
+        )
+        unapproved_factors = sorted(
+            set(factor_names) - _ANA_APPROVED_FACTOR_ROSTER
+        )
+        if status == "enabled" and unapproved_factors:
+            raise PolicyArtifactError(
+                f"{where}.factor_names contains factors outside the ANA-04 approved "
+                "roster: " + ", ".join(unapproved_factors)
+            )
+        grouping = _string_tuple(
+            record.get("grouping"),
+            where=f"{where}.grouping",
+        )
+        model_specification = _reviewed_model_specification(
+            record.get("model_specification"),
+            factor_names=factor_names,
+            required=status == "enabled",
+            where=f"{where}.model_specification",
         )
         sensitivities = _string_tuple(
             record.get("sensitivities"),
@@ -1374,6 +1411,7 @@ def load_hypothesis_snapshot(
                     "analysis_family",
                     "factor_names",
                     "grouping",
+                    "model_specification",
                     "support_rule_id",
                     "engine",
                 },
@@ -1386,6 +1424,56 @@ def load_hypothesis_snapshot(
             if sensitivity_engine not in _ANALYSIS_ENGINES:
                 raise PolicyArtifactError(
                     f"{sensitivity_where}.engine must be python or r"
+                )
+            sensitivity_analysis_family = _nonempty_text(
+                specification["analysis_family"],
+                where=f"{sensitivity_where}.analysis_family",
+            )
+            if (
+                status == "enabled"
+                and sensitivity_analysis_family in INFERENTIAL_ANALYSIS_FAMILIES
+                and sensitivity_engine != "r"
+            ):
+                raise PolicyArtifactError(
+                    f"{sensitivity_where} enabled inferential sensitivities require "
+                    "the R engine until a shared Python raw-test multiplicity contract "
+                    "is implemented"
+                )
+            sensitivity_factor_names = _string_tuple(
+                specification["factor_names"],
+                where=f"{sensitivity_where}.factor_names",
+                allow_empty=status == "disabled",
+            )
+            unapproved_sensitivity_factors = sorted(
+                set(sensitivity_factor_names) - _ANA_APPROVED_FACTOR_ROSTER
+            )
+            if status == "enabled" and unapproved_sensitivity_factors:
+                raise PolicyArtifactError(
+                    f"{sensitivity_where}.factor_names contains factors outside the "
+                    "ANA-04 approved roster: "
+                    + ", ".join(unapproved_sensitivity_factors)
+                )
+            sensitivity_grouping = _string_tuple(
+                specification["grouping"],
+                where=f"{sensitivity_where}.grouping",
+            )
+            sensitivity_model_specification = _reviewed_model_specification(
+                specification["model_specification"],
+                factor_names=sensitivity_factor_names,
+                required=status == "enabled",
+                where=f"{sensitivity_where}.model_specification",
+            )
+            sensitivity_source_view = _nonempty_text(
+                specification["source_view"],
+                where=f"{sensitivity_where}.source_view",
+            )
+            if (
+                status == "enabled"
+                and sensitivity_source_view != "all_families_deduplicated"
+            ):
+                raise PolicyArtifactError(
+                    f"{sensitivity_where}.source_view must use the ANA-02 "
+                    "all_families_deduplicated source pool"
                 )
             sensitivity_specifications.append(
                 MappingProxyType(
