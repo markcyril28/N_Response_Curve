@@ -85,7 +85,14 @@ def validate_numeric_rule_unit(
 
 @dataclass(frozen=True)
 class FinalCleaningRule:
-    """One pre-reviewed, source-specific final cleaning rule."""
+    """One pre-reviewed, source-specific final cleaning rule.
+
+    ``statistic``, ``threshold``, ``grouping_scope``, and ``minimum_group_size``
+    carry the decided `ELG-12` Option D distributional and influence thresholds.
+    They are required together for the two grouped rule types and prohibited
+    outright for the two row-local types, so a rule can never half-declare a
+    threshold whose evaluation basis is unstated.
+    """
 
     rule_id: str
     rule_type: str
@@ -99,6 +106,10 @@ class FinalCleaningRule:
     values: tuple[str, ...]
     action: str
     reason_code: str
+    statistic: str | None = None
+    threshold: float | None = None
+    grouping_scope: str | None = None
+    minimum_group_size: int | None = None
 
     def __post_init__(self) -> None:
         if not self.rule_id.strip() or not self.reason_code.strip() or not self.unit.strip():
@@ -111,6 +122,25 @@ class FinalCleaningRule:
             raise ValueError("A final cleaning rule must identify exactly one canonical field or raw position")
         if self.raw_position is not None and self.raw_position < 1:
             raise ValueError("Final cleaning raw positions are one-based positive integers")
+        if self.rule_type in _ROW_LOCAL_RULE_TYPES:
+            self._validate_row_local_rule()
+        else:
+            self._validate_grouped_rule()
+
+    def _validate_row_local_rule(self) -> None:
+        if any(
+            value is not None
+            for value in (
+                self.statistic,
+                self.threshold,
+                self.grouping_scope,
+                self.minimum_group_size,
+            )
+        ):
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} cannot declare "
+                "distributional or influence threshold controls"
+            )
         if self.rule_type == "numeric_outside_range":
             if self.lower_bound is None and self.upper_bound is None:
                 raise ValueError("Numeric final cleaning rules require at least one reviewed bound")
@@ -126,6 +156,54 @@ class FinalCleaningRule:
                 validate_numeric_rule_unit(self.field, self.unit)
         elif not self.values:
             raise ValueError("Remark final cleaning rules require at least one reviewed value")
+
+    def _validate_grouped_rule(self) -> None:
+        allowed_statistics = (
+            _DISTRIBUTIONAL_STATISTICS
+            if self.rule_type == "distributional_outlier"
+            else _INFLUENCE_STATISTICS
+        )
+        if self.statistic not in allowed_statistics:
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} requires a reviewed "
+                f"statistic from {sorted(allowed_statistics)}"
+            )
+        if (
+            self.threshold is None
+            or not math.isfinite(self.threshold)
+            or self.threshold <= 0.0
+        ):
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} requires a finite positive threshold"
+            )
+        if self.grouping_scope not in _GROUPING_SCOPES:
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} requires a reviewed "
+                f"grouping scope from {sorted(_GROUPING_SCOPES)}"
+            )
+        if (
+            self.minimum_group_size is None
+            or self.minimum_group_size < _MINIMUM_DISTRIBUTIONAL_GROUP_SIZE
+        ):
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} requires a reviewed "
+                f"minimum group size of at least {_MINIMUM_DISTRIBUTIONAL_GROUP_SIZE}"
+            )
+        if self.values or self.lower_bound is not None or self.upper_bound is not None:
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} cannot carry fixed "
+                "bounds or remark values"
+            )
+        if self.field is None or self.field not in _CANONICAL_NUMERIC_FIELD_UNITS:
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} requires a canonical "
+                "numeric field with a verified quantity contract"
+            )
+        if _normalized_unit(self.unit) != _DIMENSIONLESS_UNIT:
+            raise ValueError(
+                f"Final cleaning rule type {self.rule_type!r} thresholds are "
+                f"multiples of a robust spread and must declare unit {_DIMENSIONLESS_UNIT!r}"
+            )
 
 
 @dataclass(frozen=True)
