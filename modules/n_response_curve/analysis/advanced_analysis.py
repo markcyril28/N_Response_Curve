@@ -148,29 +148,69 @@ def _predictive_result(
         scoring = "balanced_accuracy"
 
     group_count = len(set(groups))
-    outer_repeat_count = min(10, max(5, group_count))
-    outer = GroupShuffleSplit(
-        n_splits=outer_repeat_count,
-        test_size=max(1, math.ceil(group_count * 0.2)),
-        random_state=20260720,
+    maximum_loso_studies = candidate.support_policy.get(
+        "maximum_loso_studies"
     )
-    outer_splits = tuple(outer.split(features, response, groups))
-    performance: list[dict[str, float]] = []
+    if (
+        isinstance(maximum_loso_studies, bool)
+        or not isinstance(maximum_loso_studies, int)
+        or maximum_loso_studies < 4
+    ):
+        return _skipped("GROUPED_VALIDATION_POLICY_REQUIRED")
+    outcome_classes = set(response) if not numeric_outcome else set()
+
+    def training_splits_are_estimable(
+        splits: Sequence[tuple[np.ndarray, np.ndarray]],
+    ) -> bool:
+        return all(
+            len(train) > 0
+            and len(test) > 0
+            and (
+                numeric_outcome
+                or (
+                    set(response[train]) == outcome_classes
+                    and set(response[test]) == outcome_classes
+                )
+            )
+            for train, test in splits
+        )
+
+    if group_count <= maximum_loso_studies:
+        outer_splits = tuple(
+            LeaveOneGroupOut().split(features, response, groups)
+        )
+        resampling_design = "leave_one_study_out"
+    else:
+        outer_splits = ()
+        resampling_design = "grouped_k_fold"
+    if not outer_splits or not training_splits_are_estimable(outer_splits):
+        n_splits = min(5, group_count)
+        class_study_support = (
+            numeric_outcome
+            or all(
+                len(set(groups[response == level])) >= n_splits
+                for level in outcome_classes
+            )
+        )
+        if not numeric_outcome and class_study_support:
+            outer = StratifiedGroupKFold(
+                n_splits=n_splits,
+                shuffle=False,
+            )
+            resampling_design = "stratified_grouped_k_fold"
+        else:
+            outer = GroupKFold(n_splits=n_splits)
+            resampling_design = "grouped_k_fold"
+        outer_splits = tuple(outer.split(features, response, groups))
+    if not training_splits_are_estimable(outer_splits):
+        return _skipped("GROUPED_FOLD_MISSING_OUTCOME_CLASS")
+    performance: list[dict[str, Any]] = []
     importances: dict[str, list[float]] = {
         name: [] for name in candidate.factor_names
     }
     selected_parameters: list[Mapping[str, float]] = []
-    outcome_classes = set(response) if not numeric_outcome else set()
-    if not numeric_outcome and any(
-        set(response[train]) != outcome_classes
-        for train, _ in outer_splits
-    ):
-        return _skipped("GROUPED_FOLD_MISSING_OUTCOME_CLASS")
-    if not numeric_outcome and any(
-        set(response[test]) != outcome_classes
-        for _, test in outer_splits
-    ):
-        return _skipped("GROUPED_HELD_OUT_FOLD_MISSING_OUTCOME_CLASS")
+    balanced_accuracy_unavailable_study_count = 0
+
     for fold, (train, test) in enumerate(
         outer_splits,
         start=1,
@@ -179,9 +219,23 @@ def _predictive_result(
         if not numeric_outcome and len(set(response[train])) < 2:
             return _skipped("GROUPED_FOLD_HAS_ONE_OUTCOME_CLASS")
         inner_group_count = len(set(train_groups))
-        inner = GroupKFold(
-            n_splits=min(3, inner_group_count)
-        )
+        inner_n_splits = min(3, inner_group_count)
+        if inner_n_splits < 2:
+            return _skipped("INNER_GROUPED_VALIDATION_UNSUPPORTED")
+        if (
+            not numeric_outcome
+            and all(
+                len(set(train_groups[response[train] == level]))
+                >= inner_n_splits
+                for level in outcome_classes
+            )
+        ):
+            inner = StratifiedGroupKFold(
+                n_splits=inner_n_splits,
+                shuffle=False,
+            )
+        else:
+            inner = GroupKFold(n_splits=inner_n_splits)
         inner_splits = tuple(
             inner.split(
                 features.iloc[train],
@@ -191,8 +245,7 @@ def _predictive_result(
         )
         if not numeric_outcome and any(
             set(response[train][inner_train]) != outcome_classes
-            or set(response[train][inner_validation]) != outcome_classes
-            for inner_train, inner_validation in inner_splits
+            for inner_train, _ in inner_splits
         ):
             return _skipped("INNER_GROUPED_FOLD_MISSING_OUTCOME_CLASS")
         best_score = -math.inf
