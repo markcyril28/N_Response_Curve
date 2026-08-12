@@ -71,6 +71,25 @@ def _stable_uid(*parts: str) -> str:
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
+def _has_verified_comparability(
+    record: Mapping[str, Any],
+    *,
+    membership_status_field: str,
+    verified_membership_status: str,
+    membership_review_id_field: str,
+) -> bool:
+    treatment_uid = record.get("treatment_uid")
+    review_id = record.get(membership_review_id_field)
+    return (
+        isinstance(treatment_uid, str)
+        and bool(treatment_uid)
+        and isinstance(review_id, str)
+        and bool(review_id.strip())
+        and record.get("treatment_classification_status") == "resolved"
+        and record.get(membership_status_field) == verified_membership_status
+    )
+
+
 def _summary(
     comparison_type: str,
     outcome_name: str,
