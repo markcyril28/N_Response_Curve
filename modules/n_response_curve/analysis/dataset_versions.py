@@ -569,6 +569,7 @@ def select_dataset_version_records(
 
 __all__ = [
     "KNOWN_DATASET_VERSIONS",
+    "DATASET_MEMBERSHIP_RULE_IDS",
     "DatasetMembershipDiagnostic",
     "DatasetVersion",
     "build_dataset_versions",
