@@ -1965,6 +1965,7 @@ def validate_source_data_policy_coverage(
         ingestion,
         source_maps=bundle.source_maps,
         category_lookups=bundle.category_lookups,
+        source_category_lookups=bundle.source_category_lookups,
         required_lookup_fields=required_lookup_fields,
     )
     source_names = {source.source_name for source in ingestion.sources}
