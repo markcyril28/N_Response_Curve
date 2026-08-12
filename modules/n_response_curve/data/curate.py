@@ -157,6 +157,11 @@ class PhysicalColumnDisposition:
     role: str
     canonical_field: str | None = None
     variable_family: str | None = None
+    source_value_type: str | None = None
+    provider_semantics_status: str | None = None
+    date_conversion_rule: str | None = None
+    leakage_class: str | None = None
+    additional_use_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +172,60 @@ class SourceArmMap:
     role: str
     field_positions: Mapping[str, int]
     constants: Mapping[str, str]
+    comparability_group_id: str | None = None
+    comparability_review_id: str | None = None
+    recommendation_set_membership_status: str = "not_verified"
+    recommendation_set_review_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.comparability_group_id is None) != (
+            self.comparability_review_id is None
+        ):
+            raise ValueError(
+                "Source-arm comparability group and review ID must be supplied together"
+            )
+        if self.comparability_group_id is not None and not all(
+            value.strip()
+            for value in (
+                self.comparability_group_id,
+                self.comparability_review_id or "",
+            )
+        ):
+            raise ValueError("Source-arm comparability metadata must be nonempty")
+        if self.recommendation_set_membership_status not in {
+            "not_verified",
+            "verified_context_comparable",
+        }:
+            raise ValueError("Source-arm recommendation-set status is unsupported")
+        if self.recommendation_set_membership_status == "verified_context_comparable":
+            if not (
+                isinstance(self.recommendation_set_review_id, str)
+                and self.recommendation_set_review_id.strip()
+            ):
+                raise ValueError(
+                    "Verified source-arm recommendation membership requires a review ID"
+                )
+            if self.comparability_group_id is None:
+                raise ValueError(
+                    "Verified source-arm recommendation membership requires reviewed comparability"
+                )
+        elif self.recommendation_set_review_id is not None:
+            raise ValueError(
+                "Unverified source-arm recommendation membership cannot declare a review ID"
+            )
+
+
+@dataclass(frozen=True)
+class ReviewedNutrientUnitControl:
+    """Reviewed raw basis and documented conversion for one nutrient-rate field."""
+
+    canonical_field: str
+    source_unit: str
+    source_basis: str
+    canonical_unit: str
+    conversion_factor: float
+    conversion_rule: str
+    review_id: str
 
 
 @dataclass(frozen=True)
