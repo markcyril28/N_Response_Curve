@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import pandas as pd
 
 from n_response_curve.contracts import SUPPORTED_TABLE_FORMATS
-from n_response_curve.data.provenance import sha256_file
+from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 
 
 class ReportingError(RuntimeError):
