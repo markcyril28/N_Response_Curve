@@ -2543,6 +2543,10 @@ def _table_artifacts(
                 or row.get("public_projection_status")
             ),
         ),
+        "literature_verification": TableArtifact(
+            rows=_literature_verification_rows(phase_two),
+            stable_key="literature_verification_uid",
+        ),
         "analysis_candidates": TableArtifact(
             rows=tuple(asdict(candidate) for candidate in phase_four.registry.candidates),
             stable_key="candidate_id",
@@ -2557,6 +2561,9 @@ def _table_artifacts(
         "candidate_complete_case_composition": TableArtifact(
             rows=_complete_case_composition_rows(phase_four),
         ),
+        "candidate_complete_case_comparison": TableArtifact(
+            rows=_complete_case_comparison_rows(phase_four),
+        ),
         "analysis_pruned_families": TableArtifact(rows=tuple(asdict(item) for item in phase_four.registry.pruned_families)),
         "curve_features": TableArtifact(rows=phase_three.evidence.curve_rows, stable_key="response_series_uid"),
         "economic_optima": TableArtifact(
@@ -2566,6 +2573,18 @@ def _table_artifacts(
         "n_efficiency": TableArtifact(
             rows=phase_three.evidence.efficiency_rows,
             stable_key="efficiency_metric_uid",
+        ),
+        "efficiency_operating_points": TableArtifact(
+            rows=phase_three.evidence.efficiency_operating_point_rows,
+            stable_key="efficiency_operating_point_uid",
+        ),
+        "asymptote_support": TableArtifact(
+            rows=phase_three.evidence.asymptote_support_rows,
+            stable_key="asymptote_support_uid",
+        ),
+        "asymptote_reporting": TableArtifact(
+            rows=phase_three.evidence.asymptote_reporting_rows,
+            stable_key="asymptote_reporting_uid",
         ),
         "environmental_risk_flags": TableArtifact(
             rows=phase_three.evidence.environmental_risk_rows,
