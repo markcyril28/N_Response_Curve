@@ -2110,6 +2110,22 @@ def _curve_row(
     if source_name is None:
         return None
     observed_max = float(max(yields))
+    (
+        observed_max_n,
+        observed_max_n_basis,
+        observed_max_n_status,
+        observed_max_rates,
+    ) = _observed_maximum_rate(complete, observed_max, policy)
+    (
+        maximum_associated_n,
+        maximum_associated_n_basis,
+        maximum_associated_n_status,
+    ) = _maximum_associated_rate(representative)
+    (
+        attainable_yield,
+        attainable_yield_basis,
+        attainable_yield_status,
+    ) = _attainable_yield(representative)
     supported_max = representative.supported_max_yield_t_ha
     attainment = (
         observed_max / supported_max
@@ -2189,6 +2205,25 @@ def _curve_row(
         "maximum_reference_basis": representative.maximum_reference_basis,
         "maximum_proximity_status": representative.maximum_proximity_status,
         "observed_max_yield_t_ha": observed_max,
+        "observed_max_n_kg_ha": observed_max_n,
+        "observed_max_n_basis": observed_max_n_basis,
+        "observed_max_n_status": observed_max_n_status,
+        "observed_max_n_rates_kg_ha": observed_max_rates,
+        "maximum_associated_n_kg_ha": maximum_associated_n,
+        "maximum_associated_n_basis": maximum_associated_n_basis,
+        "maximum_associated_n_status": maximum_associated_n_status,
+        "attainable_yield_t_ha": attainable_yield,
+        "attainable_yield_basis": attainable_yield_basis,
+        "attainable_yield_status": attainable_yield_status,
+        "observed_domain_boundary_status": (
+            representative.observed_domain_boundary_status
+        ),
+        "observed_domain_boundary_n_kg_ha": (
+            representative.observed_domain_boundary_n_kg_ha
+        ),
+        "observed_domain_boundary_yield_t_ha": (
+            representative.observed_domain_boundary_yield_t_ha
+        ),
         "observed_max_gap_to_finite_maximum_t_ha": finite_gap,
         "observed_max_gap_to_supported_maximum_t_ha": supported_gap,
         "observed_max_attainment_fraction": attainment,
