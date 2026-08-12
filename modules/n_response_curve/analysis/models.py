@@ -56,6 +56,8 @@ _MODEL_COMPLEXITY = {
 }
 _MINIMUM_FITTED_LEVEL_COUNT = 4
 _BROAD_ROSTER_LEVEL_COUNT = 5
+_PLATEAU_ONSET_MODELS = frozenset({"linear_plateau", "quadratic_plateau"})
+_PLATEAU_INTERIOR_MARGIN = 1e-6
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,17 @@ class _ReviewedModelGate:
 
 
 @dataclass(frozen=True)
+class _ReviewedCredibilityPolicy:
+    policy_id: str
+    maximum_normalized_rmse: float
+    maximum_parameter_influence_relative_shift: float
+    minimum_influence_folds: int
+    maximum_parameter_relative_standard_error: float
+    parameter_scale_floor: float
+    maximum_observed_step_decline_t_ha: float
+
+
+@dataclass(frozen=True)
 class ModelAttempt:
     """One fully traceable, observed-domain response-model attempt."""
 
@@ -86,6 +99,11 @@ class ModelAttempt:
     estimator_name: str
     estimator_status: str
     analysis_grain: str
+    # MOD-09: the primary estimator assumes one equally weighted reviewed mean
+    # per level. That is exact only under equal replication, so the per-level
+    # counts and their balance verdict travel with every attempt.
+    level_replicate_counts: tuple[tuple[float, int], ...]
+    replication_balance_status: str
     weighted_sensitivity_status: str
     weighted_sensitivity_parameters: Mapping[str, float]
     weighted_sensitivity_objective: float | None
@@ -101,6 +119,16 @@ class ModelAttempt:
     aicc: float | None
     grouped_prediction_rmse: float | None
     grouped_prediction_fold_count: int
+    grouped_prediction_basis: str | None
+    credibility_status: str
+    credibility_policy_id: str | None
+    absolute_fit_normalized_rmse: float | None
+    influence_max_relative_parameter_shift: float | None
+    influence_fold_count: int
+    parameter_precision_max_relative_se: float | None
+    maximum_observed_step_decline_t_ha: float | None
+    asymptote_influence_max_relative_shift: float | None
+    asymptote_influence_fold_count: int
     parameters: Mapping[str, float]
     curve_shape_class: str | None
     optimum_status: str
@@ -113,6 +141,13 @@ class ModelAttempt:
     supported_max_yield_t_ha: float | None
     maximum_reference_basis: str
     maximum_proximity_status: str
+    # A monotone fit inside the observed domain has no interior optimum, but it
+    # does have a highest fitted point, and that point is the honest reference.
+    # Recording the edge it sits on, its N rate, and its fitted yield keeps the
+    # evidence reportable without ever implying an interior optimum.
+    observed_domain_boundary_status: str
+    observed_domain_boundary_n_kg_ha: float | None
+    observed_domain_boundary_yield_t_ha: float | None
     uncertainty_status: str
     uncertainty_method: str | None
     uncertainty_evidence_basis: tuple[str, ...]
@@ -133,6 +168,9 @@ class _OptimumSummary:
     maximum_proximity_status: str
     curve_shape_class: str
     reason_codes: tuple[str, ...]
+    observed_domain_boundary_status: str = "NOT_APPLICABLE"
+    observed_domain_boundary_n_kg_ha: float | None = None
+    observed_domain_boundary_yield_t_ha: float | None = None
 
 
 def _frozen_mapping(values: Mapping[str, float] | None = None) -> Mapping[str, float]:
