@@ -4,6 +4,7 @@ source(testthat::test_path("..", "..", "analysis", "stages", "mixed_models.R"))
 source(testthat::test_path("..", "..", "analysis", "stages", "marginal_contrasts.R"))
 
 test_that("supported factors emit raw contrasts for central BH reconciliation", {
+  skip_if_not_installed("emmeans")
   stage <- list(
     contract = list(
       specification = list(
@@ -16,10 +17,19 @@ test_that("supported factors emit raw contrasts for central BH reconciliation", 
         outcome_kind = "continuous",
         model_formula = "outcome ~ water_regime",
         contrast_specification = list(
+          estimand_id = "estimand-water-v1",
           factor_name = "water_regime",
+          treatment = "irrigated",
+          comparator = "rainfed",
+          direction = "irrigated_minus_rainfed",
           adjustment = "BH"
         ),
-        multiplicity = list(method = "BH", family_id = "MF-primary")
+        multiplicity = list(
+          method = "BH",
+          family_id = "MF-primary",
+          alpha = 0.05,
+          expected_test_ids = list("estimand-water-v1")
+        )
       )
     ),
     data = data.frame(
@@ -41,9 +51,25 @@ test_that("supported factors emit raw contrasts for central BH reconciliation", 
     function(row) identical(row$multiplicity_status, "pending_central_reconciliation"),
     logical(1)
   )))
+  expect_true(all(vapply(
+    result$results,
+    function(row) isTRUE(row$multiplicity_included),
+    logical(1)
+  )))
+  expect_true(all(vapply(
+    result$results,
+    function(row) identical(row$multiplicity_test_id, "estimand-water-v1"),
+    logical(1)
+  )))
+  expect_true(all(vapply(
+    result$results,
+    function(row) identical(row$decision_alpha, 0.05),
+    logical(1)
+  )))
 })
 
 test_that("prespecified management estimands emit only the requested direction", {
+  skip_if_not_installed("emmeans")
   stage <- list(
     contract = list(
       specification = list(
@@ -66,7 +92,12 @@ test_that("prespecified management estimands emit only the requested direction",
           dependence_unit = "comparison_set_uid",
           adjustment = "BH"
         ),
-        multiplicity = list(method = "BH", family_id = "MF-management")
+        multiplicity = list(
+          method = "BH",
+          family_id = "MF-management",
+          alpha = 0.05,
+          expected_test_ids = list("estimand-management-v1")
+        )
       )
     ),
     data = data.frame(
@@ -107,4 +138,55 @@ test_that("missing contrast specifications remain explicit skips", {
 
   expect_identical(result$status, "skipped")
   expect_identical(result$results[[1L]]$reason_codes[[1L]], "CONTRAST_SPECIFICATION_REQUIRED")
+})
+
+test_that("an unavailable model-based contrast engine never falls back to an unpaired t-test", {
+  original <- nrc_emmeans_available
+  assign(
+    "nrc_emmeans_available",
+    function() FALSE,
+    envir = environment(nrc_run_marginal_contrasts)
+  )
+  on.exit(
+    assign(
+      "nrc_emmeans_available",
+      original,
+      envir = environment(nrc_run_marginal_contrasts)
+    ),
+    add = TRUE
+  )
+  stage <- list(
+    contract = list(
+      specification = list(
+        analysis_family = "marginal_contrasts",
+        candidate_id = "candidate-water",
+        hypothesis_id = "H-water",
+        engine = "r",
+        support_gates_passed = TRUE,
+        model_kind = "lm",
+        outcome_kind = "continuous",
+        model_formula = "outcome ~ water_regime",
+        contrast_specification = list(
+          estimand_id = "estimand-water-v1",
+          factor_name = "water_regime",
+          treatment = "irrigated",
+          comparator = "rainfed",
+          direction = "irrigated_minus_rainfed",
+          adjustment = "BH"
+        )
+      )
+    ),
+    data = data.frame(
+      outcome = c(4.9, 5.1, 5.0, 6.1, 6.0, 6.2),
+      water_regime = rep(c("rainfed", "irrigated"), each = 3L)
+    )
+  )
+
+  result <- nrc_run_marginal_contrasts(stage)
+
+  expect_identical(result$status, "skipped")
+  expect_identical(
+    result$results[[1L]]$reason_codes[[1L]],
+    "MODEL_BASED_CONTRAST_ENGINE_UNAVAILABLE"
+  )
 })
