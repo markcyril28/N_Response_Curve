@@ -1931,11 +1931,8 @@ def load_source_data_policy_manifest(
         source_category_lookups=source_category_lookups,
         restricted_policy=restricted_policy,
         restricted_secret_reference=secret_reference,
-        duplicate_rules=_duplicate_rules(artifacts["duplicate_rules"]),
-        final_cleaning_policies=_final_cleaning_policies(
-            artifacts["final_cleaning_policy"],
-            designated_reviewers=designated_reviewers,
-        ),
+        duplicate_rules=duplicate_rules,
+        final_cleaning_policies=final_cleaning_policies,
         checksum_revision_approvals=_checksum_revision_approvals(
             artifacts["checksum_revision_approvals"],
             project_root=root,
@@ -1949,6 +1946,9 @@ def load_source_data_policy_manifest(
             artifacts["repeat_adjudications"],
             designated_reviewers=designated_reviewers,
         ),
+        literature_verification_source_names=literature_source_names,
+        literature_verification_policy=literature_policy,
+        literature_verification_results=literature_results,
         designated_reviewers=designated_reviewers,
     )
 
