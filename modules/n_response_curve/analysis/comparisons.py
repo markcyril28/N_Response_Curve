@@ -43,6 +43,7 @@ class ManagementSystemProximity:
     system_class: str
     status: str
     source_record_uid: str | None
+    treatment_uid: str | None
     system_n_rate_kg_ha: float | None
     n_rate_unit: str
     yield_at_system_rate_t_ha: float | None
