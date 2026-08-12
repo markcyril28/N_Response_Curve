@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import csv
 from pathlib import Path
+import re
 from typing import Iterable, Mapping
 
 from .config import (
