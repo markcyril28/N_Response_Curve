@@ -809,6 +809,23 @@ def _validated_repeat_adjudications(
         _review_date(adjudication.reviewed_on, label="Repeat adjudication date")
         _nonempty(adjudication.rationale, label="Repeat adjudication rationale")
         _nonempty(adjudication.review_id, label="Repeat adjudication review evidence")
+        assignments = adjudication.management_split_assignments or {}
+        if adjudication.classification != "management_variant" and assignments:
+            raise ValueError(
+                "Management split assignments require a management-variant adjudication"
+            )
+        if assignments:
+            normalized_assignments = {
+                _nonempty(str(record_uid), label="Management split record UID"):
+                _nonempty(str(split_id), label="Management split ID")
+                for record_uid, split_id in assignments.items()
+            }
+            if not set(record_uids).issubset(normalized_assignments):
+                raise ValueError(
+                    "Management split assignments must include the adjudicated repeated records"
+                )
+            if len(set(normalized_assignments.values())) < 2:
+                raise ValueError("Management split assignments must define at least two series")
         indexed[record_uids] = adjudication
     return indexed
 
