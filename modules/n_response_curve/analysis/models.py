@@ -1232,12 +1232,33 @@ def _grouped_prediction_summary(
     minimum_residual_df: int,
     tolerance: float,
     gate: _ReviewedModelGate,
-) -> tuple[float | None, int]:
-    """Evaluate a fitted model by leaving out every distinct N-rate level once."""
+    policy: Mapping[str, Any],
+) -> tuple[float | None, int, str | None]:
+    """Evaluate a fitted model by leaving out one distinct N-rate level at a time.
+
+    Two constraints narrow this below the naive "hold out every level" loop.
+
+    Each training fold must independently clear the candidate's own support
+    gates, not merely have enough rows. A fold drops one distinct level, so an
+    ``L``-level series trains on ``L - 1`` levels; because the level ladder makes
+    three levels descriptive-only, no fold is fittable below five distinct
+    levels, and at exactly five every fold sits in the restricted tier. The
+    roster gate is therefore applied to the fold, so a candidate cannot be scored
+    on folds it would not be permitted to fit standalone.
+
+    Holding out the lowest or highest level also puts the held-out rate outside
+    the training fold's observed domain, and predicting it is extrapolation that
+    ``no_extrapolation`` forbids everywhere else. Those folds are excluded rather
+    than silently scored, and the returned basis records that the statistic is
+    then leave-one-interior-level-out, which is a weaker claim than
+    leave-one-level-out and must not be read as the latter.
+    """
 
     squared_errors: list[float] = []
     held_out_levels = sorted(set(float(value) for value in x))
     parameter_count = _MODEL_PARAMETER_COUNTS[model_name]
+    scored_levels = 0
+    extrapolating_levels = 0
     for held_out_level in held_out_levels:
         test_mask = np.isclose(x, held_out_level, rtol=0.0, atol=tolerance)
         train_mask = ~test_mask
@@ -1247,7 +1268,17 @@ def _grouped_prediction_summary(
             len(set(float(value) for value in training_x)) < _minimum_distinct_levels(model_name)
             or len(training_x) - parameter_count < minimum_residual_df
         ):
-            return None, 0
+            return None, 0, None
+        if _model_level_gate_reason(
+            model_name,
+            len(set(float(value) for value in training_x)),
+            policy,
+        ) is not None:
+            return None, 0, None
+        training_min, training_max = _observed_bounds(training_x)
+        if held_out_level < training_min or held_out_level > training_max:
+            extrapolating_levels += 1
+            continue
         parameters, _ = _fit_parameters(
             model_name,
             training_x,
@@ -1258,7 +1289,7 @@ def _grouped_prediction_summary(
             gate=gate,
         )
         if parameters is None:
-            return None, 0
+            return None, 0, None
         parameter_map = _parameter_mapping(model_name, parameters)
         predicted = evaluate_model(model_name, x[test_mask].tolist(), parameter_map)
         if (
@@ -1266,11 +1297,17 @@ def _grouped_prediction_summary(
             or np.min(predicted) < minimum_yield - tolerance
             or np.max(predicted) > maximum_yield + tolerance
         ):
-            return None, 0
+            return None, 0, None
         squared_errors.extend(float(value) for value in (predicted - y[test_mask]) ** 2)
+        scored_levels += 1
     if not squared_errors:
-        return None, 0
-    return float(math.sqrt(float(np.mean(squared_errors)))), len(held_out_levels)
+        return None, 0, None
+    basis = (
+        "leave_one_interior_n_level_out"
+        if extrapolating_levels
+        else "leave_one_n_level_out"
+    )
+    return float(math.sqrt(float(np.mean(squared_errors)))), scored_levels, basis
 
 
 def _aicc(rss: float, n_observations: int, parameter_count: int) -> float | None:
