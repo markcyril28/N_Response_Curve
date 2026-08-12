@@ -841,7 +841,11 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
             raise SourceDataPolicyError(
                 f"{where}.representation_basis is not a supported category"
             )
-        maps[source_name] = ReviewedSourceMap(
+        nutrient_unit_controls = _nutrient_unit_controls(
+            record.get("nutrient_unit_controls"),
+            where=f"{where}.nutrient_unit_controls",
+        )
+        source_map = ReviewedSourceMap(
             source_name=source_name,
             map_version=_version(
                 record.get("map_version"),
@@ -859,6 +863,16 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
             workbook_csv_basis=_nonempty_text(
                 record.get("workbook_csv_basis"),
                 where=f"{where}.workbook_csv_basis",
+            ),
+            workbook_sha256=reconciliation_hashes["workbook_sha256"],
+            csv_sha256=reconciliation_hashes["csv_sha256"],
+            workbook_csv_reconciliation_review_id=(
+                _nonempty_text(
+                    record.get("workbook_csv_reconciliation_review_id"),
+                    where=f"{where}.workbook_csv_reconciliation_review_id",
+                )
+                if record.get("workbook_csv_reconciliation_review_id") is not None
+                else None
             ),
             fields=_position_mapping(
                 record.get("fields"),
@@ -897,12 +911,27 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                 if normalization_review_id is not None
                 else None
             ),
+            missing_state_maps=MappingProxyType(missing_state_maps),
+            nutrient_unit_controls=nutrient_unit_controls,
+            approved_variable_families=frozenset(
+                _string_tuple(
+                    record.get("approved_variable_families", []),
+                    where=f"{where}.approved_variable_families",
+                    allow_empty=True,
+                )
+            ),
             declared_constant_fields=_string_tuple(
                 record.get("declared_constant_fields", []),
                 where=f"{where}.declared_constant_fields",
                 allow_empty=True,
             ),
         )
+        try:
+            validate_reviewed_fill_down_policy(source_map)
+            validate_reviewed_nutrient_unit_controls(source_map)
+        except ValueError as exc:
+            raise SourceDataPolicyError(f"{where} is invalid: {exc}") from exc
+        maps[source_name] = source_map
     return MappingProxyType(maps)
 
 
