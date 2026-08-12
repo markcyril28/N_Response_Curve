@@ -509,6 +509,7 @@ def classify_treatment(
     review_reasons = sorted(set(review_reasons))
     return {
         "treatment_text_class": treatment_text_class,
+        "treatment_alias_candidates": treatment_alias_candidates,
         "canonical_treatment_class": canonical_treatment_class,
         "treatment_classification_status": (
             "review_required" if review_reasons else "resolved"
