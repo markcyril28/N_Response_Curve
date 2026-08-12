@@ -1184,11 +1184,19 @@ def write_release_approval_template(
 
 __all__ = [
     "ApprovalAuthorityMatrix",
+    "ReleaseApproval",
+    "ReviewGatePolicy",
     "RuntimePolicySnapshot",
     "effective_analysis_hypotheses",
     "effective_enablement",
     "load_approval_authority_matrix",
+    "load_release_approval",
+    "load_review_gate_policy",
+    "phase_two_review_disposition",
+    "validate_policy_authority_bindings",
     "validate_runtime_policy",
     "write_approval_authority_matrix_template",
     "write_policy_snapshot_template",
+    "write_release_approval_template",
+    "write_review_gate_policy_template",
 ]
