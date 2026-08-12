@@ -1343,15 +1343,41 @@ def _curate_source(
             for canonical_name, position in effective_fields.items():
                 raw_value = _field_raw_value(raw_row, position)
                 effective_value = effective_by_position[position]
+                missing_state_lookup = effective_map.missing_state_maps.get(
+                    canonical_name
+                )
+                raw_state = classify_raw_state(raw_value, missing_values)
+                canonical_missing_state = classify_missing(
+                    raw_value,
+                    missing_values,
+                    missing_state_lookup=missing_state_lookup,
+                )
                 record[f"{canonical_name}_raw"] = raw_value
                 record[canonical_name] = canonicalize_irri(effective_value)
-                record[f"{canonical_name}_missing_state"] = classify_missing(
-                    raw_value,
-                    missing_values,
+                record[f"{canonical_name}_missing_state"] = (
+                    canonical_missing_state
                 )
-                record[f"{canonical_name}_raw_state"] = classify_raw_state(
-                    raw_value,
-                    missing_values,
+                record[f"{canonical_name}_raw_state"] = raw_state
+                record[f"{canonical_name}_missing_state_normalization_status"] = (
+                    "review_required_unversioned"
+                    if missing_state_lookup is None
+                    else "unresolved_unmapped"
+                    if canonical_missing_state == "unresolved_missing"
+                    else "preserved_blank"
+                    if raw_state == "blank"
+                    else "not_missing"
+                    if canonical_missing_state == "present"
+                    else "mapped_reviewed"
+                )
+                record[f"{canonical_name}_missing_state_map_version"] = (
+                    missing_state_lookup.map_version
+                    if missing_state_lookup is not None
+                    else None
+                )
+                record[f"{canonical_name}_missing_state_review_id"] = (
+                    missing_state_lookup.review_id
+                    if missing_state_lookup is not None
+                    else None
                 )
                 record[f"{canonical_name}_filled_down"] = filled_by_position[position]
                 record[f"{canonical_name}_filled_from_source_row_number"] = (
@@ -1367,8 +1393,17 @@ def _curate_source(
             for canonical_name, constant in arm.constants.items():
                 record[f"{canonical_name}_raw"] = None
                 record[canonical_name] = constant
-                record[f"{canonical_name}_missing_state"] = "not_applicable"
-                record[f"{canonical_name}_raw_state"] = "not_applicable"
+                record[f"{canonical_name}_missing_state"] = "present"
+                record[f"{canonical_name}_raw_state"] = "structural_missing"
+                record[f"{canonical_name}_missing_state_normalization_status"] = (
+                    "arm_map_constant_reviewed"
+                )
+                record[f"{canonical_name}_missing_state_map_version"] = (
+                    effective_map.map_version
+                )
+                record[f"{canonical_name}_missing_state_review_id"] = (
+                    effective_map.review_id
+                )
                 record[f"{canonical_name}_filled_down"] = False
                 record[f"{canonical_name}_filled_from_source_row_number"] = None
                 record[f"{canonical_name}_normalization_status"] = "arm_map_constant"
@@ -1379,6 +1414,8 @@ def _curate_source(
                     config=config,
                     schema=schema,
                     missing_values=missing_values,
+                    missing_state_maps=effective_map.missing_state_maps,
+                    nutrient_unit_controls=effective_map.nutrient_unit_controls,
                     category_lookups=category_lookups,
                     restricted_policy=restricted_policy,
                 )
@@ -1393,6 +1430,9 @@ def curate_ingestion(
     *,
     source_maps: Mapping[str, ReviewedSourceMap] | None = None,
     category_lookups: Mapping[str, ReviewedLookupTable] | None = None,
+    source_category_lookups: Mapping[
+        str, Mapping[str, ReviewedLookupTable]
+    ] | None = None,
     restricted_policy: RestrictedDataPolicy | None = None,
     require_reviewed_controls: bool = False,
 ) -> CurationResult:
@@ -1400,11 +1440,37 @@ def curate_ingestion(
 
     maps = source_maps or {}
     lookups = category_lookups or {}
+    scoped_lookups = source_category_lookups or {}
     if require_reviewed_controls:
+        configured_canonical_fields = (
+            set(config.raw["schema"]["fields"])
+            | _OPTIONAL_CANONICAL_SOURCE_FIELDS
+        )
+        for source_name, source_map in maps.items():
+            reviewed_canonical_fields = set(source_map.fields)
+            reviewed_canonical_fields.update(source_map.declared_constant_fields)
+            for arm in source_map.arms:
+                reviewed_canonical_fields.update(arm.field_positions)
+                reviewed_canonical_fields.update(arm.constants)
+            unapproved_canonical_fields = (
+                reviewed_canonical_fields - configured_canonical_fields
+            )
+            if unapproved_canonical_fields:
+                raise ValueError(
+                    "Reviewed source map contains fields outside the configured canonical "
+                    f"data contract for {source_name}: "
+                    + ", ".join(sorted(unapproved_canonical_fields))
+                )
         validate_reviewed_curation_controls(
             ingestion,
             source_maps=maps,
             category_lookups=lookups,
+            source_category_lookups=scoped_lookups,
+            required_series_identity_dimensions=getattr(
+                config,
+                "series_identity_dimensions",
+                (),
+            ),
         )
     else:
         unknown_maps = set(maps) - {
@@ -1422,7 +1488,10 @@ def curate_ingestion(
             source,
             config,
             source_map=maps.get(source.source_name),
-            category_lookups=lookups,
+            category_lookups={
+                **lookups,
+                **scoped_lookups.get(source.source_name, {}),
+            },
             restricted_policy=restricted_policy,
         )
     )
