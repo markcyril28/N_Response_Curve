@@ -434,7 +434,12 @@ def run_phase_two(
     )
 
 
-def _enforce_phase_two_qc_gate(config: ValidatedConfig, phase_two: PhaseTwoResult) -> None:
+def _enforce_phase_two_qc_gate(
+    config: ValidatedConfig,
+    phase_two: PhaseTwoResult,
+    *,
+    review_gate_policy: ReviewGatePolicy | None = None,
+) -> None:
     """Fail validate/full after the complete Phase 2 review finds any review state."""
 
     if config.run_mode not in {"validate", "full"}:
