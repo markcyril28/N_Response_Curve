@@ -157,6 +157,85 @@ nrc_fixed_effect_design_reason <- function(model_formula, data, minimum_residual
   NULL
 }
 
+nrc_apply_factor_representations <- function(data, specification) {
+  representations <- specification$factor_representations
+  references <- list()
+  if (is.null(representations) || !length(representations)) {
+    return(list(data = data, factor_references = references))
+  }
+  for (factor_name in names(representations)) {
+    representation <- representations[[factor_name]]
+    if (is.null(data[[factor_name]])) {
+      stop(sprintf("R_FACTOR_COLUMN_REQUIRED:%s", factor_name))
+    }
+    if (!(representation$data_type %in% c("categorical", "ordinal", "boolean"))) {
+      next
+    }
+    reference_level <- representation$reference_level
+    approved_levels <- as.character(unlist(representation$approved_levels))
+    observed_levels <- unique(as.character(data[[factor_name]]))
+    if (
+      is.null(reference_level) || !nzchar(reference_level) ||
+      !length(approved_levels) || !(reference_level %in% observed_levels)
+    ) {
+      stop(sprintf("R_REVIEWED_REFERENCE_LEVEL_UNAVAILABLE:%s", factor_name))
+    }
+    unknown_levels <- setdiff(observed_levels, approved_levels)
+    if (length(unknown_levels)) {
+      stop(sprintf("R_UNAPPROVED_FACTOR_LEVEL:%s", factor_name))
+    }
+    ordered_levels <- c(
+      reference_level,
+      setdiff(approved_levels, reference_level)
+    )
+    data[[factor_name]] <- factor(
+      as.character(data[[factor_name]]),
+      levels = ordered_levels,
+      ordered = identical(representation$data_type, "ordinal")
+    )
+    references[[factor_name]] <- reference_level
+  }
+  list(data = data, factor_references = references)
+}
+
+nrc_apply_interval_metadata <- function(rows, specification) {
+  interval_method <- specification$model_specification$interval_method
+  if (is.null(interval_method)) {
+    interval_method <- "wald_95"
+  }
+  lapply(rows, function(row) {
+    lower <- row$conf.low
+    upper <- row$conf.high
+    if (is.null(lower)) {
+      lower <- row$asymp.LCL
+    }
+    if (is.null(upper)) {
+      upper <- row$asymp.UCL
+    }
+    if (is.null(lower)) {
+      lower <- row$lower.CL
+    }
+    if (is.null(upper)) {
+      upper <- row$upper.CL
+    }
+    if (
+      !is.null(lower) && !is.null(upper) &&
+      is.finite(as.numeric(lower)) && is.finite(as.numeric(upper))
+    ) {
+      row$conf.low <- as.numeric(lower)
+      row$conf.high <- as.numeric(upper)
+      row$interval_status <- "available"
+      row$interval_method <- interval_method
+      row$interval_unavailable_reason <- NULL
+    } else {
+      row$interval_status <- "unavailable"
+      row$interval_method <- interval_method
+      row$interval_unavailable_reason <- "INTERVAL_NOT_RETURNED_BY_MODEL_ENGINE"
+    }
+    row
+  })
+}
+
 nrc_apply_multiplicity <- function(rows, specification) {
   multiplicity <- specification$multiplicity
   if (is.null(multiplicity)) {
