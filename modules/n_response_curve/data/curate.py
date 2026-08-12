@@ -139,12 +139,34 @@ _REQUIRED_TREATMENT_LOOKUP_CLASSES = frozenset(
 _FILL_DOWN_CANONICAL_FIELDS = frozenset(
     {"study_id", "trial_id", "source", "authors", "publication_year"}
 )
+# One owner for both halves of the canonical nutrient contract. The basis is a property
+# of the canonical unit itself ("kg N ha-1" is elemental, "kg P2O5 ha-1" is an oxide), so
+# the two are declared together and derived apart; a new nutrient field cannot acquire a
+# canonical unit without also declaring the basis its DAT-04 controls are checked against.
+_CANONICAL_NUTRIENT_UNIT_BASES = MappingProxyType(
+    {
+        "inorganic_n_rate": (CANONICAL_N_RATE_UNIT, "elemental"),
+        "recommended_n_rate": (CANONICAL_N_RATE_UNIT, "elemental"),
+        "inorganic_p_rate": ("kg P2O5 ha-1", "oxide"),
+        "inorganic_k_rate": ("kg K2O ha-1", "oxide"),
+    }
+)
 NUTRIENT_CANONICAL_UNITS = MappingProxyType(
     {
-        "inorganic_n_rate": CANONICAL_N_RATE_UNIT,
-        "recommended_n_rate": CANONICAL_N_RATE_UNIT,
-        "inorganic_p_rate": "kg P2O5 ha-1",
-        "inorganic_k_rate": "kg K2O ha-1",
+        canonical_field: canonical_unit_text
+        for canonical_field, (
+            canonical_unit_text,
+            _basis,
+        ) in _CANONICAL_NUTRIENT_UNIT_BASES.items()
+    }
+)
+CANONICAL_NUTRIENT_BASES = MappingProxyType(
+    {
+        canonical_field: basis
+        for canonical_field, (
+            _canonical_unit_text,
+            basis,
+        ) in _CANONICAL_NUTRIENT_UNIT_BASES.items()
     }
 )
 _OPTIONAL_CANONICAL_SOURCE_FIELDS = frozenset({"recommended_n_rate"})
