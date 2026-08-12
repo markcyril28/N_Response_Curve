@@ -700,6 +700,7 @@ def prepare_r_analysis(
             {},
             normalized,
             stable_key,
+            membership_rows,
         )
 
     grouping_column = str(expected_grouping[0])
@@ -720,8 +721,22 @@ def prepare_r_analysis(
                 {},
                 normalized,
                 stable_key,
+                membership_rows,
             )
         outcome_kind = "continuous"
+        if (
+            model_specification["outcome_kind"] != outcome_kind
+            or model_specification["model_kind"] != "lmer"
+            or model_specification["link_function"] != "identity"
+        ):
+            return RAnalysisPreparation(
+                "skipped",
+                ("PREDECLARED_MODEL_KIND_OUTCOME_MISMATCH",),
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
         gate_reason = _design_gate_reason(
             normalized,
             candidate.factor_names,
@@ -731,7 +746,14 @@ def prepare_r_analysis(
             all_factor_interactions=False,
         )
         if gate_reason is not None:
-            return RAnalysisPreparation("skipped", (gate_reason,), {}, normalized, stable_key)
+            return RAnalysisPreparation(
+                "skipped",
+                (gate_reason,),
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
         if not random_intercept:
             return RAnalysisPreparation(
                 "skipped",
@@ -739,18 +761,25 @@ def prepare_r_analysis(
                 {},
                 normalized,
                 stable_key,
+                membership_rows,
             )
-        model_kind = "lmer"
-        formula = _observation_formula(
-            candidate.factor_names,
-            include_random_intercept=random_intercept,
-        )
+        model_kind = str(model_specification["model_kind"])
+        formula = _observation_formula(candidate.factor_names)
     else:
         outcome_kind = (
             "categorical"
             if candidate.curve_outcome in _CATEGORICAL_OUTCOMES
             else "continuous"
         )
+        if model_specification["outcome_kind"] != outcome_kind:
+            return RAnalysisPreparation(
+                "skipped",
+                ("PREDECLARED_MODEL_KIND_OUTCOME_MISMATCH",),
+                {},
+                normalized,
+                stable_key,
+                membership_rows,
+            )
         if outcome_kind == "categorical":
             level_counts = Counter(
                 str(row[candidate.curve_outcome])
