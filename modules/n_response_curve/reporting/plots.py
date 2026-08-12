@@ -133,6 +133,26 @@ def _evidence_annotation(
         if value is not None:
             proximity_parts.append(f"{label}={value}")
     lines.append("; ".join(proximity_parts))
+    asymptote_rate = _display_number(
+        evidence_row.get("asymptote_fraction_n_kg_ha")
+    )
+    if asymptote_rate is not None:
+        rate_label = str(
+            evidence_row.get("asymptote_rate_label")
+            or "N at q% of asymptote"
+        )
+        fraction = _display_number(evidence_row.get("asymptote_fraction"))
+        standard_error = _display_number(
+            evidence_row.get("asymptote_fraction_n_se_kg_ha")
+        )
+        lines.append(f"{rate_label}={asymptote_rate} kg N/ha")
+        details = []
+        if fraction is not None:
+            details.append(f"q={fraction}")
+        if standard_error is not None:
+            details.append(f"SE={standard_error} kg N/ha")
+        if details:
+            lines.append("; ".join(details))
     lines.append(f"target yield={evidence_row.get('target_yield_status') or 'not_configured'}")
     raw_reasons = evidence_row.get("reason_codes", ())
     if isinstance(raw_reasons, str):
