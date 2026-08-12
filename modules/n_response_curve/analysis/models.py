@@ -324,9 +324,26 @@ def _as_finite_array(values: Sequence[float | int]) -> np.ndarray | None:
 def _estimator_grain_status(
     evidence: Sequence[Mapping[str, Any]],
     observation_count: int,
+    policy: Mapping[str, Any],
 ) -> str:
     if len(evidence) != observation_count or not evidence:
         return "exploratory_unreviewed_grain"
+    authority = policy.get("scientific_policy_authority")
+    if not isinstance(authority, Mapping):
+        return "exploratory_unapproved_estimator_policy"
+    approved_by = authority.get("approved_by")
+    approved_on = authority.get("approved_on")
+    artifact_sha256 = authority.get("artifact_sha256")
+    if (
+        not isinstance(approved_by, str)
+        or not approved_by.strip()
+        or not isinstance(approved_on, str)
+        or not approved_on.strip()
+        or not isinstance(artifact_sha256, str)
+        or len(artifact_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in artifact_sha256)
+    ):
+        return "exploratory_unapproved_estimator_policy"
     if all(
         row.get("analysis_grain_status") == "reviewed_treatment_mean"
         for row in evidence
