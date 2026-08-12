@@ -162,8 +162,6 @@ def _partial_factor_productivity_rows(
     efficiency_policy = _approved_efficiency_policy(policy)
     if efficiency_policy is None:
         return ()
-    """Materialize EFF-01 Option A at the observed record-by-N-level grain."""
-
     rows: list[dict[str, Any]] = []
     for record in records:
         record_uid_value = record.get("record_uid")
@@ -204,9 +202,6 @@ def _partial_factor_productivity_rows(
             or n_rate is None
             or n_rate < 0.0
             or yield_t_ha is None
-            or record.get("yield_unit_status") == "conflict"
-            or record.get("final_analytical_membership_status")
-            == "excluded_by_reviewed_cleaning_rule"
         ):
             continue
         grain_status = str(
@@ -220,7 +215,6 @@ def _partial_factor_productivity_rows(
             "efficiency_policy_sha256": efficiency_policy["authority"][
                 "artifact_sha256"
             ],
-            "metric_id": "EFF-01-option-a-partial-factor-productivity",
             "record_uid": record_uid,
             "response_series_uid": series_uid,
             "n_rate_kg_ha": n_rate,
