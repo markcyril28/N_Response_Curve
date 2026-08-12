@@ -842,24 +842,42 @@ def _finalize_canonical_record(
     config: Any,
     schema: Mapping[str, Any],
     missing_values: Mapping[str, Any],
+    missing_state_maps: Mapping[str, ReviewedLookupTable],
+    nutrient_unit_controls: Mapping[str, ReviewedNutrientUnitControl],
     category_lookups: Mapping[str, ReviewedLookupTable],
     restricted_policy: RestrictedDataPolicy | None,
 ) -> dict[str, Any]:
-    n_parse = parse_numeric(_optional_field(record, "inorganic_n_rate"), missing_values)
-    p_parse = parse_numeric(_optional_field(record, "inorganic_p_rate"), missing_values)
-    k_parse = parse_numeric(_optional_field(record, "inorganic_k_rate"), missing_values)
+    n_parse = parse_numeric(
+        _optional_field(record, "inorganic_n_rate"),
+        missing_values,
+        missing_state_lookup=missing_state_maps.get("inorganic_n_rate"),
+    )
+    p_parse = parse_numeric(
+        _optional_field(record, "inorganic_p_rate"),
+        missing_values,
+        missing_state_lookup=missing_state_maps.get("inorganic_p_rate"),
+    )
+    k_parse = parse_numeric(
+        _optional_field(record, "inorganic_k_rate"),
+        missing_values,
+        missing_state_lookup=missing_state_maps.get("inorganic_k_rate"),
+    )
     recommended_n_parse = parse_numeric(
         _optional_field(record, "recommended_n_rate"),
         missing_values,
+        missing_state_lookup=missing_state_maps.get("recommended_n_rate"),
     )
     yield_se_parse = parse_numeric(
         _optional_field(record, "yield_se_t_ha"),
         missing_values,
+        missing_state_lookup=missing_state_maps.get("yield_se_t_ha"),
     )
     yield_normalization = normalize_yield(
         _optional_field(record, "yield_kg_ha"),
         _optional_field(record, "yield_t_ha"),
         missing_values,
+        kg_missing_state_lookup=missing_state_maps.get("yield_kg_ha"),
+        t_missing_state_lookup=missing_state_maps.get("yield_t_ha"),
     )
     configured_units = schema.get("units", {})
     configured_n_unit = str(configured_units.get("n_rate", CANONICAL_N_RATE_UNIT))
