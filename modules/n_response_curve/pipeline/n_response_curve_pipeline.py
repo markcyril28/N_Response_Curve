@@ -37,7 +37,12 @@ from n_response_curve.data.policy_artifacts import (
     validate_source_data_policy_coverage,
     validate_source_scope_activation,
 )
-from n_response_curve.data.provenance import SourceIntegrityReport, verify_source_integrity  # noqa: F401  (Phase 1 compatibility re-export)
+from n_response_curve.data.provenance import (
+    SourceIntegrityReport,
+    VerificationRound,
+    plan_literature_verification_round,
+    verify_source_integrity,  # noqa: F401  (Phase 1 compatibility re-export)
+)
 from n_response_curve.data.qc import QcReport, build_qc_report
 from n_response_curve.logging.run_logging import RunLogger
 from n_response_curve.pipeline.policy_governance import validate_runtime_policy
