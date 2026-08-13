@@ -1148,6 +1148,7 @@ def write_release_package(
             artifact_sha256["replacement_record.json"] = sha256_file(
                 replacement_path
             )
+        _prune_empty_stage_directories(stage)
         staged_paths = {
             path.relative_to(stage).as_posix()
             for path in stage.rglob("*")
