@@ -31,7 +31,9 @@ _MANIFEST_ROLES = frozenset(
     {
         "source_workbook",
         "core_trial_data",
+        "ltcce_trial_data",
         "paired_management_trial_data",
+        "physical_column_evidence",
         "variety_lookup",
         "annual_reports_sheet",
         "annual_report_project_index",
