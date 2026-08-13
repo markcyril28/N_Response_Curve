@@ -30,6 +30,15 @@ from .values import finite_number
 
 
 _ALL_CREDIBLE_POLICY = "all_credible_no_selection"
+_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"ceiling_level", "response_range"})
+# The MOD-08 ceiling gate may only rest on an interval method that stays valid
+# where the likelihood is a ridge in `(C, A)`. Neither is implemented yet, so a
+# policy naming one is still refused at execution time rather than silently
+# falling back to the delta-method variance the fitter already computes.
+_ASYMPTOTE_INTERVAL_METHODS = frozenset(
+    {"profile_likelihood", "design_respecting_bootstrap"}
+)
+_EXECUTABLE_ASYMPTOTE_INTERVAL_METHODS: frozenset[str] = frozenset()
 _SEPARATE_BASELINE_POLICY = "separate_verified_classes"
 _P_K_FIT_BLOCK_REASONS = frozenset(
     {
