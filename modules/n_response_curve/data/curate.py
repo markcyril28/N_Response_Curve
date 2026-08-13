@@ -282,6 +282,8 @@ class ReviewedSourceMap:
     workbook_sha256: str | None = None
     csv_sha256: str | None = None
     workbook_csv_reconciliation_review_id: str | None = None
+    yield_precedence: str = "require_consistency"
+    yield_precedence_review_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -521,7 +523,10 @@ def _validate_reviewed_source_map(
         raise ValueError(
             "Parallel workbook/CSV source lacks reviewed workbook/CSV reconciliation"
         )
-    if source_map.workbook_csv_basis == "parallel_workbook_csv_verified_equivalent":
+    if source_map.workbook_csv_basis in {
+        "parallel_workbook_csv_verified_equivalent",
+        "parallel_workbook_csv_reviewed_csv_authoritative",
+    }:
         reconciliation_values = (
             source_map.workbook_sha256,
             source_map.csv_sha256,
@@ -543,6 +548,13 @@ def _validate_reviewed_source_map(
             raise ValueError(
                 "Workbook/CSV reconciliation is not bound to the ingested CSV bytes"
             )
+    if source_map.yield_precedence not in {"require_consistency", "prefer_t_ha"}:
+        raise ValueError("Reviewed source map has an unsupported yield precedence")
+    if source_map.yield_precedence != "require_consistency" and not (
+        isinstance(source_map.yield_precedence_review_id, str)
+        and source_map.yield_precedence_review_id.strip()
+    ):
+        raise ValueError("Reviewed yield precedence requires review evidence")
     if source_map.representation_basis not in KNOWN_REPRESENTATION_BASES:
         raise ValueError("Reviewed source map has an unsupported representation basis")
     if source_map.representation_basis_status not in {"reviewed", "review_required"}:
@@ -953,6 +965,39 @@ def _source_arms(source_map: ReviewedSourceMap) -> tuple[SourceArmMap, ...]:
     )
 
 
+def _ltcce_unresolved_multiplicity_row_numbers(
+    source: IngestedSource,
+) -> frozenset[int]:
+    """Return every LTCCE row in a multiply represented nominal plot key.
+
+    The delivered file has no column that explains these extra observations.
+    They are therefore neither automatically deduplicated nor interpreted as
+    exchangeable replicates.  Binding the hold to the physical nominal-key
+    positions keeps all source rows in the inventory while making the unknown
+    analytical grain explicit.
+    """
+
+    if not (
+        source.shape_adapter_version == "ltcce-long-csv-v1"
+        or source.source_name == "ltcce"
+    ):
+        return frozenset()
+    key_positions = tuple(range(1, 12))
+    groups: dict[tuple[str, ...], list[int]] = {}
+    for raw_row in source.rows:
+        key = tuple(
+            _field_raw_value(raw_row, position)
+            for position in key_positions
+        )
+        groups.setdefault(key, []).append(raw_row.source_row_number)
+    return frozenset(
+        row_number
+        for row_numbers in groups.values()
+        if len(row_numbers) > 1
+        for row_number in row_numbers
+    )
+
+
 def _reviewed_or_configured_category(
     record: Mapping[str, Any],
     *,
@@ -988,6 +1033,8 @@ def _finalize_canonical_record(
     nutrient_unit_controls: Mapping[str, ReviewedNutrientUnitControl],
     category_lookups: Mapping[str, ReviewedLookupTable],
     restricted_policy: RestrictedDataPolicy | None,
+    yield_precedence: str = "require_consistency",
+    yield_precedence_review_id: str | None = None,
 ) -> dict[str, Any]:
     n_parse = parse_numeric(
         _optional_field(record, "inorganic_n_rate"),
@@ -1020,6 +1067,8 @@ def _finalize_canonical_record(
         missing_values,
         kg_missing_state_lookup=missing_state_maps.get("yield_kg_ha"),
         t_missing_state_lookup=missing_state_maps.get("yield_t_ha"),
+        both_present_policy=yield_precedence,
+        precedence_review_id=yield_precedence_review_id,
     )
     configured_units = schema.get("units", {})
     configured_n_unit = str(configured_units.get("n_rate", CANONICAL_N_RATE_UNIT))
@@ -1130,6 +1179,13 @@ def _finalize_canonical_record(
     study_id = _optional_field(record, "study_id")
     trial_id = _optional_field(record, "trial_id")
     site_id = _optional_field(record, "site_id") or _optional_field(record, "location")
+    # A source-specific trial/site identifier is the conservative fallback for
+    # the selected duplicate-location key when no separate location column was
+    # mapped.  Keep it explicit in the canonical record so duplicate rules do
+    # not silently skip every row due to an absent key component.
+    if not _optional_field(record, "location") and trial_id.strip():
+        record["location"] = trial_id
+        record["location_derivation_status"] = "trial_or_site_identifier_proxy"
     record.update(
         {
             "study_uid": (
@@ -1313,7 +1369,12 @@ def _finalize_canonical_record(
         record["restricted_release_status"] = "not_restricted"
         record["controlled_subject_uid"] = None
     elif restricted_policy is None:
-        record["restricted_release_status"] = "blocked_controls_missing"
+        # Full processing may retain restricted rows in memory for internal
+        # analysis and QC without manufacturing an approval workflow.  The
+        # reporting layer enforces the complementary rule: these rows are
+        # omitted from every public row-level table when no reviewed disclosure
+        # projection is configured.
+        record["restricted_release_status"] = "internal_only_no_public_row_release"
         record["controlled_subject_uid"] = None
     else:
         for label, review_id in (
@@ -1363,6 +1424,9 @@ def _curate_source(
     records: list[dict[str, Any]] = []
     previous_source_row_number = 1
     source_arms = _source_arms(effective_map)
+    unresolved_multiplicity_rows = _ltcce_unresolved_multiplicity_row_numbers(
+        source
+    )
 
     for raw_row in source.rows:
         if any(
@@ -1433,7 +1497,13 @@ def _curate_source(
                     parent_row_uid,
                     arm.arm_id,
                 ),
-                "comparison_set_uid": _stable_uid("comparison-set-v1", parent_row_uid),
+                "comparison_set_uid": (
+                    _stable_uid("comparison-set-v1", parent_row_uid)
+                    if arm.comparability_group_id is not None
+                    or arm.recommendation_set_membership_status
+                    == "verified_context_comparable"
+                    else None
+                ),
                 "recommendation_set_membership_status": (
                     arm.recommendation_set_membership_status
                 ),
@@ -1475,6 +1545,16 @@ def _curate_source(
                             and disposition.variable_family
                         }
                     )
+                ),
+                "source_row_multiplicity_status": (
+                    "unresolved_nominal_plot_multiplicity"
+                    if raw_row.source_row_number in unresolved_multiplicity_rows
+                    else "not_detected"
+                ),
+                "source_row_multiplicity_reason_codes": (
+                    ("LTCCE_UNRESOLVED_ROW_MULTIPLICITY",)
+                    if raw_row.source_row_number in unresolved_multiplicity_rows
+                    else ()
                 ),
             }
             effective_fields = dict(schema_fields)
@@ -1557,6 +1637,10 @@ def _curate_source(
                     nutrient_unit_controls=effective_map.nutrient_unit_controls,
                     category_lookups=category_lookups,
                     restricted_policy=restricted_policy,
+                    yield_precedence=effective_map.yield_precedence,
+                    yield_precedence_review_id=(
+                        effective_map.yield_precedence_review_id
+                    ),
                 )
             )
         previous_source_row_number = raw_row.source_row_number
