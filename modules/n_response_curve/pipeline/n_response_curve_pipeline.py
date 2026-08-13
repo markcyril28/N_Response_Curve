@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
@@ -47,7 +48,11 @@ from n_response_curve.data.provenance import (
     verify_source_integrity,  # noqa: F401  (Phase 1 compatibility re-export)
 )
 from n_response_curve.data.qc import QcReport, build_qc_report
-from n_response_curve.logging.run_logging import RunLogger
+from n_response_curve.logging.run_logging import (
+    RunLogger,
+    exception_was_logged,
+    format_console_exception,
+)
 from n_response_curve.pipeline.policy_governance import (
     ReviewGatePolicy,
     phase_two_review_disposition,
@@ -55,6 +60,7 @@ from n_response_curve.pipeline.policy_governance import (
     validate_runtime_policy,
 )
 from n_response_curve.pipeline.workflow import (
+    _release_run_id,
     build_effective_model_policy,
     release_phases_three_to_five,
     run_phase_four,
@@ -755,8 +761,14 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         model_policy,
         policy_snapshot,
     ) = _preflight_runtime(config_path, project_root=project_root)
-    run_id = f"n_response_{config.run_mode}_{config.raw['run']['random_seed']}"
-    run_log = RunLogger(level=str(config.raw["logging"]["level"]), run_id=run_id)
+    run_id = _release_run_id(config)
+    run_log = RunLogger(
+        level=str(config.raw["logging"]["level"]),
+        run_id=run_id,
+        stream=sys.stdout,
+        error_stream=sys.stderr,
+        project_root=config.project_root,
+    )
     run_context = {
         "mode": config.run_mode,
         "writes_outputs": config.writes_outputs,
@@ -837,15 +849,16 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         theoretical_candidates=phase_four.registry.theoretical_candidate_count,
     )
     run_log.info("resource_snapshot", **_resource_snapshot(config, phase="end"))
-    phase_five = release_phases_three_to_five(
-        config,
-        phase_two,
-        phase_three,
-        phase_four,
-        run_log=run_log,
-        policy_snapshot=policy_snapshot,
-        analysis_policy=analysis_policy,
-    )
+    with run_log.stage("phase_5"):
+        phase_five = release_phases_three_to_five(
+            config,
+            phase_two,
+            phase_three,
+            phase_four,
+            run_log=run_log,
+            policy_snapshot=policy_snapshot,
+            analysis_policy=analysis_policy,
+        )
     run_log.info(
         "run_completed",
         release_package=phase_five.package.target_path,
@@ -882,11 +895,41 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return run(args.config, project_root=project_root)
     except ConfigError as exc:
-        print(f"configuration-error: {exc}", file=sys.stderr)
+        if not exception_was_logged(exc):
+            print(
+                format_console_exception(
+                    timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    event="configuration_error",
+                    exc=exc,
+                    project_root=project_root,
+                ),
+                file=sys.stderr,
+            )
         return 2
     except OSError as exc:
-        print(f"runtime-error: {exc}", file=sys.stderr)
+        if not exception_was_logged(exc):
+            print(
+                format_console_exception(
+                    timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    event="runtime_error",
+                    exc=exc,
+                    project_root=project_root,
+                ),
+                file=sys.stderr,
+            )
         return 2
+    except Exception as exc:
+        if not exception_was_logged(exc):
+            print(
+                format_console_exception(
+                    timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    event="runtime_error",
+                    exc=exc,
+                    project_root=project_root,
+                ),
+                file=sys.stderr,
+            )
+        return 1
 
 
 if __name__ == "__main__":
