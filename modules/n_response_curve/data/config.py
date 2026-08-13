@@ -895,7 +895,10 @@ def validate_config(
     outputs = data["outputs"]
     _check_unknown_keys(
         outputs,
-        {"atomic_writes", "allow_source_targets", "row_level_qc", "collision_policy"},
+        {
+            "atomic_writes", "allow_source_targets", "row_level_qc", "collision_policy",
+            "clear_output_root_before_run",
+        },
         where="[outputs]",
     )
     _require_bool(outputs, "atomic_writes", where="[outputs]")
@@ -912,15 +915,30 @@ def validate_config(
         raise ConfigError(
             "[outputs].collision_policy must be 'replace_only_with_overwrite' when [run].overwrite is true"
         )
+    _require_bool(outputs, "clear_output_root_before_run", where="[outputs]")
+    if outputs["clear_output_root_before_run"]:
+        if mode == "validate":
+            raise ConfigError("validate mode cannot clear the output root")
+        if not run["overwrite"]:
+            raise ConfigError(
+                "[outputs].clear_output_root_before_run requires [run].overwrite to be true"
+            )
 
     logging = data["logging"]
-    _check_unknown_keys(logging, {"level", "write_logs_in_validate"}, where="[logging]")
+    _check_unknown_keys(
+        logging,
+        {"level", "write_logs_in_validate", "clear_log_root_before_run"},
+        where="[logging]",
+    )
     _require_string(logging, "level", where="[logging]")
     if logging["level"] not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
         raise ConfigError("[logging].level is invalid")
     _require_bool(logging, "write_logs_in_validate", where="[logging]")
     if mode == "validate" and logging["write_logs_in_validate"]:
         raise ConfigError("validate mode cannot write logs")
+    _require_bool(logging, "clear_log_root_before_run", where="[logging]")
+    if mode == "validate" and logging["clear_log_root_before_run"]:
+        raise ConfigError("validate mode cannot clear the log root")
 
     engines = data["engines"]
     _check_unknown_keys(
