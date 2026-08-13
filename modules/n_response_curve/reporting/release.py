@@ -991,6 +991,85 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
     )
 
 
+_ANALYSIS_POPULATION_DISPOSITIONS = frozenset(
+    {
+        "retained_descriptive_only",
+        "retained_without_credible_model",
+        "removed_from_analysis_population",
+    }
+)
+
+
+def _validate_analysis_population_selection(manifest: Mapping[str, Any]) -> None:
+    """Refuse to promote a successful run that does not record its own selection.
+
+    Under literal `OPS-03` any warning, unresolved field, or excluded series is
+    fatal, so a run that reached this point did so with an analysis population
+    that is by construction the subset producing none of those states. An
+    unrecorded selection of that kind is as release-blocking as an unresolved
+    disposition (Plan Section 12, release gate; Phase 5 Task 13 step 7).
+    """
+
+    status = manifest.get("status")
+    if not isinstance(status, str) or not status.endswith("_release_complete"):
+        return
+    selection = manifest.get("analysis_population_selection")
+    if not isinstance(selection, Mapping):
+        raise ReportingError(
+            "Successful run manifest is missing its analysis-population selection ledger"
+        )
+    ledger = selection.get("ledger")
+    comparison = selection.get("composition_comparison")
+    if not isinstance(ledger, Sequence) or isinstance(ledger, (str, bytes)):
+        raise ReportingError(
+            "Analysis-population selection ledger must be a list of series records"
+        )
+    if not isinstance(comparison, Sequence) or isinstance(comparison, (str, bytes)):
+        raise ReportingError(
+            "Analysis-population selection is missing its included-versus-excluded "
+            "composition comparison"
+        )
+    for entry in ledger:
+        if not isinstance(entry, Mapping):
+            raise ReportingError(
+                "Every analysis-population selection entry must be a record"
+            )
+        series_uid = entry.get("response_series_uid")
+        disposition = entry.get("disposition")
+        reason_codes = entry.get("reason_codes")
+        if not isinstance(series_uid, str) or not series_uid.strip():
+            raise ReportingError(
+                "Analysis-population selection entry is missing its response series"
+            )
+        if disposition not in _ANALYSIS_POPULATION_DISPOSITIONS:
+            raise ReportingError(
+                "Analysis-population selection entry has no recorded disposition: "
+                f"{series_uid}"
+            )
+        if isinstance(reason_codes, (str, bytes)) or not isinstance(
+            reason_codes,
+            Sequence,
+        ):
+            raise ReportingError(
+                "Analysis-population selection entry has no recorded reason: "
+                f"{series_uid}"
+            )
+    recorded_count = selection.get("resolved_or_removed_series_count")
+    if not isinstance(recorded_count, int) or isinstance(recorded_count, bool):
+        raise ReportingError(
+            "Analysis-population selection must count the series it resolved or removed"
+        )
+    if recorded_count != len(ledger):
+        raise ReportingError(
+            "Analysis-population selection count does not reconcile with its ledger"
+        )
+    if ledger and not comparison:
+        raise ReportingError(
+            "Analysis-population selection excluded series without comparing "
+            "included and excluded composition"
+        )
+
+
 def write_release_package(
     target_path: str | Path,
     *,
