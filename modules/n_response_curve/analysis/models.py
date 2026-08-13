@@ -2619,7 +2619,7 @@ def credible_model_attempts(attempts: Iterable[ModelAttempt]) -> tuple[ModelAtte
         if attempt.status == "fitted"
         and attempt.estimator_status == "primary_reviewed"
         and attempt.credibility_status == "passed"
-        and "UNIDENTIFIABLE_SHAPE_PARAMETERS" not in attempt.reason_codes
+        and not _CREDIBLE_SET_DEGENERACY_REASONS.intersection(attempt.reason_codes)
     ]
     return tuple(
         sorted(
@@ -2632,22 +2632,10 @@ def credible_model_attempts(attempts: Iterable[ModelAttempt]) -> tuple[ModelAtte
     )
 
 
-def select_reportable_model(attempts: Iterable[ModelAttempt]) -> ModelAttempt | None:
-    """Select one fitted candidate for the legacy ranked-selection policy."""
-
-    fitted = credible_model_attempts(attempts)
-    if not fitted:
-        return None
-    return min(
-        fitted,
-        key=lambda attempt: (
-            math.inf if attempt.aicc is None else attempt.aicc,
-            math.inf if attempt.grouped_prediction_rmse is None else attempt.grouped_prediction_rmse,
-            _MODEL_COMPLEXITY[attempt.model_name],
-            MODEL_ORDER.index(attempt.model_name),
-            attempt.model_attempt_uid,
-        ),
-    )
+# `MOD-02` Option D retains every credible candidate side by side. No ranked or
+# information-criterion selector belongs on this surface: `credible_model_attempts`
+# above is the only sanctioned reduction, and `build_curve_evidence` refuses any
+# policy other than `all_credible_no_selection` with `tie_breaking = "not_applicable"`.
 
 
 def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
