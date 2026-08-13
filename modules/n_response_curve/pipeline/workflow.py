@@ -2624,6 +2624,17 @@ def _complete_case_comparison_rows(
         if candidate is None:
             continue
         membership_rows = tuple(preparation.membership_rows)
+        summaries.extend(
+            _domain_dependent_contrast_group_rows(
+                candidate_id,
+                str(
+                    preparation.specification.get("outcome_name")
+                    or candidate.curve_outcome
+                ),
+                candidate.factor_names,
+                membership_rows,
+            )
+        )
         statuses = sorted(
             {
                 str(row.get("membership_status") or "unknown")
@@ -2658,6 +2669,7 @@ def _complete_case_comparison_rows(
                             "missing_count": (
                                 count if level == "__missing__" else 0
                             ),
+                            "withholding_rate": None,
                             "mean": None,
                             "median": None,
                             "minimum": None,
@@ -2693,6 +2705,7 @@ def _complete_case_comparison_rows(
                         "count": len(status_rows),
                         "available_count": len(numeric_values),
                         "missing_count": len(status_rows) - len(numeric_values),
+                        "withholding_rate": None,
                         "mean": sum(numeric_values) / len(numeric_values),
                         "median": median(numeric_values),
                         "minimum": min(numeric_values),
@@ -2719,6 +2732,7 @@ def _complete_case_comparison_rows(
                             "missing_count": (
                                 count if level == "__missing__" else 0
                             ),
+                            "withholding_rate": None,
                             "mean": None,
                             "median": None,
                             "minimum": None,
