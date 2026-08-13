@@ -80,7 +80,7 @@ if ! nrc_setup_logging "$PROJECT_ROOT" "setup_conda" "setup_${RUN_STAMP}_$$" "IN
   exit 2
 fi
 SETUP_LOG_PATH="$NRC_LOG_FILE"
-trap 'nrc_teardown_logging' EXIT
+trap 'nrc_teardown_logging || true' EXIT
 nrc_log INFO "setup_started" \
   "mode=$SETUP_MODE" \
   "manifest_path=$MANIFEST_FILE" \
@@ -950,6 +950,15 @@ else
   nrc_log ERROR "setup_failed" "mode=$SETUP_MODE" "environment=$ENV_NAME" "status=$status" || true
 fi
 print_setup_log_paths
-nrc_teardown_logging
+logging_status=0
+if nrc_teardown_logging; then
+  :
+else
+  logging_status=$?
+  printf 'setup_conda_script.sh: logging output could not be completed under: %s\n' "$LOG_ROOT" >&2
+fi
 trap - EXIT
+if [[ "$status" -eq 0 && "$logging_status" -ne 0 ]]; then
+  status=2
+fi
 exit "$status"
