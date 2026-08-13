@@ -916,10 +916,11 @@ def _asymptote_support_rows(
         observed_peak = finite_number(
             asymptotic.predicted_observed_domain_peak_yield_t_ha
         )
-        attainment = (
-            observed_peak / asymptote
-            if observed_peak is not None and asymptote not in {None, 0.0}
-            else None
+        attainment = _in_domain_attainment(
+            asymptotic,
+            asymptote=asymptote,
+            observed_peak=observed_peak,
+            reference_quantity=str(support_policy["reference_quantity"]),
         )
         if (
             attainment is None
@@ -927,8 +928,17 @@ def _asymptote_support_rows(
             < float(support_policy["minimum_in_domain_attainment_fraction"])
         ):
             reasons.add("ASYMPTOTE_IN_DOMAIN_ATTAINMENT_INSUFFICIENT")
-        variance = finite_number(
-            asymptotic.feature_variances.get("fitted_asymptote_yield_t_ha")
+        # The variance below is the fitter's delta-method value. Section 10.4
+        # forbids relying on it here, so the gate is bound to the recorded
+        # interval method and refuses until that method is executable rather
+        # than promoting a ceiling on a Wald standard error taken from a ridge.
+        interval_method = str(support_policy["asymptote_interval_method"])
+        variance = (
+            finite_number(
+                asymptotic.feature_variances.get("fitted_asymptote_yield_t_ha")
+            )
+            if interval_method in _EXECUTABLE_ASYMPTOTE_INTERVAL_METHODS
+            else None
         )
         relative_se = (
             math.sqrt(variance) / abs(asymptote)
@@ -937,6 +947,8 @@ def _asymptote_support_rows(
             and asymptote not in {None, 0.0}
             else None
         )
+        if interval_method not in _EXECUTABLE_ASYMPTOTE_INTERVAL_METHODS:
+            reasons.add("ASYMPTOTE_INTERVAL_METHOD_NOT_EXECUTABLE")
         if (
             relative_se is None
             or relative_se > float(support_policy["maximum_asymptote_relative_se"])
