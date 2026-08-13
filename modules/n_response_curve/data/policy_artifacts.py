@@ -1387,6 +1387,34 @@ def _final_cleaning_policies(
                             rule["reason_code"],
                             where=f"{rule_where}.reason_code",
                         ),
+                        statistic=(
+                            _nonempty_text(
+                                rule["statistic"],
+                                where=f"{rule_where}.statistic",
+                            )
+                            if rule["statistic"] is not None
+                            else None
+                        ),
+                        threshold=_optional_finite_number(
+                            rule["threshold"],
+                            where=f"{rule_where}.threshold",
+                        ),
+                        grouping_scope=(
+                            _nonempty_text(
+                                rule["grouping_scope"],
+                                where=f"{rule_where}.grouping_scope",
+                            )
+                            if rule["grouping_scope"] is not None
+                            else None
+                        ),
+                        minimum_group_size=(
+                            _integer(
+                                rule["minimum_group_size"],
+                                where=f"{rule_where}.minimum_group_size",
+                            )
+                            if rule["minimum_group_size"] is not None
+                            else None
+                        ),
                     )
                 )
             except ValueError as exc:
