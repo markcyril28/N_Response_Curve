@@ -597,14 +597,46 @@ def compare_checksum_revision(
         for field in comparable_fields
         if getattr(prior, field) != getattr(candidate, field)
     )
+    prior_context = {
+        "data_classification": _source_classification(
+            prior_data_classification,
+            where="prior source revision classification",
+        ),
+        "workbook_sha256": _optional_sha256(
+            prior_workbook_sha256,
+            where="prior source revision workbook_sha256",
+        ),
+        "workbook_sheet": _optional_text(prior_sheet),
+    }
+    candidate_context = {
+        "data_classification": _source_classification(
+            candidate_data_classification,
+            where="candidate source revision classification",
+        ),
+        "workbook_sha256": _optional_sha256(
+            candidate_workbook_sha256,
+            where="candidate source revision workbook_sha256",
+        ),
+        "workbook_sheet": _optional_text(candidate_sheet),
+    }
+    context_changed = tuple(
+        field
+        for field in ("data_classification", "workbook_sha256", "workbook_sheet")
+        if prior_context[field] != candidate_context[field]
+    )
+    changed = (*structural_changed, *context_changed)
     payload = {
         "prior": prior.as_dict(),
         "candidate": candidate.as_dict(),
+        "prior_context": prior_context,
+        "candidate_context": candidate_context,
         "changed_fields": changed,
     }
     return ChecksumRevisionComparison(
         prior=prior,
         candidate=candidate,
+        prior_context=MappingProxyType(prior_context),
+        candidate_context=MappingProxyType(candidate_context),
         changed_fields=changed,
         comparison_sha256=stable_json_sha256(payload),
     )
