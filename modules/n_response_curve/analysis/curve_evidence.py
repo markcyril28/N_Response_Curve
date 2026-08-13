@@ -858,6 +858,38 @@ def _approved_asymptote_support_policy(
     return {**dict(raw), **values, "authority": authority}
 
 
+def _in_domain_attainment(
+    attempt: ModelAttempt,
+    *,
+    asymptote: float | None,
+    observed_peak: float | None,
+    reference_quantity: str,
+) -> float | None:
+    """Return how far the observed domain climbed toward the fitted ceiling.
+
+    The two readings answer different questions and are not interchangeable
+    (PRF-011). Against the **ceiling level** the statistic is `mu(N_max) / C`,
+    which already stands at `(C - A) / C` before any nitrogen is applied, so on a
+    high-baseline site it largely measures baseline fertility: with a 5-of-6 t/ha
+    baseline a 0.9 gate passes once only 40% of the response range has been
+    traversed. Against the **response range** it is
+    `(mu(N_max) - mu(0)) / A = 1 - exp(-r * N_max)`, which starts at zero
+    whatever the baseline and measures exactly what the gate exists to check.
+    """
+
+    if asymptote in {None, 0.0}:
+        return None
+    if reference_quantity == "ceiling_level":
+        if observed_peak is None:
+            return None
+        return observed_peak / asymptote
+    rate = finite_number(attempt.parameters.get("rate"))
+    observed_max = finite_number(attempt.observed_n_max_kg_ha)
+    if rate is None or rate <= 0.0 or observed_max is None or observed_max < 0.0:
+        return None
+    return 1.0 - math.exp(-rate * observed_max)
+
+
 def _asymptote_support_rows(
     credible_attempts: Iterable[ModelAttempt],
     *,
