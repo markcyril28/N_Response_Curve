@@ -642,6 +642,28 @@ def compare_checksum_revision(
     )
 
 
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    return _nonempty_text(value, where="source revision context")
+
+
+def _optional_sha256(value: object, *, where: str) -> str | None:
+    if value is None:
+        return None
+    digest = _nonempty_text(value, where=where).lower()
+    if _SHA256_RE.fullmatch(digest) is None:
+        raise ConfigError(f"{where} is not a SHA-256 digest")
+    return digest
+
+
+def _source_classification(value: object, *, where: str) -> str:
+    classification = _nonempty_text(value, where=where)
+    if classification not in {"internal", "restricted"}:
+        raise ConfigError(f"{where} is unsupported")
+    return classification
+
+
 def parse_checksum_revision_approval(payload: Mapping[str, object]) -> ChecksumRevisionApproval:
     """Parse, but do not invent, an artifact-specific checksum acceptance record."""
 
@@ -654,6 +676,15 @@ def parse_checksum_revision_approval(payload: Mapping[str, object]) -> ChecksumR
         "new_sha256",
         "manifest_revision",
         "structural_comparison_sha256",
+        "prior_encoding",
+        "candidate_encoding",
+        "prior_data_classification",
+        "candidate_data_classification",
+        "prior_workbook_sha256",
+        "candidate_workbook_sha256",
+        "prior_workbook_path",
+        "prior_sheet",
+        "candidate_sheet",
         "prior_registered_path",
     }
     missing = required - set(payload)
