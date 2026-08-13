@@ -734,6 +734,51 @@ def _at_reviewed_parameter_boundary(
     )
 
 
+def _plateau_onset_domain_constraint_reasons(
+    model_name: str,
+    parameters: np.ndarray,
+    gate: _ReviewedModelGate,
+    *,
+    effective_lower: np.ndarray | None,
+    effective_upper: np.ndarray | None,
+) -> tuple[str, ...]:
+    """Return the degeneracy reasons for an onset resting on the domain narrowing.
+
+    Empty unless the fitted onset has come to rest on the observed-domain
+    interior constraint that :func:`_effective_parameter_bounds` adds *and* is
+    not simply sitting on a reviewed policy bound, which is a different
+    rejection with its own code. The mechanism-specific second code distinguishes
+    unidentifiability (``linear_plateau``) from shape duplication
+    (``quadratic_plateau``); the shared first code is what excludes the candidate
+    from the credible set.
+    """
+
+    if model_name not in _PLATEAU_ONSET_MODELS:
+        return ()
+    if effective_lower is None or effective_upper is None:
+        return ()
+    tolerance = gate.parameter_boundary_relative_tolerance
+
+    def _rests_on(lower: float, upper: float) -> bool:
+        scale = max(abs(lower), abs(upper), 1.0)
+        boundary_tolerance = max(scale * tolerance, tolerance)
+        onset = float(parameters[2])
+        return (
+            abs(onset - lower) <= boundary_tolerance
+            or abs(onset - upper) <= boundary_tolerance
+        )
+
+    if not _rests_on(float(effective_lower[2]), float(effective_upper[2])):
+        return ()
+    if _rests_on(float(gate.lower_bounds[2]), float(gate.upper_bounds[2])):
+        # The reviewed bound is the binding constraint here, not the narrowing.
+        return ()
+    mechanism = _PLATEAU_DOMAIN_CONSTRAINT_MECHANISMS.get(model_name)
+    if mechanism is None:
+        return (_PLATEAU_DOMAIN_CONSTRAINT_REASON,)
+    return (_PLATEAU_DOMAIN_CONSTRAINT_REASON, mechanism)
+
+
 def _uncertainty_gate(
     policy: Mapping[str, Any],
     observation_evidence: Sequence[Mapping[str, Any]],
