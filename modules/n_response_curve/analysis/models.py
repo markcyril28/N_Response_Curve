@@ -1163,6 +1163,31 @@ def _parameter_standard_errors(
         value = float(np.max(relative))
     except (FloatingPointError, ValueError, np.linalg.LinAlgError):
         return None
+    return standard_errors if np.isfinite(standard_errors).all() else None
+
+
+def _parameter_precision_summary(
+    model_name: str,
+    x: np.ndarray,
+    parameters: np.ndarray,
+    *,
+    rss: float,
+    residual_df: int,
+    scale_floor: float,
+) -> float | None:
+    standard_errors = _parameter_standard_errors(
+        model_name,
+        x,
+        parameters,
+        rss=rss,
+        residual_df=residual_df,
+    )
+    if standard_errors is None:
+        return None
+    relative = standard_errors / np.maximum(np.abs(parameters), scale_floor)
+    if not np.isfinite(relative).all():
+        return None
+    value = float(np.max(relative))
     return value if math.isfinite(value) else None
 
 
