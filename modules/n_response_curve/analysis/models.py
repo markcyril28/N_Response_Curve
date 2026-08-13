@@ -47,13 +47,6 @@ _MODEL_INITIALIZATION_STRATEGIES = {
     "quadratic_plateau": "deterministic_data_anchored",
     "mitscherlich": "deterministic_data_anchored",
 }
-_MODEL_COMPLEXITY = {
-    "linear": 1,
-    "quadratic": 2,
-    "linear_plateau": 3,
-    "quadratic_plateau": 3,
-    "mitscherlich": 3,
-}
 _MINIMUM_FITTED_LEVEL_COUNT = 4
 _BROAD_ROSTER_LEVEL_COUNT = 5
 _PLATEAU_ONSET_MODELS = frozenset({"linear_plateau", "quadratic_plateau"})
@@ -1159,8 +1152,6 @@ def _parameter_standard_errors(
         if not np.isfinite(variances).all() or np.min(variances) < -1.0e-10:
             return None
         standard_errors = np.sqrt(np.maximum(variances, 0.0))
-        relative = standard_errors / np.maximum(np.abs(parameters), scale_floor)
-        value = float(np.max(relative))
     except (FloatingPointError, ValueError, np.linalg.LinAlgError):
         return None
     return standard_errors if np.isfinite(standard_errors).all() else None
@@ -2737,5 +2728,4 @@ __all__ = [
     "fit_candidate_model",
     "fit_response_models",
     "model_attempt_record",
-    "select_reportable_model",
 ]
