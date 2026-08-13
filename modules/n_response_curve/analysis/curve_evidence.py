@@ -1192,6 +1192,18 @@ def _asymptote_reporting_rows(
         )
         if variance is None or variance <= 0.0:
             reasons.add("ASYMPTOTE_FRACTION_RATE_UNCERTAINTY_UNAVAILABLE")
+        # Section 10.4 makes a normal delta interval on a weakly approached
+        # asymptote non-self-authorizing: the policy must record the method *and*
+        # its demonstrated validity under the approved design and estimator.
+        # Without the demonstration the variance above is not publishable, so
+        # the standard error is suppressed rather than shipped unqualified.
+        elif not str(
+            reporting_policy.get("uncertainty_validity_demonstration") or ""
+        ).strip():
+            variance = None
+            reasons.add(
+                "ASYMPTOTE_FRACTION_RATE_UNCERTAINTY_VALIDITY_NOT_DEMONSTRATED"
+            )
         status = "available" if candidate_rate is not None and not reasons else "unavailable"
         identity = {
             "response_series_uid": attempt.response_series_uid,
