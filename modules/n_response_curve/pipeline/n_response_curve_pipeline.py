@@ -8,7 +8,7 @@ import re
 import resource
 import sys
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from dataclasses import dataclass
 
@@ -66,6 +66,10 @@ from n_response_curve.pipeline.workflow import (
     release_phases_three_to_five,
     run_phase_four,
     run_phase_three,
+)
+from n_response_curve.pipeline.workspace_reset import (
+    clear_log_workspace,
+    clear_output_workspace,
 )
 
 
@@ -608,6 +612,100 @@ def run_phase_two(
     )
 
 
+_REVIEW_CONTROL_PREFIX = "UNRESOLVED_REVIEW_CONTROL:"
+_QC_GATE_REASON_LIMIT = 8
+_QC_GATE_UID_LIMIT = 8
+_QC_GATE_UID_PREFIX_CHARS = 12
+
+
+def _qc_gate_blockers(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[tuple[str, int, int], ...], int]:
+    """Count blocking rows per reason code, collapsing the per-field review controls."""
+
+    row_counts: dict[str, int] = {}
+    control_fields: set[str] = set()
+    for row in rows:
+        labels: set[str] = set()
+        for reason in row.get("eligibility_reason_codes", ()):
+            reason = str(reason)
+            if reason.startswith(_REVIEW_CONTROL_PREFIX):
+                control_fields.add(reason[len(_REVIEW_CONTROL_PREFIX) :])
+                labels.add(f"{_REVIEW_CONTROL_PREFIX}*")
+            else:
+                labels.add(reason)
+        for label in labels:
+            row_counts[label] = row_counts.get(label, 0) + 1
+    ranked = tuple(
+        (
+            label,
+            count,
+            len(control_fields) if label == f"{_REVIEW_CONTROL_PREFIX}*" else 0,
+        )
+        for label, count in sorted(row_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    return ranked[:_QC_GATE_REASON_LIMIT], max(len(ranked) - _QC_GATE_REASON_LIMIT, 0)
+
+
+def _qc_gate_failure_message(
+    phase_two: PhaseTwoResult,
+    *,
+    review_rows: Sequence[Mapping[str, Any]],
+    blocking_rows: Sequence[Mapping[str, Any]],
+    review_gate_policy: ReviewGatePolicy | None,
+) -> str:
+    """Explain why the gate blocked in reason-code terms, not as a bare identifier dump."""
+
+    tier_counts: dict[str, int] = {}
+    for row in blocking_rows:
+        tier = str(row.get("eligibility_tier") or "unknown")
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
+    tiers = " ".join(f"{tier}={tier_counts[tier]}" for tier in sorted(tier_counts))
+    lines = [
+        f"Phase 2 strict QC gate failed: {len(blocking_rows)} of "
+        f"{phase_two.qc.inventory_rows} warning, unresolved, or excluded records "
+        f"require review (blocking tiers: {tiers})."
+    ]
+
+    ranked, remaining = _qc_gate_blockers(blocking_rows)
+    if ranked:
+        label_width = max(len(label) for label, _, _ in ranked)
+        lines.append("Top blockers:")
+        lines.extend(
+            f"  {label:<{label_width}}  {count:>6}"
+            + (f" ({fields} controls)" if fields else "")
+            for label, count, fields in ranked
+        )
+        if remaining:
+            lines.append(f"  ... ({remaining} more reason codes)")
+
+    if review_gate_policy is None:
+        lines.append(
+            f"No review-gate policy is loaded; 0 of {len(review_rows)} review rows are permitted."
+        )
+    else:
+        permitted = sum(
+            1
+            for row in review_rows
+            if review_gate_policy.permits(phase_two_review_disposition(row))
+        )
+        lines.append(
+            f"Review-gate policy {review_gate_policy.policy_id} permits {permitted} of "
+            f"{len(review_rows)} review rows; analysis-ledger rows block regardless."
+        )
+
+    uids = sorted(str(row.get("record_uid", "unresolved")) for row in blocking_rows)
+    preview = ", ".join(
+        uid[:_QC_GATE_UID_PREFIX_CHARS]
+        + ("..." if len(uid) > _QC_GATE_UID_PREFIX_CHARS else "")
+        for uid in uids[:_QC_GATE_UID_LIMIT]
+    )
+    if len(uids) > _QC_GATE_UID_LIMIT:
+        preview += f", ... ({len(uids) - _QC_GATE_UID_LIMIT} more)"
+    lines.append(f"First blocking record UIDs: {preview}")
+    return "\n".join(lines)
+
+
 def _enforce_phase_two_qc_gate(
     config: ValidatedConfig,
     phase_two: PhaseTwoResult,
@@ -637,15 +735,13 @@ def _enforce_phase_two_qc_gate(
         )
     if not blocking_rows:
         return
-    affected_uids = sorted(
-        str(row.get("record_uid", "unresolved")) for row in blocking_rows
-    )
-    preview = ", ".join(affected_uids[:20])
-    if len(affected_uids) > 20:
-        preview += f", ... ({len(affected_uids) - 20} more)"
     raise ConfigError(
-        "Phase 2 strict QC gate failed because warning, unresolved, or excluded records require review: "
-        + preview
+        _qc_gate_failure_message(
+            phase_two,
+            review_rows=review_rows,
+            blocking_rows=blocking_rows,
+            review_gate_policy=review_gate_policy,
+        )
     )
 
 
@@ -754,6 +850,28 @@ def _preflight_runtime(
     )
 
 
+def _prepare_run_workspace(
+    config_path: str | Path,
+    *,
+    project_root: str | Path,
+    log_root: str | Path,
+) -> int:
+    """Clear the log root before the launcher opens its log files.
+
+    The launcher runs this between the governance preflight and
+    ``nrc_setup_logging``: clearing the log subdirectories from inside the run
+    would delete the transcripts the shell helper is writing to. Like the
+    preflight, a failure here has no log trail.
+    """
+
+    config = load_config(config_path, project_root=project_root, check_files=True)
+    cleared = clear_log_workspace(config, log_root=log_root)
+    if cleared is not None:
+        print(f"log_root_cleared={_relative(Path(log_root), config.project_root)}")
+        print(f"log_entries_removed={len(cleared.removed)}")
+    return 0
+
+
 def run(config_path: str | Path, *, project_root: str | Path) -> int:
     (
         config,
@@ -821,6 +939,15 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         run_log.info("resource_snapshot", **_resource_snapshot(config, phase="end"))
         run_log.info("validation_completed", writes_outputs=False)
         return 0
+    # Phase 2 writes nothing, so this is the last point before the run's first
+    # write: a configuration or QC failure leaves prior packages intact.
+    output_clear = clear_output_workspace(config)
+    if output_clear is not None:
+        run_log.info(
+            "output_root_cleared",
+            output_root=output_clear.roots[0],
+            removed_entries=len(output_clear.removed),
+        )
     with run_log.stage("phase_3"):
         phase_three = run_phase_three(
             config,
@@ -888,12 +1015,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--prepare-run-workspace",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--log-root",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parents[3]
     try:
         if args.governance_preflight:
             _preflight_runtime(args.config, project_root=project_root)
             return 0
+        if args.prepare_run_workspace:
+            if args.log_root is None:
+                parser.error("--prepare-run-workspace requires --log-root")
+            return _prepare_run_workspace(
+                args.config,
+                project_root=project_root,
+                log_root=args.log_root,
+            )
         return run(args.config, project_root=project_root)
     except ConfigError as exc:
         if not exception_was_logged(exc):
