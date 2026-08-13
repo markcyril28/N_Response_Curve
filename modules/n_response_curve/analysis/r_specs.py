@@ -155,6 +155,15 @@ def _normalized_rows(
             ),
             "outcome_name": outcome_name,
             "outcome_value": row.get(outcome_name),
+            # Plan Section 10.8: the tested N design travels with every
+            # curve-feature row into Phase 4. A domain-dependent feature is
+            # withheld exactly when its turning point reaches the series' own
+            # highest tested rate, so without the truncation point a contrast
+            # cannot tell an agronomic difference from a difference between the
+            # two groups' N ladders.
+            "tested_n_min_kg_ha": row.get("tested_n_min_kg_ha"),
+            "tested_n_max_kg_ha": row.get("tested_n_max_kg_ha"),
+            "tested_n_level_count": row.get("tested_n_level_count"),
             **factors,
         }
         if dependence_unit_field is not None:
