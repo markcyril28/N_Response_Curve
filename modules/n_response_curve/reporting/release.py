@@ -1242,4 +1242,11 @@ def write_release_package(
         raise
 
 
-__all__ = ["ReleasePackage", "ReportingError", "TableArtifact", "verify_release_package", "write_release_package"]
+__all__ = [
+    "ReleasePackage",
+    "ReportingError",
+    "TableArtifact",
+    "reap_abandoned_stage_directories",
+    "verify_release_package",
+    "write_release_package",
+]
