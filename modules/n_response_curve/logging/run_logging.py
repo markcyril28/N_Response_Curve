@@ -58,6 +58,7 @@ _EVENT_TITLES = {
     "setup_started": "Setup started",
     "setup_completed": "Setup completed",
     "controlled_release_started": "Preparing controlled release",
+    "output_root_cleared": "Output root cleared",
     "validation_completed": "Validation completed",
     "configuration_error": "Configuration error",
     "runtime_error": "Runtime error",
@@ -72,6 +73,8 @@ _FIELD_LABELS = {
     "python_bin": "Python",
     "writes_outputs": "outputs",
     "release_target": "release",
+    "output_root": "output root",
+    "removed_entries": "removed",
     "release_package": "release",
     "status": "exit code",
     "failed_stage": "failed stage",
@@ -340,14 +343,25 @@ def format_console_event(
     lines = [header]
     for index, ((key, value), label) in enumerate(zip(details, detail_labels, strict=True)):
         branch = "└─" if index == len(details) - 1 and not traceback_lines else "├─"
-        rendered = _console_value(value, project_root=project_root)
+        # Split before rendering: _console_value escapes newlines, so a multi-line
+        # value has to become one indented block per line rather than one long line.
+        raw_lines = value.split("\n") if isinstance(value, str) else [value]
+        rendered_lines = [
+            _console_value(item, project_root=project_root) for item in raw_lines
+        ]
         value_color = _value_color(key, value)
+        painted = [
+            _paint(rendered, value_color, color=color) if value_color else rendered
+            for rendered in rendered_lines
+        ]
         lines.append(
             "                  "
             f"{_paint(branch, _ANSI_DIM, color=color)} "
             f"{_paint(f'{label:<{width}}', _ANSI_BLUE, color=color)}  "
-            f"{_paint(rendered, value_color, color=color) if value_color else rendered}"
+            f"{painted[0]}"
         )
+        continuation = " " * len(f"                  ├─ {'':<{width}}  ")
+        lines.extend(f"{continuation}{rendered}" for rendered in painted[1:])
     if traceback_lines:
         traceback_label = f"{_FIELD_LABELS['traceback']:<{width}}"
         lines.append(
