@@ -2535,6 +2535,10 @@ def _table_artifacts(
     integrity = phase_two.ingestion.integrity_report
     if integrity is None:
         raise ConfigError("Source-integrity report is required before a Phase 5 release")
+    release_artifact_sha256 = _release_source_artifact_sha256(
+        phase_two,
+        integrity,
+    )
     series_qc_rows, source_qc_rows = _qc_summary_tables(phase_two)
     public_curated_rows = _public_release_rows(
         phase_two,
@@ -2742,7 +2746,7 @@ def _table_artifacts(
         "source_integrity": TableArtifact(
             rows=tuple(
                 {"artifact_path": artifact_path, "sha256": sha256}
-                for artifact_path, sha256 in sorted(integrity.artifact_sha256.items())
+                for artifact_path, sha256 in release_artifact_sha256.items()
             ),
             stable_key="artifact_path",
         ),
