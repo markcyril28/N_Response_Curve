@@ -473,6 +473,15 @@ def run_phase_two(
             validate_source_data_policy_coverage(source_data_policy, ingestion)
         except (SourceDataPolicyError, ValueError) as exc:
             raise ConfigError(f"Source-data policy coverage failed: {exc}") from exc
+    source_scope_snapshot = None
+    if isinstance(source_data_policy, SourceDataPolicyBundle):
+        if ingestion.integrity_report is None:
+            raise ConfigError("Source-scope snapshot requires source-integrity evidence")
+        source_scope_snapshot = _build_runtime_source_scope_snapshot(
+            config,
+            source_data_policy,
+            ingestion.integrity_report,
+        )
     curation = curate_ingestion(
         ingestion,
         config,
