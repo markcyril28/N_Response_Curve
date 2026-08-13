@@ -117,6 +117,7 @@ LTCCE_LONG_ADAPTER_SPEC = SourceAdapterSpec(
 )
 BUILTIN_ADAPTER_SPECS: Mapping[str, SourceAdapterSpec] = {
     COMBINED_NOPT_RCM_ADAPTER_SPEC.version: COMBINED_NOPT_RCM_ADAPTER_SPEC,
+    LTCCE_LONG_ADAPTER_SPEC.version: LTCCE_LONG_ADAPTER_SPEC,
 }
 
 
@@ -605,6 +606,7 @@ __all__ = [
     "COMBINED_NOPT_RCM_ADAPTER_SPEC",
     "IngestedSource",
     "IngestionResult",
+    "LTCCE_LONG_ADAPTER_SPEC",
     "RawColumn",
     "RawRow",
     "KNOWN_REPRESENTATION_BASES",
