@@ -50,6 +50,7 @@ from n_response_curve.data.provenance import (
 from n_response_curve.data.qc import QcReport, build_qc_report
 from n_response_curve.logging.run_logging import (
     RunLogger,
+    console_colors_enabled,
     exception_was_logged,
     format_console_exception,
 )
@@ -902,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
                     event="configuration_error",
                     exc=exc,
                     project_root=project_root,
+                    color=console_colors_enabled(sys.stderr),
                 ),
                 file=sys.stderr,
             )
@@ -914,6 +916,7 @@ def main(argv: list[str] | None = None) -> int:
                     event="runtime_error",
                     exc=exc,
                     project_root=project_root,
+                    color=console_colors_enabled(sys.stderr),
                 ),
                 file=sys.stderr,
             )
@@ -926,6 +929,7 @@ def main(argv: list[str] | None = None) -> int:
                     event="runtime_error",
                     exc=exc,
                     project_root=project_root,
+                    color=console_colors_enabled(sys.stderr),
                 ),
                 file=sys.stderr,
             )
