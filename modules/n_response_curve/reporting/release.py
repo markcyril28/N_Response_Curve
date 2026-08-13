@@ -592,6 +592,85 @@ def _recover_interrupted_promotion(target: Path) -> None:
     raise ReportingError("Interrupted release promotion cannot be recovered automatically")
 
 
+def _stage_directory_pattern(target: Path) -> re.Pattern[str]:
+    """Match only staging directories this module creates for ``target``.
+
+    Anchoring on ``target.name`` is what makes reaping safe: the pattern cannot
+    match ``.release_history`` (the promotion journal and preserved priors), the
+    promoted package, or another release target's residue in the same root.
+    """
+
+    return re.compile(rf"^\.{re.escape(target.name)}\.stage-[A-Za-z0-9_]{{8}}$")
+
+
+def reap_abandoned_stage_directories(target: Path) -> tuple[str, ...]:
+    """Remove staging directories abandoned by a hard exit next to ``target``.
+
+    ``write_release_package`` removes its own staging directory on every Python
+    level failure, so a surviving one means the process died without unwinding
+    (SIGKILL, OOM, power loss) or that ``shutil.rmtree`` was denied. Nothing
+    ever reads these directories again -- ``_recover_interrupted_promotion``
+    looks only under ``.release_history`` -- so they accumulate as pure residue
+    in the release root.
+
+    A directory is only removed when ``verify_release_package`` rejects it.
+    ``CHECKSUMS.sha256`` is written last, immediately before verification and
+    promotion, so an in-flight staging directory fails that check for
+    essentially its whole life; a complete one is a promotable package and is
+    deliberately left alone for manual review rather than deleted.
+    """
+
+    release_root = target.parent
+    if not release_root.is_dir():
+        return ()
+    pattern = _stage_directory_pattern(target)
+    reaped: list[str] = []
+    for candidate in sorted(release_root.iterdir()):
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        if not pattern.fullmatch(candidate.name):
+            continue
+        try:
+            verify_release_package(candidate)
+        except ReportingError:
+            pass
+        except OSError:
+            # Unreadable for reasons unrelated to completeness; leave it for a
+            # human rather than guess.
+            continue
+        else:
+            continue
+        try:
+            shutil.rmtree(candidate)
+        except OSError:
+            continue
+        reaped.append(candidate.name)
+    return tuple(reaped)
+
+
+def _prune_empty_stage_directories(stage: Path) -> None:
+    """Drop directories left empty inside the staging package.
+
+    The staged inventory counts files only, so an empty directory is invisible
+    to it and to ``CHECKSUMS.sha256`` yet is still carried into the promoted
+    package by the atomic rename. ``r_stages/<candidate_id>/`` produces these
+    whenever a candidate's contract and input are unlinked and no ``result.json``
+    is written.
+    """
+
+    for directory in sorted(
+        (path for path in stage.rglob("*") if path.is_dir() and not path.is_symlink()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        try:
+            next(directory.iterdir())
+        except StopIteration:
+            directory.rmdir()
+        except OSError:
+            continue
+
+
 def _archived_governance_json(
     target: Path,
     checksums: Mapping[str, str],
