@@ -2496,6 +2496,34 @@ def _all_credible_curve_row(
             "supported_max_yield_range_t_ha": summary.ranges[
                 "supported_max_yield_t_ha"
             ],
+            # PRF-005: `MOD-02` and `MOD-05` fully specify the disagreement
+            # branch and say nothing about the agreement branch, which is the
+            # one that reaches a reader. Publishing one candidate's value after
+            # conditioning on agreement drops model uncertainty and selects on
+            # the agreement event, narrowing the interval twice over. Until the
+            # reviewed model policy records the estimator of the common value
+            # and its uncertainty rule, the spread across the agreeing
+            # candidates travels with every single value.
+            "finite_maximum_yield_range_t_ha": summary.ranges[
+                "finite_maximum_yield_t_ha"
+            ],
+            "fitted_asymptote_yield_range_t_ha": summary.ranges[
+                "fitted_asymptote_yield_t_ha"
+            ],
+            "predicted_observed_domain_peak_yield_range_t_ha": summary.ranges[
+                "predicted_observed_domain_peak_yield_t_ha"
+            ],
+            "attainable_yield_range_t_ha": _derived_value_range(
+                (_attainable_yield(attempt)[0] for attempt in credible),
+                expected_count=len(credible),
+            ),
+            "maximum_associated_n_range_kg_ha": _derived_value_range(
+                (_maximum_associated_rate(attempt)[0] for attempt in credible),
+                expected_count=len(credible),
+            ),
+            "credible_set_common_value_rule": (
+                "unrecorded_spread_reported_alongside_single_value"
+            ),
             "sole_credible_model_attempt_uid": (
                 credible[0].model_attempt_uid if len(credible) == 1 else None
             ),
