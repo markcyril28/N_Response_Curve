@@ -42,7 +42,11 @@ from n_response_curve.analysis.curve_views import DerivedCurveView, build_derive
 from n_response_curve.analysis.dataset_versions import DatasetVersion, build_dataset_versions
 from n_response_curve.analysis.explanatory import PythonAnalysisResult, execute_python_candidates, select_candidate_curve_rows
 from n_response_curve.analysis.factor_catalog import FactorCatalogEntry, build_factor_catalog
-from n_response_curve.reporting.plots import write_observed_series_figures, write_response_curve_figures
+from n_response_curve.reporting.plots import (
+    model_attempt_display_rows,
+    write_observed_series_figures,
+    write_response_curve_figures,
+)
 from n_response_curve.analysis.r_bridge import (
     RBridgeError,
     invoke_r_stage,
