@@ -921,7 +921,7 @@ def _repeat_aggregate(
     records: list[dict[str, Any]],
     *,
     series_uid: str,
-    comparison_set_uid: str,
+    comparison_set_uid: str | None,
     adjudication: RepeatAdjudication,
 ) -> dict[str, Any]:
     yields = [record.get("yield_t_ha") for record in records]
@@ -1206,10 +1206,14 @@ def resolve_response_series(
             for record in group:
                 _mark_unresolved(record, "MIXED_COMPARISON_SET_UID")
             continue
+        # A common trial context is not, by itself, evidence that distinct
+        # treatment arms are scientifically comparable.  Keep the identifier
+        # absent unless it entered the resolver with the reviewed arm or
+        # recommendation-membership evidence checked above.
         comparison_set_uid = (
             next(iter(reviewed_comparison_uids))
             if reviewed_comparison_uids
-            else _stable_identifier("comparison-set", comparison_keys[key])
+            else None
         )
         group_review_reasons: set[str] = set()
         approved_repeat_groups: list[
