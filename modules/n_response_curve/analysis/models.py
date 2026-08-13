@@ -2354,6 +2354,10 @@ def fit_candidate_model(
         asymptote_reporting_policy=policy.get("asymptote_reporting_policy"),
     )
     reasons = list(optimum_summary.reason_codes)
+    # A reviewed policy that permits boundary parameters lets the fit through the
+    # rejection above. The degeneracy is still real, so the reason travels with
+    # the attempt and `credible_model_attempts` excludes it unconditionally.
+    reasons.extend(domain_constraint_reasons)
     aicc = _aicc(rss, n_observations, parameter_count)
     if aicc is None:
         reasons.append("AICC_UNAVAILABLE")
@@ -2398,6 +2402,35 @@ def fit_candidate_model(
         policy=policy,
     )
     reasons.extend(credibility_reasons)
+    # Plan Section 10.2: curvature must be identified before a ratio-form turning
+    # point is reported. Where the reviewed precision gate cannot separate `c`
+    # from zero the curve may be monotone across the whole observed domain, so
+    # the rate is withheld with its own reason rather than published with a wide
+    # interval. The fitted yield at the peak is a better-behaved quantity and is
+    # deliberately not suppressed by the same trigger, so
+    # `finite_maximum_yield_t_ha` and the maximum reference basis pass through
+    # unchanged and only the rate becomes unavailable.
+    curvature_status, _curvature_relative_se = _curvature_identifiability(
+        model_name,
+        x,
+        parameters,
+        rss=rss,
+        residual_df=residual_df,
+        policy=policy,
+    )
+    reported_optimum_status = optimum_summary.optimum_status
+    reported_optimum_n_kg_ha = optimum_summary.agronomic_optimum_n_kg_ha
+    if reported_optimum_n_kg_ha is not None and curvature_status in {
+        "not_identified",
+        "unavailable",
+    }:
+        reported_optimum_status = "NO_IDENTIFIABLE_INTERIOR_MAXIMUM"
+        reported_optimum_n_kg_ha = None
+        reasons.append(
+            "QUADRATIC_CURVATURE_NOT_IDENTIFIED_AT_REVIEWED_PRECISION"
+            if curvature_status == "not_identified"
+            else "QUADRATIC_CURVATURE_IDENTIFIABILITY_DIAGNOSTIC_UNAVAILABLE"
+        )
     asymptote_influence_max_relative_shift: float | None = None
     asymptote_influence_fold_count = 0
     if model_name == "mitscherlich":
