@@ -833,6 +833,13 @@ def _approved_asymptote_support_policy(
         or not isinstance(fold_count, int)
         or isinstance(fold_count, bool)
         or fold_count < 1
+        # PRF-011/PRF-012: a threshold alone never activates MOD-08. The approver
+        # must also state what the attainment is a fraction *of*, and which
+        # interval method the ceiling gate uses, because a Wald interval fails in
+        # exactly the weak-approach regime that gate exists to reject.
+        or raw.get("reference_quantity") not in _ASYMPTOTE_REFERENCE_QUANTITIES
+        or raw.get("asymptote_interval_method")
+        not in _ASYMPTOTE_INTERVAL_METHODS
         or raw.get("maximum_associated_n_basis")
         != "smallest_prediction_grid_rate_meeting_attainment_threshold"
         or not isinstance(authority, Mapping)
