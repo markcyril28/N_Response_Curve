@@ -1524,6 +1524,15 @@ def _checksum_revision_approvals(
         "new_sha256",
         "manifest_revision",
         "structural_comparison_sha256",
+        "prior_encoding",
+        "candidate_encoding",
+        "prior_data_classification",
+        "candidate_data_classification",
+        "prior_workbook_sha256",
+        "candidate_workbook_sha256",
+        "prior_workbook_path",
+        "prior_sheet",
+        "candidate_sheet",
         "prior_registered_path",
     }
     for index, record in enumerate(
