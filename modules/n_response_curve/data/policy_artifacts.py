@@ -1445,6 +1445,10 @@ def _final_cleaning_policies(
                     where=f"{where}.default_action",
                 ),
                 untrimmed_sensitivity_required=untrimmed_required,
+                prespecification_status=_nonempty_text(
+                    exact["prespecification_status"],
+                    where=f"{where}.prespecification_status",
+                ),
                 rules=tuple(rules),
             )
         except ValueError as exc:
