@@ -3755,6 +3755,14 @@ def release_phases_three_to_five(
         if phase_two.source_data_policy is not None
         else {"status": "not_configured"}
     )
+    if phase_two.source_scope_snapshot is not None:
+        source_policy_evidence["source_scope_snapshot_sha256"] = (
+            phase_two.source_scope_snapshot["snapshot_sha256"]
+        )
+    release_source_artifact_sha256 = _release_source_artifact_sha256(
+        phase_two,
+        integrity,
+    )
     literature_verification_rows = _literature_verification_rows(phase_two)
     literature_verification_evidence = (
         {
