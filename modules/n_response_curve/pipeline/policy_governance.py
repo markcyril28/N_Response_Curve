@@ -184,32 +184,18 @@ class RuntimePolicySnapshot:
     review_gate_policy: ReviewGatePolicy | None = None
 
     def manifest_payload(self, *, project_root: Path) -> dict[str, Any]:
-        artifact_relative: str | None = None
-        if self.artifact_path is not None:
-            try:
-                artifact_relative = self.artifact_path.relative_to(project_root).as_posix()
-            except ValueError:
-                artifact_relative = None
-        return {
+        payload = {
             "mode": self.mode,
             "status": self.status,
             "policy_content_sha256": self.policy_content_sha256,
             "effective_enablement_sha256": self.effective_enablement_sha256,
             "effective_enablement": _json_value(self.effective_enablement),
-            "approval": dict(self.approval) if self.approval is not None else None,
-            "approval_artifact_path": artifact_relative,
-            "approval_artifact_sha256": self.artifact_sha256,
-            "approval_authority_matrix": (
-                self.authority_matrix.manifest_payload(project_root=project_root)
-                if self.authority_matrix is not None
-                else None
-            ),
-            "review_gate_policy": (
-                self.review_gate_policy.manifest_payload(project_root=project_root)
-                if self.review_gate_policy is not None
-                else None
-            ),
         }
+        if self.review_gate_policy is not None:
+            payload["review_gate_policy"] = self.review_gate_policy.manifest_payload(
+                project_root=project_root
+            )
+        return payload
 
 
 def _json_value(value: Any) -> Any:
@@ -295,7 +281,9 @@ def _semantic_policy(
         "replacement": {
             "control": "run.overwrite",
             "requires_named_target": True,
-            "requires_approved_record": True,
+            "requires_verified_prior_package": True,
+            "requires_technical_hash_binding": True,
+            "requires_organizational_approval": False,
             "requires_validated_stage": True,
             "preserve_prior_package": True,
         },
@@ -949,7 +937,7 @@ def _validate_approved_snapshot(
 
 
 def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
-    """Validate runtime policy before restricted access or authoritative use."""
+    """Validate the effective runtime contract without organizational approvals."""
 
     forbidden_figures = set(config.figure_formats) - {"png", "jpeg"}
     if forbidden_figures:
@@ -965,81 +953,20 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
         if not bool(config.raw["outputs"]["row_level_qc"]):
             raise ConfigError("Writing modes require complete machine-readable row-level QC")
 
-    snapshot_path: Path | None = None
-    if config.run_mode == "full":
-        snapshot_path = (
-            config.paths["run_metadata_root"]
-            / "approvals"
-            / "policy_snapshots"
-            / "full.json"
-        ).resolve()
-        if not snapshot_path.is_relative_to(config.project_root):
-            raise ConfigError("Approved policy snapshot path escapes the project root")
-        if not snapshot_path.is_file():
-            raise ConfigError(
-                "The requested authoritative operation requires a standalone approved policy snapshot"
-            )
-
-    review_gate_path = _review_gate_policy_path(config)
-    authority_matrix = None
-    if (
-        config.run_mode == "full"
-        or _enabled_restricted_sources(config)
-        or review_gate_path.is_file()
-    ):
-        authority_matrix = load_approval_authority_matrix(
-            _authority_matrix_path(config)
-        )
-    review_gate_policy = (
-        load_review_gate_policy(
-            review_gate_path,
-            authority_matrix=authority_matrix,
-        )
-        if review_gate_path.is_file() and authority_matrix is not None
-        else None
-    )
-    content = _policy_content(config, review_gate_policy, authority_matrix)
+    content = _policy_content(config)
     content_hash = stable_json_sha256(content)
     enablement = dict(content["effective_enablement"])
-    if config.run_mode != "full":
-        return RuntimePolicySnapshot(
-            mode=config.run_mode,
-            status="non_authoritative_runtime_contract",
-            policy_content_sha256=content_hash,
-            effective_enablement_sha256=str(content["effective_enablement_sha256"]),
-            effective_enablement=enablement,
-            approval=None,
-            artifact_path=None,
-            artifact_sha256=None,
-            authority_matrix=authority_matrix,
-            review_gate_policy=review_gate_policy,
-        )
-
-    if snapshot_path is None or authority_matrix is None:
-        raise ConfigError("Authoritative policy authority was not resolved")
-    snapshot = _validate_approved_snapshot(
-        config,
-        path=snapshot_path,
-        expected_content=content,
-    )
-    runtime_party = authority_matrix.gate_authorities["runtime_integrity"][
-        "accountable_party"
-    ]
-    if snapshot.approval is None or snapshot.approval["approved_by"] != runtime_party:
-        raise ConfigError(
-            "Approved runtime snapshot signer is not the accountable runtime-integrity "
-            "party in the OPS-08 authority matrix"
-        )
-    if _approval_calendar_date(
-        snapshot.approval["approved_at"]
-    ) < _approval_calendar_date(authority_matrix.effective_from):
-        raise ConfigError(
-            "Approved runtime snapshot predates the effective OPS-08 authority matrix"
-        )
-    return replace(
-        snapshot,
-        authority_matrix=authority_matrix,
-        review_gate_policy=review_gate_policy,
+    return RuntimePolicySnapshot(
+        mode=config.run_mode,
+        status="runtime_contract",
+        policy_content_sha256=content_hash,
+        effective_enablement_sha256=str(content["effective_enablement_sha256"]),
+        effective_enablement=enablement,
+        approval=None,
+        artifact_path=None,
+        artifact_sha256=None,
+        authority_matrix=None,
+        review_gate_policy=None,
     )
 
 
