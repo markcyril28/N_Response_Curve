@@ -36,7 +36,7 @@ series_identity_dimensions = [
 enabled_sources = [
   "core_trial_data",
   # "ph_combined_nopt_rcm", # Received and registered; disabled until its adapter, mapping, precision, and restricted-data gates pass.
-  # "ltcce",
+  # "ltcce", # Received 2026-08-13 and registered; disabled until intake-manifest registration, provider attribution (MV-028), row-multiplicity resolution, schema harmonization, and the restricted_fit_models roster pass.
 ]
 
 enabled_models = [
