@@ -69,10 +69,91 @@ from n_response_curve.reporting.release import (
     ReleasePackage,
     ReportingError,
     TableArtifact,
+    reap_abandoned_stage_directories,
     verify_release_package,
     write_release_package,
 )
-from n_response_curve.logging.run_logging import RunLogger
+from n_response_curve.logging.run_logging import PACKAGE_LOG_RELATIVE_PATH, RunLogger
+
+# Release-package layout. Every in-package path is declared once here so the
+# manifest advertises exactly what the stage writers created: the manifest and
+# the write site used to carry the same string as unlinked literals, which
+# nothing verifies and nothing tests.
+_LEDGER_DIR = "ledgers"
+_MULTIPLICITY_LEDGER_PATH = f"{_LEDGER_DIR}/multiplicity_reconciliation.json"
+_CLAIM_CLASSIFICATION_LEDGER_PATH = f"{_LEDGER_DIR}/claim_classification.json"
+_TERMINAL_STATUS_LEDGER_PATH = f"{_LEDGER_DIR}/analysis_terminal_statuses.json"
+_REVIEW_ISSUE_LEDGER_PATH = f"{_LEDGER_DIR}/review_issue_ledger.json"
+
+# Released tables are grouped by the pipeline stage that produced them. The
+# release layer writes tables/<group>/<name>.<format>; a table absent from this
+# registry is a release-blocking error rather than a silent flat write, so
+# adding a table forces an explicit decision about where it belongs.
+_RELEASE_TABLE_GROUPS: Mapping[str, str] = {
+    # Phase 2 curated record-level data and its cleaning decisions.
+    "curated_master": "dataset",
+    "final_cleaning_decisions": "dataset",
+    "final_cleaning_sensitivity": "dataset",
+    "duplicate_adjudication_ledger": "dataset",
+    "series_identity_ledger": "dataset",
+    "restricted_release_ledger": "dataset",
+    "dataset_versions": "dataset",
+    # Integrity, eligibility, and QC ledgers.
+    "source_integrity": "quality",
+    "literature_verification": "quality",
+    "eligibility_ledger": "quality",
+    "analysis_eligibility_ledger": "quality",
+    "series_qc": "quality",
+    "source_qc": "quality",
+    # Phase 3 observed curves and model attempts.
+    "series_evidence": "curves",
+    "curve_features": "curves",
+    "model_attempts": "curves",
+    "model_predictions": "curves",
+    "credible_models": "curves",
+    "selected_models": "curves",
+    "economic_optima": "curves",
+    "n_efficiency": "curves",
+    "efficiency_operating_points": "curves",
+    "asymptote_support": "curves",
+    "asymptote_reporting": "curves",
+    "environmental_risk_flags": "curves",
+    # Phase 4 analysis matrix and its descriptive companions.
+    "analysis_candidates": "analysis",
+    "candidate_complete_case_membership": "analysis",
+    "candidate_complete_case_composition": "analysis",
+    "candidate_complete_case_comparison": "analysis",
+    "analysis_population_selection_ledger": "analysis",
+    "analysis_population_composition_comparison": "analysis",
+    "analysis_pruned_families": "analysis",
+    "factor_catalog": "analysis",
+    "python_analysis_execution": "analysis",
+    "descriptive_summaries": "analysis",
+    "management_system_proximity": "analysis",
+    # Phase 4 derived dataset-version views.
+    "derived_curve_features": "derived",
+    "derived_curve_views": "derived",
+    "derived_model_attempts": "derived",
+    "derived_model_predictions": "derived",
+    "derived_economic_optima": "derived",
+}
+
+
+def _grouped_release_tables(
+    tables: Mapping[str, TableArtifact],
+) -> dict[str, TableArtifact]:
+    """Bind every released table to its declared ``tables/<group>/`` location."""
+
+    missing = sorted(set(tables) - set(_RELEASE_TABLE_GROUPS))
+    if missing:
+        raise ConfigError(
+            "Released tables have no declared release-package group: "
+            f"{', '.join(missing)}"
+        )
+    return {
+        name: replace(artifact, group=_RELEASE_TABLE_GROUPS[name])
+        for name, artifact in tables.items()
+    }
 
 
 @dataclass(frozen=True)
