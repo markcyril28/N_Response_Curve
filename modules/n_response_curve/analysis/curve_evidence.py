@@ -2280,6 +2280,18 @@ def _curve_row(
         "k_rate_kg_k2o_ha": finite_number(evidence_rows[0].get("k_rate_kg_k2o_ha")),
         "series_observed_n_min_kg_ha": float(min(n_rates)),
         "series_observed_n_max_kg_ha": float(max(n_rates)),
+        # Plan Section 10.7: the tested N design travels with every curve-feature
+        # row, including rows whose optimum is withheld, because withholding
+        # happens exactly when the turning point reaches this series' own highest
+        # tested rate. Without it Phase 4 cannot tell a contextual difference in
+        # optimum N from a difference between the two groups' N ladders
+        # (Plan Section 10.8). `series_observed_n_min_kg_ha`,
+        # `series_observed_n_max_kg_ha`, and `series_distinct_n_level_count` are
+        # the same three quantities under their pre-existing spellings, retained
+        # as deprecated aliases for one release under `MV-022`.
+        "tested_n_min_kg_ha": float(min(n_rates)),
+        "tested_n_max_kg_ha": float(max(n_rates)),
+        "tested_n_level_count": distinct_level_count,
         "curve_shape_class": representative.curve_shape_class,
         "optimum_status": representative.optimum_status,
         "agronomic_optimum_n_kg_ha": representative.agronomic_optimum_n_kg_ha,
