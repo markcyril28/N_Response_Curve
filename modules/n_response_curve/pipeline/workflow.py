@@ -2778,13 +2778,22 @@ def _source_registry(
             if manifest_artifact_path is not None
             else None
         )
+        restricted = source["data_classification"] == "restricted"
+        released_manifest_artifact_path = manifest_artifact_path
+        if restricted and digest is not None:
+            released_manifest_artifact_path = (
+                "restricted_artifact_"
+                + stable_json_sha256(
+                    {"source_name": source_name, "artifact_role": "data_path"}
+                )[:24]
+            )
         registry[source_name] = {
             "source_type": source["source_type"],
             "country_code": source.get("country_code"),
             "source_family": source.get("source_family", source_name),
-            "data_path": source["data_path"],
-            "schema_map": source["schema_map"],
-            "workbook": source.get("workbook"),
+            "data_path": None if restricted else source["data_path"],
+            "schema_map": None if restricted else source["schema_map"],
+            "workbook": None if restricted else source.get("workbook"),
             "sheet": source.get("sheet"),
             "provider": source["provider"],
             "provenance_notes": source["provenance_notes"],
@@ -2811,7 +2820,12 @@ def _source_registry(
             ),
             "source_scope_review_id": getattr(scope_record, "review_id", None),
             "source_scope_sha256": source_scope_sha256,
-            "manifest_artifact_path": manifest_artifact_path,
+            "source_locator_disclosure_status": (
+                "withheld_restricted_source_locator"
+                if restricted
+                else "registered_internal_source_locator"
+            ),
+            "manifest_artifact_path": released_manifest_artifact_path,
             "sha256": digest,
             "checksum_status": (
                 "verified"
