@@ -1191,6 +1191,64 @@ def _parameter_precision_summary(
     return value if math.isfinite(value) else None
 
 
+def _curvature_identifiability(
+    model_name: str,
+    x: np.ndarray,
+    parameters: np.ndarray,
+    *,
+    rss: float,
+    residual_df: int,
+    policy: Mapping[str, Any],
+) -> tuple[str, float | None]:
+    """Judge whether a `quadratic` turning point has an identified curvature.
+
+    The `quadratic` optimum is `-b / (2c)`, a ratio of estimated coefficients.
+    Its sampling distribution is heavy-tailed and its delta-method interval
+    degrades as `|c| / SE(c)` falls, which the four- and five-level tiers make
+    the routine case rather than the exception. Where the reviewed precision gate
+    cannot separate `c` from zero the curve may be monotone across the whole
+    observed domain, so there is no turning point to report at any width
+    (Plan Section 10.2). The verdict reuses the reviewed
+    ``maximum_parameter_relative_standard_error`` threshold rather than inventing
+    a second one, and no threshold is assumed when the reviewed policy is absent.
+
+    The comparison is deliberately against ``|c|`` itself rather than against the
+    ``parameter_scale_floor`` the aggregate precision summary uses. That floor
+    exists to keep a max-over-parameters summary finite; applying it here would
+    divide by the floor exactly when the curvature is smallest and so report the
+    least identified fits as the best determined ones.
+    """
+
+    if model_name != "quadratic":
+        return ("not_applicable", None)
+    credibility_policy, _ = _reviewed_credibility_policy(policy)
+    if credibility_policy is None:
+        return ("unavailable", None)
+    standard_errors = _parameter_standard_errors(
+        model_name,
+        x,
+        parameters,
+        rss=rss,
+        residual_df=residual_df,
+    )
+    if standard_errors is None:
+        return ("unavailable", None)
+    curvature_index = _MODEL_PARAMETER_NAMES[model_name].index("curvature")
+    curvature = abs(float(parameters[curvature_index]))
+    curvature_se = float(standard_errors[curvature_index])
+    if not math.isfinite(curvature_se) or curvature_se < 0.0:
+        return ("unavailable", None)
+    threshold = credibility_policy.maximum_parameter_relative_standard_error
+    if curvature <= 0.0:
+        return ("not_identified", None)
+    curvature_relative_se = curvature_se / curvature
+    if not math.isfinite(curvature_relative_se):
+        return ("not_identified", None)
+    if curvature_relative_se > threshold:
+        return ("not_identified", curvature_relative_se)
+    return ("identified", curvature_relative_se)
+
+
 def _credibility_diagnostics(
     model_name: str,
     x: np.ndarray,
