@@ -128,6 +128,58 @@ def _redact(value: Any, *, key: str = "") -> Any:
     return value
 
 
+_RESTRICTED_SOURCE_LOCATOR_FIELDS = (
+    "data_path",
+    "schema_map",
+    "workbook",
+    "manifest_reference",
+)
+
+
+def _release_effective_config(config: ValidatedConfig) -> dict[str, Any]:
+    """Redact restricted source locators from the public run manifest.
+
+    Plan Section 3.3 restricts manifest ``source_locator`` values and path-like
+    provenance, not the structural workbook/sheet linkage the canonical data
+    contract requires, so ``sheet`` stays released alongside its alias.
+    """
+
+    payload = _redact(config.raw)
+    raw_sources = payload.get("sources")
+    if not isinstance(raw_sources, dict):
+        return payload
+    for source_name, source in config.sources.items():
+        if source.get("data_classification") != "restricted":
+            continue
+        released_source = raw_sources.get(source_name)
+        if not isinstance(released_source, dict):
+            continue
+        for field in _RESTRICTED_SOURCE_LOCATOR_FIELDS:
+            if field in released_source:
+                released_source[field] = "[WITHHELD_RESTRICTED_SOURCE_LOCATOR]"
+        released_source["source_locator_disclosure_status"] = (
+            "withheld_restricted_source_locator"
+        )
+    return payload
+
+
+def _release_source_artifact_sha256(
+    phase_two: Any,
+    integrity: Any,
+) -> dict[str, str]:
+    """Use restricted-safe artifact aliases when the SRC-02 snapshot is available."""
+
+    snapshot = getattr(phase_two, "source_scope_snapshot", None)
+    if isinstance(snapshot, Mapping):
+        artifacts = snapshot.get("manifest_artifact_sha256")
+        if isinstance(artifacts, Mapping):
+            return {
+                str(path): str(digest)
+                for path, digest in sorted(artifacts.items())
+            }
+    return dict(sorted(integrity.artifact_sha256.items()))
+
+
 def _runtime_inventory(rscript_command: str) -> dict[str, Any]:
     packages = ("matplotlib", "numpy", "pandas", "pyarrow", "scikit-learn", "scipy")
     versions: dict[str, str | None] = {}
