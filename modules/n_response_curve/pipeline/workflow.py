@@ -1351,7 +1351,7 @@ def _multiplicity_reconciliation_stage_writer(
         reconciliation_state.clear()
         reconciliation_state.update(payload)
         manifest["multiplicity_reconciliation"] = {
-            "artifact_path": "multiplicity_reconciliation.json",
+            "artifact_path": _MULTIPLICITY_LEDGER_PATH,
             "method": payload["method"],
             "status": payload["status"],
             "family_count": payload["family_count"],
@@ -1364,7 +1364,8 @@ def _multiplicity_reconciliation_stage_writer(
             f"({_format_counts(payload['family_status_counts']) or 'no declared families'}). "
             "Incomplete families remain explicit non-findings; these statuses do not establish causal effects."
         )
-        path = stage_root / "multiplicity_reconciliation.json"
+        path = stage_root / _MULTIPLICITY_LEDGER_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
