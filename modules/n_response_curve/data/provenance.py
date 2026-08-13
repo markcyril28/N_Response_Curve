@@ -573,8 +573,14 @@ def compare_checksum_revision(
     *,
     prior_encoding: str,
     candidate_encoding: str,
+    prior_data_classification: str = "internal",
+    candidate_data_classification: str = "internal",
+    prior_workbook_sha256: str | None = None,
+    candidate_workbook_sha256: str | None = None,
+    prior_sheet: str | None = None,
+    candidate_sheet: str | None = None,
 ) -> ChecksumRevisionComparison:
-    """Create automated comparison evidence without accepting the changed artifact."""
+    """Create byte, structure, encoding, classification, and workbook/sheet evidence."""
 
     prior = inspect_csv_structure(prior_registered_path, encoding=prior_encoding)
     candidate = inspect_csv_structure(candidate_path, encoding=candidate_encoding)
@@ -586,7 +592,7 @@ def compare_checksum_revision(
         "nonblank_data_row_count",
         "header_sha256",
     )
-    changed = tuple(
+    structural_changed = tuple(
         field
         for field in comparable_fields
         if getattr(prior, field) != getattr(candidate, field)
