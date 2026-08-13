@@ -17,6 +17,7 @@ from .curate import (
     ReviewedNutrientUnitControl,
     ReviewedSourceMap,
     SourceArmMap,
+    validate_restricted_column_coverage,
     validate_reviewed_curation_controls,
     validate_reviewed_fill_down_policy,
     validate_reviewed_nutrient_unit_controls,
