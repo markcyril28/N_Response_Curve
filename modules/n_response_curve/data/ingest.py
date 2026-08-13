@@ -60,6 +60,7 @@ class WorkbookCsvReconciliation:
     workbook_sha256: str
     csv_sha256: str
     review_id: str
+    basis: str = "parallel_workbook_csv_verified_equivalent"
 
 
 COMBINED_NOPT_RCM_ADAPTER_SPEC = SourceAdapterSpec(
@@ -501,6 +502,13 @@ def ingest_configured_sources(
                 raise ConfigError(
                     f"Workbook/CSV reconciliation for {source_name!r} lacks review evidence"
                 )
+            if reconciliation.basis not in {
+                "parallel_workbook_csv_verified_equivalent",
+                "parallel_workbook_csv_reviewed_csv_authoritative",
+            }:
+                raise ConfigError(
+                    f"Workbook/CSV reconciliation for {source_name!r} has an unsupported basis"
+                )
             for label, digest in (
                 ("workbook", reconciliation.workbook_sha256),
                 ("CSV", reconciliation.csv_sha256),
@@ -539,7 +547,7 @@ def ingest_configured_sources(
                 raise ConfigError(
                     f"Configured CSV for {source_name!r} differs from the reviewed CSV checksum"
                 )
-            workbook_csv_basis = "parallel_workbook_csv_verified_equivalent"
+            workbook_csv_basis = reconciliation.basis
         candidate_workbook_path = None
         workbook_value = source_config.get("workbook")
         if isinstance(workbook_value, str) and workbook_value.strip():
