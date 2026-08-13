@@ -24,10 +24,18 @@ class ReportingError(RuntimeError):
 
 @dataclass(frozen=True)
 class TableArtifact:
-    """One normalized table with an optional required unique key."""
+    """One normalized table with an optional required unique key.
+
+    ``group`` selects the ``tables/<group>/`` subdirectory the artifact is
+    written into. It stays optional so ad-hoc callers keep the historical flat
+    ``tables/`` layout; the pipeline itself declares a group for every released
+    table and refuses to release an ungrouped one (see
+    ``pipeline/workflow.py:_RELEASE_TABLE_GROUPS``).
+    """
 
     rows: Sequence[Mapping[str, Any]]
     stable_key: str | None = None
+    group: str | None = None
 
 
 @dataclass(frozen=True)
