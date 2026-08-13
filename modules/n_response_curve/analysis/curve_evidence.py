@@ -2554,6 +2554,43 @@ def _all_credible_curve_row(
             }
         )
     else:
+        # The two goal-facing derived quantities are computed from a single
+        # representative attempt, so on the agreement branch their value would
+        # otherwise be whichever candidate the enumeration reached first — the
+        # one thing Plan Section 10.2 forbids while the common-value rule is
+        # unrecorded. Publish them only where every credible candidate produces
+        # the same number; where they differ, the spread emitted above is the
+        # reportable evidence and the single value is withheld with its reason.
+        for value_field, basis_field, status_field, values in (
+            (
+                "attainable_yield_t_ha",
+                "attainable_yield_basis",
+                "attainable_yield_status",
+                tuple(_attainable_yield(attempt)[0] for attempt in credible),
+            ),
+            (
+                "maximum_associated_n_kg_ha",
+                "maximum_associated_n_basis",
+                "maximum_associated_n_status",
+                tuple(_maximum_associated_rate(attempt)[0] for attempt in credible),
+            ),
+        ):
+            if len(credible) > 1 and len(set(values)) > 1:
+                row.update(
+                    {
+                        value_field: None,
+                        basis_field: "none",
+                        status_field: (
+                            "suppressed_pending_recorded_common_value_rule"
+                        ),
+                    }
+                )
+                row["reason_codes"] = tuple(
+                    sorted(
+                        set(row["reason_codes"])
+                        | {"CREDIBLE_SET_COMMON_VALUE_RULE_UNRECORDED"}
+                    )
+                )
         boundary_statuses = {
             attempt.observed_domain_boundary_status for attempt in credible
         }
@@ -2677,6 +2714,13 @@ def _series_evidence_row(
         "distinct_n_level_count": len(levels),
         "observed_n_min_kg_ha": levels[0] if levels else None,
         "observed_n_max_kg_ha": levels[-1] if levels else None,
+        # Plan Section 10.7's canonical tested-design names, carried here too so
+        # that a series whose curve feature was never estimable still states the
+        # design that decided it. The three fields above are the deprecated
+        # aliases for the same quantities (`MV-022`).
+        "tested_n_min_kg_ha": levels[0] if levels else None,
+        "tested_n_max_kg_ha": levels[-1] if levels else None,
+        "tested_n_level_count": len(levels),
         "observed_max_yield_t_ha": max((value for _, value in complete), default=None),
         "observed_low_to_high_yield_change_t_ha": yield_change,
         "observed_low_to_high_n_change_kg_ha": n_change,
