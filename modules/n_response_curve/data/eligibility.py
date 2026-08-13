@@ -109,7 +109,6 @@ def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
     exact_controls = {
         "representation_review_status": {"resolved"},
         "schema_mapping_status": {"reviewed"},
-        "treatment_classification_status": {"resolved"},
         "cleaning_review_status": {
             "resolved_excluded",
             "resolved_flagged",
@@ -118,13 +117,29 @@ def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
         "restricted_release_status": {
             "not_restricted",
             "eligible_for_reviewed_public_projection",
+            "internal_only_no_public_row_release",
         },
     }
     for field, allowed in exact_controls.items():
         if field in record and str(record.get(field) or "") not in allowed:
             unresolved.append(f"UNRESOLVED_REVIEW_CONTROL:{field}")
+    # Category uncertainty is local to analyses that use that category.  It is
+    # preserved in QC and the affected factor/fit gate, but it must not turn an
+    # otherwise complete N/yield record into Tier D for every analysis.  This
+    # implements the selected policy: retain unresolved categories and exclude
+    # them only from the analyses that depend on those categories.
+    local_category_status_fields = {
+        "water_regime_normalization_status",
+        "season_normalization_status",
+        "region_normalization_status",
+        "province_normalization_status",
+        "rice_variety_normalization_status",
+        "treatment_class_normalization_status",
+    }
     for field, value in record.items():
         if not str(field).endswith("_normalization_status"):
+            continue
+        if str(field) in local_category_status_fields:
             continue
         status = str(value or "").casefold()
         if status.startswith(("unresolved", "review_required")) or status == "invalid_numeric":
