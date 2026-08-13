@@ -1562,6 +1562,25 @@ def _numeric_range(
     return min(values), max(values)
 
 
+def _derived_value_range(
+    values: Iterable[float | None],
+    *,
+    expected_count: int,
+) -> tuple[float, float] | None:
+    """Return the spread of a derived quantity across the credible candidates.
+
+    Same contract as :func:`_numeric_range`, for quantities computed from an
+    attempt rather than stored on it: a spread is reported only when every
+    credible candidate supplies the quantity, because a range over a subset
+    would understate how far the candidates actually differ.
+    """
+
+    collected = [float(value) for value in values if value is not None]
+    if len(collected) != expected_count or not collected:
+        return None
+    return min(collected), max(collected)
+
+
 def _common_numeric_value(
     attempts: Sequence[ModelAttempt],
     field_name: str,
