@@ -228,8 +228,17 @@ def normalize_yield(
     t_missing_state_lookup: ReviewedLookupTable | None = None,
     consistency_tolerance_t_ha: float | None = None,
     tolerance_review_id: str | None = None,
+    both_present_policy: str = "require_consistency",
+    precedence_review_id: str | None = None,
 ) -> YieldNormalization:
     """Convert documented mass units and quarantine unresolved disagreements."""
+
+    if both_present_policy not in {"require_consistency", "prefer_t_ha"}:
+        raise ValueError("Yield precedence policy is unsupported")
+    if both_present_policy != "require_consistency" and (
+        not isinstance(precedence_review_id, str) or not precedence_review_id.strip()
+    ):
+        raise ValueError("A nondefault yield precedence requires nonempty review evidence")
 
     if consistency_tolerance_t_ha is not None:
         if consistency_tolerance_t_ha < 0:
@@ -264,6 +273,14 @@ def normalize_yield(
                 "consistent",
                 "both",
                 conversion="kg_ha / 1000 == t_ha",
+            )
+        if both_present_policy == "prefer_t_ha":
+            return YieldNormalization(
+                tonnes_value,
+                "parsed",
+                "t_preferred_reviewed",
+                "t_ha",
+                conversion="reviewed t_ha precedence over discordant kg_ha representation",
             )
         return YieldNormalization(
             None,
