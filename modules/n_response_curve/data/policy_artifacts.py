@@ -2039,6 +2039,11 @@ def validate_source_data_policy_coverage(
         source_category_lookups=bundle.source_category_lookups,
         required_lookup_fields=required_lookup_fields,
     )
+    validate_restricted_column_coverage(
+        ingestion,
+        source_maps=bundle.source_maps,
+        restricted_policy=bundle.restricted_policy,
+    )
     source_names = {source.source_name for source in ingestion.sources}
     cleaning_sources = set(bundle.final_cleaning_policies)
     if source_names != cleaning_sources:
