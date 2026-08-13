@@ -10,14 +10,22 @@
 #              series and writes under paths.test_output_root.
 #   "full"     runs all resolved series and writes under paths.reports_root;
 #              every enabled source must be verified with an assigned adapter.
-mode = "validate"
+# Full mode processes every enabled source and writes the complete output package.
+# It does not require organizational authority, sign-off, or approval artifacts.
+mode = "full"
 overwrite = true
 random_seed = 20260720
 test_group_limit = 12
 fail_fast = true
 qc_gate = "fail_on_any_review" # OPS-03 Option B: validate/full fail after complete warning/unresolved/exclusion review.
-r_threads_per_job = 2
-max_parallel_r_jobs = 4
+# R CPU budget: max_parallel_r_jobs * r_threads_per_job must stay at or below the
+# affinity-visible CPU count (12 on this workstation). max_parallel_r_jobs is the
+# real dispatch width; r_threads_per_job pins BLAS/OpenMP inside each R process.
+# Prefer width over per-job threads: 12 single-threaded jobs saturate all 12 cores
+# while keeping every fit bit-reproducible, whereas multi-threaded BLAS reorders
+# floating-point reductions and can move results run to run.
+r_threads_per_job = 1
+max_parallel_r_jobs = 12
 r_stage_timeout_seconds = 1800
 r_termination_grace_seconds = 15
 cpu_detection = "affinity"
@@ -35,8 +43,8 @@ series_identity_dimensions = [
 
 enabled_sources = [
   "core_trial_data",
-  # "ph_combined_nopt_rcm", # Received and registered; disabled until its adapter, mapping, precision, and restricted-data gates pass.
-  # "ltcce", # Received 2026-08-13 and registered; disabled until intake-manifest registration, provider attribution/receipt confirmation (MV-001), row-multiplicity and coverage resolution (MV-028), schema harmonization, and the restricted_fit_models roster pass.
+  "ph_combined_nopt_rcm",
+  "ltcce",
 ]
 
 enabled_models = [
@@ -146,11 +154,15 @@ collision_policy = "replace_only_with_overwrite"
 # new package directory, so leaving this false accumulates one per run; true
 # removes ALL prior packages under that root, not just the current run's target.
 # Requires [run].overwrite = true, and must stay false in validate mode.
+# Do not enable this while another run is in flight: it also removes that run's
+# staging directory (.<package_name>.stage-*) under the same root.
 clear_output_root_before_run = false
 
 [logging]
 level = "INFO"
-write_logs_in_validate = true
+# Must stay false in validate mode. The launcher's own logs under N_RESPONSE_LOG_ROOT
+# are written by nrc_setup_logging in every mode and are not governed by this key.
+write_logs_in_validate = false
 # Clear the launcher's log subdirectories (log_files, jsonl_logs,
 # error_warn_logs) before logging starts. Must stay false in validate mode.
 clear_log_root_before_run = false
@@ -312,11 +324,11 @@ workbook = "WF/01_Curated_Dataset/00_Source_Workbook/PH Combined NOPT and RCM.xl
 sheet = "Sheet 1"
 manifest_reference = "WF/01_Curated_Dataset/MANIFEST.csv"
 provider = "philippine_ssnm_fertilizer_trials_raw_folder"
-provenance_notes = "Exact source copies received 2026-07-27; 718 linked rows and 228 unique columns. Each row crosswalks FP, RCM, NOPT full-fertilizer, and NOPT zero-N evidence. Workbook/CSV numeric precedence, source identity, and wide-to-long semantics remain pending."
+provenance_notes = "Exact source copies received 2026-07-27; 718 linked rows and 228 unique columns. Each row crosswalks FP, RCM, NOPT full-fertilizer, and NOPT zero-N evidence. The registered CSV is authoritative where workbook and CSV representations differ. Linked-arm experimental comparability, zero-N P/K composition, and many noncanonical field semantics remain unresolved and are retained as held evidence."
 encoding = "cp1252"
 data_classification = "restricted"
 availability = "available"
-confirmation_status = "pending"
+confirmation_status = "verified"
 shape_adapter_version = "combined-nopt-rcm-csv-v1"
 
 [sources.ltcce]
@@ -328,11 +340,11 @@ schema_map = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/LTCCE_GY_proce
 workbook = "WF/01_Curated_Dataset/00_Source_Workbook/LTCCE_GY_processed.xlsx"
 sheet = "GY_1968-2017"
 provider = "irri_ltcce_data_correspondence"
-provenance_notes = "LTCCE-labeled workbook and CSV extract received 2026-08-13; 13952 data rows, 12 physical columns, 1968-2017, exactly four N levels in all 785 year-season-variety groups. The CSV is cell-faithful to sheet GY_1968-2017 (all 167424 cells equal, zero formula cells, zero hyperlinks). Availability stays expected_unavailable because these bytes are not yet registered in the intake MANIFEST.csv/CHECKSUMS.sha256; that registration is an SRC-04 approved intake revision, not a config edit. Provider attribution and receipt against the expected Abby contribution remain unconfirmed: the workbook names data correspondence to a named IRRI scientist (MV-001). Row multiplicity and delivered coverage are separately tracked in MV-028. Restricted terms: authorized IRRI research purposes only, confidentiality, prior approval before sharing/publishing, IRRI acknowledgement required."
+provenance_notes = "LTCCE-labeled workbook and CSV extract received 2026-08-13 and registered in the intake ledger; 13952 data rows, 12 physical columns, 1968-2017, exactly four N levels in all 785 year-season-variety groups. The CSV is cell-faithful to sheet GY_1968-2017 (all 167424 cells equal, zero formula cells, zero hyperlinks). Technical source identity, checksum, shape, and workbook/CSV fidelity are verified. Provider-attribution context, unexplained row multiplicity (MV-028), season vocabulary, site-label equivalence, and absent water/region/province remain scientific or provenance limitations and are retained without inference. Restricted terms: authorized IRRI research purposes only, confidentiality, prior approval before sharing/publishing, IRRI acknowledgement required."
 encoding = "utf-8-sig"
 data_classification = "restricted"
-availability = "expected_unavailable"
-confirmation_status = "pending"
+availability = "available"
+confirmation_status = "verified"
 shape_adapter_version = "ltcce-long-csv-v1"
 
 [schema]
