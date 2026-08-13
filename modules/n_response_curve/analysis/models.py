@@ -58,6 +58,30 @@ _MINIMUM_FITTED_LEVEL_COUNT = 4
 _BROAD_ROSTER_LEVEL_COUNT = 5
 _PLATEAU_ONSET_MODELS = frozenset({"linear_plateau", "quadratic_plateau"})
 _PLATEAU_INTERIOR_MARGIN = 1e-6
+_PLATEAU_DOMAIN_CONSTRAINT_REASON = "PLATEAU_ONSET_AT_OBSERVED_DOMAIN_CONSTRAINT"
+# Plan Section 10.2 requires the recorded reason to state *which* degeneracy
+# applies, because the two are not the same defect. A `linear_plateau` onset at
+# or beyond the domain edge leaves `min(N, t) = N` for every observed rate, so
+# `t` is genuinely unidentified and only two mean parameters are estimated. A
+# `quadratic_plateau` onset there stays formally identified through the
+# curvature; its defect is that the fit is exactly a concave quadratic with an
+# out-of-domain vertex, duplicating the `quadratic` shape space while claiming a
+# plateau no observation reaches.
+_PLATEAU_DOMAIN_CONSTRAINT_MECHANISMS = {
+    "linear_plateau": "PLATEAU_ONSET_UNIDENTIFIED_AT_DOMAIN_CONSTRAINT",
+    "quadratic_plateau": "PLATEAU_CANDIDATE_DUPLICATES_QUADRATIC_SHAPE_SPACE",
+}
+# Membership in the credible set is what `MOD-02` disagreement and `MOD-05`
+# shape stability are computed over, so a degenerate member can manufacture
+# disagreement that suppresses a supported conclusion or inflate agreement by
+# collapsing onto a neighbour's shape. Exclusion is therefore unconditional and
+# is not relaxed by a reviewed policy that permits boundary parameters.
+_CREDIBLE_SET_DEGENERACY_REASONS = frozenset(
+    {
+        "UNIDENTIFIABLE_SHAPE_PARAMETERS",
+        _PLATEAU_DOMAIN_CONSTRAINT_REASON,
+    }
+)
 
 
 @dataclass(frozen=True)
