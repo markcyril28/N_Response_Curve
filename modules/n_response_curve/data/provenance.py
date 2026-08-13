@@ -90,6 +90,8 @@ class ChecksumRevisionComparison:
 
     prior: CsvStructure
     candidate: CsvStructure
+    prior_context: Mapping[str, object]
+    candidate_context: Mapping[str, object]
     changed_fields: tuple[str, ...]
     comparison_sha256: str
 
