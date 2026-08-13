@@ -1567,6 +1567,14 @@ def _checksum_revision_approvals(
                 where=f"{where}.prior_registered_path",
             )
         )
+        if exact["prior_workbook_path"] is not None:
+            approval_payload["prior_workbook_path"] = str(
+                _resolve_project_path(
+                    project_root,
+                    exact["prior_workbook_path"],
+                    where=f"{where}.prior_workbook_path",
+                )
+            )
         try:
             parsed = parse_checksum_revision_approval(approval_payload)
         except ConfigError as exc:
