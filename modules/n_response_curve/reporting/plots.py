@@ -362,6 +362,7 @@ def write_observed_series_figures(
 __all__ = [
     "create_observed_series_figure",
     "create_response_curve_figure",
+    "model_attempt_display_rows",
     "prediction_rows",
     "sanitize_series_filename",
     "write_observed_series_figures",
