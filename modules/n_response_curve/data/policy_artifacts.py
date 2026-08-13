@@ -1108,6 +1108,22 @@ def _restricted_policy(
                 record.get("human_disclosure_review_id"),
                 where="restricted policy human_disclosure_review_id",
             ),
+            pseudonymization_method=_nonempty_text(
+                record.get("pseudonymization_method"),
+                where="restricted policy pseudonymization_method",
+            ),
+            retention_policy_id=_nonempty_text(
+                record.get("retention_policy_id"),
+                where="restricted policy retention_policy_id",
+            ),
+            retention_rule=_nonempty_text(
+                record.get("retention_rule"),
+                where="restricted policy retention_rule",
+            ),
+            retention_review_id=_nonempty_text(
+                record.get("retention_review_id"),
+                where="restricted policy retention_review_id",
+            ),
             disclosure_review_projection_sha256=projection_sha256,
         ),
         secret_reference,
