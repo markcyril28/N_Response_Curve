@@ -1275,6 +1275,7 @@ def _final_cleaning_policies(
         "reviewed_on",
         "default_action",
         "untrimmed_sensitivity_required",
+        "prespecification_status",
         "rules",
     }
     rule_keys = {
@@ -1290,6 +1291,10 @@ def _final_cleaning_policies(
         "values",
         "action",
         "reason_code",
+        "statistic",
+        "threshold",
+        "grouping_scope",
+        "minimum_group_size",
     }
     for index, raw_policy in enumerate(
         _records(payload, where="final cleaning policy")
