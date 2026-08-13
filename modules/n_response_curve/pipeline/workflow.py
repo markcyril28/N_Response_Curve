@@ -1409,7 +1409,7 @@ def _claim_classification_stage_writer(
         claim_state.update(payload)
         status_counts = payload["status_counts"]
         manifest["claim_classification"] = {
-            "artifact_path": "claim_classification.json",
+            "artifact_path": _CLAIM_CLASSIFICATION_LEDGER_PATH,
             "status": payload["status"],
             "candidate_count": payload["candidate_count"],
             "status_counts": status_counts,
@@ -1421,7 +1421,8 @@ def _claim_classification_stage_writer(
             "Positive-claim classification is restricted to noncausal supported "
             f"associations after all gates pass ({formatted_counts})."
         )
-        path = stage_root / "claim_classification.json"
+        path = stage_root / _CLAIM_CLASSIFICATION_LEDGER_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1671,7 +1672,8 @@ def _terminal_status_stage_writer(
                 "reconciles": terminal_reconciles,
             }
         )
-        status_path = stage_root / "analysis_terminal_statuses.json"
+        status_path = stage_root / _TERMINAL_STATUS_LEDGER_PATH
+        status_path.parent.mkdir(parents=True, exist_ok=True)
         status_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return (status_path,)
 
@@ -2119,7 +2121,8 @@ def _strict_review_gate_stage_writer(
             for key, value in payload.items()
             if key != "issues"
         }
-        path = stage_root / "review_issue_ledger.json"
+        path = stage_root / _REVIEW_ISSUE_LEDGER_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -2283,7 +2286,17 @@ def _public_release_rows(
                 "Restricted records cannot enter a release without a reviewed "
                 "source-data policy"
             )
-        return materialized
+        public: list[dict[str, Any]] = []
+        for row in materialized:
+            row.pop("source_path", None)
+            row.pop("schema_map_path", None)
+            row.pop("raw_cells", None)
+            row.pop("restricted_path_aliases", None)
+            record_uid = str(row.get("record_uid") or "").strip()
+            if record_uid:
+                row["release_record_uid"] = record_uid
+            public.append(row)
+        return tuple(public)
     try:
         return project_public_records(
             materialized,
@@ -3738,12 +3751,24 @@ def _report_sections(
 
 
 def _release_target(config: ValidatedConfig) -> Path:
-    seed = int(config.raw["run"]["random_seed"])
     if config.run_mode == "test":
-        return config.paths["test_output_root"] / f"n_response_test_{seed}"
+        return config.paths["test_output_root"] / _release_run_id(config)
     if config.run_mode == "full":
-        return config.paths["reports_root"] / f"n_response_full_{seed}"
+        return config.paths["reports_root"] / _release_run_id(config)
     raise ConfigError("Validate mode does not have a release target")
+
+
+def _release_run_id(config: ValidatedConfig) -> str:
+    seed = int(config.raw["run"]["random_seed"])
+    run_id = f"n_response_{config.run_mode}_{seed}"
+    if config.run_mode != "test":
+        return run_id
+    launcher_run_id = os.environ.get("N_RESPONSE_LAUNCHER_RUN_ID", "")
+    match = re.fullmatch(
+        r"n_response_launcher_(\d{8}T\d{6}Z_\d+)",
+        launcher_run_id,
+    )
+    return f"{run_id}_{match.group(1)}" if match is not None else run_id
 
 
 def _source_target_paths(config: ValidatedConfig) -> tuple[Path, ...]:
@@ -4102,6 +4127,18 @@ def release_phases_three_to_five(
     if run_log.run_id != run_id:
         raise ConfigError("Run logger identity does not match the controlled release target")
     run_log.info("controlled_release_started", release_target=target)
+    # Reap here rather than in the launcher or the preflight: validate mode must
+    # leave the project tree byte-identical, and this is the earliest point that
+    # only a writing run reaches. It runs before the package-reuse fast path so
+    # residue is cleared even when nothing new is staged.
+    reaped_stages = reap_abandoned_stage_directories(target)
+    if reaped_stages:
+        run_log.info(
+            "abandoned_stage_directories_reaped",
+            release_target=target,
+            reaped_count=len(reaped_stages),
+            reaped=",".join(reaped_stages),
+        )
     series_evidence_rows = _validated_series_evidence_rows(phase_three.evidence.series_evidence_rows)
     descriptive_summary_rows = _build_descriptive_summary_rows(
         series_evidence_rows,
@@ -4415,7 +4452,7 @@ def release_phases_three_to_five(
         },
         "r_stage_statuses": r_stage_statuses,
         "logging": {
-            "artifact_path": "logs/pipeline.jsonl",
+            "artifact_path": PACKAGE_LOG_RELATIVE_PATH,
             "format": "jsonl",
             "level": run_log.level,
         },
@@ -4566,12 +4603,14 @@ def release_phases_three_to_five(
     try:
         package = write_release_package(
             target,
-            tables=_table_artifacts(
-                phase_two,
-                phase_three,
-                phase_four,
-                series_evidence_rows=series_evidence_rows,
-                descriptive_summary_rows=descriptive_summary_rows,
+            tables=_grouped_release_tables(
+                _table_artifacts(
+                    phase_two,
+                    phase_three,
+                    phase_four,
+                    series_evidence_rows=series_evidence_rows,
+                    descriptive_summary_rows=descriptive_summary_rows,
+                )
             ),
             manifest=manifest,
             report_sections=report_sections,
@@ -4592,6 +4631,7 @@ __all__ = [
     "PhaseFourResult",
     "PhaseThreeResult",
     "build_effective_model_policy",
+    "_release_run_id",
     "release_phases_three_to_five",
     "run_phase_four",
     "run_phase_three",
