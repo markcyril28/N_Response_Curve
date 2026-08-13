@@ -36,7 +36,7 @@ series_identity_dimensions = [
 enabled_sources = [
   "core_trial_data",
   # "ph_combined_nopt_rcm", # Received and registered; disabled until its adapter, mapping, precision, and restricted-data gates pass.
-  # "ltcce", # Received 2026-08-13 and registered; disabled until intake-manifest registration, provider attribution (MV-028), row-multiplicity resolution, schema harmonization, and the restricted_fit_models roster pass.
+  # "ltcce", # Received 2026-08-13 and registered; disabled until intake-manifest registration, provider attribution/receipt confirmation (MV-001), row-multiplicity and coverage resolution (MV-028), schema harmonization, and the restricted_fit_models roster pass.
 ]
 
 enabled_models = [
@@ -319,7 +319,7 @@ schema_map = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/LTCCE_GY_proce
 workbook = "WF/01_Curated_Dataset/00_Source_Workbook/LTCCE_GY_processed.xlsx"
 sheet = "GY_1968-2017"
 provider = "irri_ltcce_data_correspondence"
-provenance_notes = "LTCCE-labeled workbook and CSV extract received 2026-08-13; 13952 data rows, 12 physical columns, 1968-2017, exactly four N levels in all 785 year-season-variety groups. The CSV is cell-faithful to sheet GY_1968-2017 (all 167424 cells equal, zero formula cells, zero hyperlinks). Availability stays expected_unavailable because these bytes are not yet registered in the intake MANIFEST.csv/CHECKSUMS.sha256; that registration is an SRC-04 approved intake revision, not a config edit. Provider attribution is unconfirmed: the workbook names data correspondence to a named IRRI scientist while the registry expects the source from Abby (MV-028). Restricted terms: authorized IRRI research purposes only, confidentiality, prior approval before sharing/publishing, IRRI acknowledgement required."
+provenance_notes = "LTCCE-labeled workbook and CSV extract received 2026-08-13; 13952 data rows, 12 physical columns, 1968-2017, exactly four N levels in all 785 year-season-variety groups. The CSV is cell-faithful to sheet GY_1968-2017 (all 167424 cells equal, zero formula cells, zero hyperlinks). Availability stays expected_unavailable because these bytes are not yet registered in the intake MANIFEST.csv/CHECKSUMS.sha256; that registration is an SRC-04 approved intake revision, not a config edit. Provider attribution and receipt against the expected Abby contribution remain unconfirmed: the workbook names data correspondence to a named IRRI scientist (MV-001). Row multiplicity and delivered coverage are separately tracked in MV-028. Restricted terms: authorized IRRI research purposes only, confidentiality, prior approval before sharing/publishing, IRRI acknowledgement required."
 encoding = "utf-8-sig"
 data_classification = "restricted"
 availability = "expected_unavailable"
