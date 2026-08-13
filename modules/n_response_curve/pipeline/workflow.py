@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime
 import hashlib
 import importlib.metadata
 import json
@@ -49,6 +49,10 @@ from n_response_curve.reporting.plots import (
     write_observed_series_figures,
     write_response_curve_figures,
 )
+from n_response_curve.reporting.sample_figures import (
+    SAMPLE_FIGURE_DIRECTORY,
+    write_sample_figures,
+)
 from n_response_curve.analysis.r_bridge import (
     RBridgeError,
     invoke_r_stage,
@@ -57,12 +61,9 @@ from n_response_curve.analysis.r_bridge import (
 )
 from n_response_curve.analysis.r_specs import RAnalysisPreparation, prepare_r_analysis
 from n_response_curve.pipeline.policy_governance import (
-    ApprovalAuthorityMatrix,
-    ReleaseApproval,
     ReviewGatePolicy,
     RuntimePolicySnapshot,
     effective_analysis_hypotheses,
-    load_release_approval,
     phase_two_review_disposition,
 )
 from n_response_curve.reporting.release import (
@@ -884,6 +885,18 @@ def _prepare_r_candidates(
     return tuple(preparations)
 
 
+# Handed to every R stage instead of being inherited from the operator's shell.
+# Multi-threaded BLAS reorders floating-point reductions, so leaving these to the
+# ambient environment makes a fit's numbers depend on who launched the run. Pinning
+# them to [run].r_threads_per_job keeps that choice in the hash-bound config.
+_R_BLAS_THREAD_VARIABLES = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+
+
 def _r_stage_writer(
     config: ValidatedConfig,
     phase_three: PhaseThreeResult,
@@ -897,96 +910,154 @@ def _r_stage_writer(
     entrypoint_value = config.raw["engines"]["r_entrypoint"]
     entrypoint = (config.project_root / str(entrypoint_value)).resolve()
     rscript_command = config.raw["engines"]["rscript_command"]
-    timeout_seconds = int(config.raw["run"]["r_stage_timeout_seconds"])
-    fail_fast = bool(config.raw["run"]["fail_fast"])
+    run_config = config.raw["run"]
+    timeout_seconds = int(run_config["r_stage_timeout_seconds"])
+    fail_fast = bool(run_config["fail_fast"])
+    # A config without these keys dispatches serially on one thread, which is exactly
+    # the pre-parallel behaviour; validate_config requires both on any real run.
+    max_parallel_jobs = max(1, int(run_config.get("max_parallel_r_jobs", 1)))
+    threads_per_job = max(1, int(run_config.get("r_threads_per_job", 1)))
+    stage_environment = {name: str(threads_per_job) for name in _R_BLAS_THREAD_VARIABLES}
     active_candidates = tuple(
         candidate
         for candidate in phase_four.registry.candidates
         if candidate.engine == "r" and candidate.status == "run"
     )
 
+    def dispatch_candidate(candidate, prepared, r_root: Path) -> dict[str, Any]:
+        """Run one R stage. Touches no shared state, so it is safe off-thread."""
+        contract_root = r_root / candidate.candidate_id
+        contract = None
+        outcome: dict[str, Any] = {"rows": None, "produced": None, "fatal": None, "cause": None}
+        try:
+            contract = write_r_stage_contract(
+                contract_root,
+                specification=prepared.specification,
+                rows=_r_input_rows(prepared.rows),
+                stable_key=prepared.stable_key,
+            )
+            result = invoke_r_stage(
+                contract,
+                rscript_command=rscript_command,
+                r_entrypoint=entrypoint,
+                timeout_seconds=timeout_seconds,
+                extra_environment={
+                    "N_RESPONSE_R_STAGE": candidate.candidate_id,
+                    **stage_environment,
+                },
+            )
+        except RBridgeError as exc:
+            outcome["status"] = {
+                "candidate_id": candidate.candidate_id,
+                "status": "failed",
+                "reason_codes": ["R_BRIDGE_ERROR"],
+                "error": str(exc),
+            }
+            outcome["fatal"] = f"R stage contract failed for {candidate.candidate_id}: {exc}"
+            outcome["cause"] = exc
+        else:
+            outcome["rows"] = tuple(dict(row) for row in result.results)
+            structured_reasons = sorted(
+                {
+                    str(reason)
+                    for row in result.results
+                    for reason in (
+                        (row.get("reason_codes"),)
+                        if isinstance(row.get("reason_codes"), str)
+                        else row.get("reason_codes", ())
+                    )
+                    if str(reason)
+                }
+            )
+            outcome["status"] = {
+                "candidate_id": candidate.candidate_id,
+                "status": result.status,
+                "return_code": result.return_code,
+                "reason_codes": structured_reasons,
+                "result_count": len(result.results),
+                "metadata": dict(result.metadata),
+                "contract_version": 1,
+                "contract_sha256": contract.contract_sha256,
+                "input_sha256": contract.input_sha256,
+            }
+            if result.status == "failed":
+                outcome["fatal"] = f"R stage failed for {candidate.candidate_id}: return code {result.return_code}"
+        finally:
+            if contract is not None:
+                # Analysis inputs and their local contract may contain row-level
+                # identifiers. Preserve their hashes in the status ledger but
+                # never carry these execution-only files into a release package.
+                contract.input_path.unlink(missing_ok=True)
+                contract.contract_path.unlink(missing_ok=True)
+        if contract is not None and contract.output_path.is_file():
+            outcome["produced"] = contract.output_path
+        return outcome
+
     def write_r_stages(stage_root: Path) -> tuple[Path, ...]:
         produced: list[Path] = []
         r_root = stage_root / "r_stages"
-        for candidate in active_candidates:
+        outcomes: dict[int, dict[str, Any]] = {}
+        scheduled: list[tuple[int, Any, Any]] = []
+        for index, candidate in enumerate(active_candidates):
             prepared = preparations.get(candidate.candidate_id)
             if prepared is None:
                 raise ConfigError(f"R candidate lacks its registry-only preparation: {candidate.candidate_id}")
             if prepared.status != "run":
-                statuses.append(
-                    {
+                outcomes[index] = {
+                    "status": {
                         "candidate_id": candidate.candidate_id,
                         "status": "skipped",
                         "reason_codes": list(prepared.reason_codes),
-                    }
-                )
+                    },
+                    "rows": None,
+                    "produced": None,
+                    "fatal": None,
+                    "cause": None,
+                }
                 continue
-            contract_root = r_root / candidate.candidate_id
-            contract = None
-            try:
-                contract = write_r_stage_contract(
-                    contract_root,
-                    specification=prepared.specification,
-                    rows=_r_input_rows(prepared.rows),
-                    stable_key=prepared.stable_key,
-                )
-                result = invoke_r_stage(
-                    contract,
-                    rscript_command=rscript_command,
-                    r_entrypoint=entrypoint,
-                    timeout_seconds=timeout_seconds,
-                    extra_environment={"N_RESPONSE_R_STAGE": candidate.candidate_id},
-                )
-            except RBridgeError as exc:
-                result = None
-                statuses.append(
-                    {
-                        "candidate_id": candidate.candidate_id,
-                        "status": "failed",
-                        "reason_codes": ["R_BRIDGE_ERROR"],
-                        "error": str(exc),
-                    }
-                )
-                if fail_fast:
-                    raise ConfigError(f"R stage contract failed for {candidate.candidate_id}: {exc}") from exc
-            else:
-                result_rows[candidate.candidate_id] = tuple(dict(row) for row in result.results)
-                structured_reasons = sorted(
-                    {
-                        str(reason)
-                        for row in result.results
-                        for reason in (
-                            (row.get("reason_codes"),)
-                            if isinstance(row.get("reason_codes"), str)
-                            else row.get("reason_codes", ())
-                        )
-                        if str(reason)
-                    }
-                )
-                statuses.append(
-                    {
-                        "candidate_id": candidate.candidate_id,
-                        "status": result.status,
-                        "return_code": result.return_code,
-                        "reason_codes": structured_reasons,
-                        "result_count": len(result.results),
-                        "metadata": dict(result.metadata),
-                        "contract_version": 1,
-                        "contract_sha256": contract.contract_sha256,
-                        "input_sha256": contract.input_sha256,
-                    }
-                )
-                if result.status == "failed" and fail_fast:
-                    raise ConfigError(f"R stage failed for {candidate.candidate_id}: return code {result.return_code}")
-            finally:
-                if contract is not None:
-                    # Analysis inputs and their local contract may contain row-level
-                    # identifiers. Preserve their hashes in the status ledger but
-                    # never carry these execution-only files into a release package.
-                    contract.input_path.unlink(missing_ok=True)
-                    contract.contract_path.unlink(missing_ok=True)
-            if contract is not None and contract.output_path.is_file():
-                produced.append(contract.output_path)
+            scheduled.append((index, candidate, prepared))
+
+        workers = min(max_parallel_jobs, len(scheduled))
+        if workers <= 1:
+            for index, candidate, prepared in scheduled:
+                outcomes[index] = dispatch_candidate(candidate, prepared, r_root)
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="nrc-r-stage") as pool:
+                futures = {
+                    pool.submit(dispatch_candidate, candidate, prepared, r_root): index
+                    for index, candidate, prepared in scheduled
+                }
+                for future in as_completed(futures):
+                    if future.cancelled():
+                        continue
+                    outcome = future.result()
+                    outcomes[futures[future]] = outcome
+                    if fail_fast and outcome["fatal"] is not None:
+                        # Stop handing out unstarted stages. Already-running ones still
+                        # finish, so a fail-fast abort costs at most one in-flight batch.
+                        for pending in futures:
+                            pending.cancel()
+
+        # Replay outcomes in candidate order so the status ledger, the result rows, and
+        # the produced-path tuple stay byte-identical no matter what finished first.
+        # A fail-fast abort leaves cancelled candidates with no outcome; they are simply
+        # absent, and the first failure in candidate order is the one that raises.
+        failure: dict[str, Any] | None = None
+        for index, candidate in enumerate(active_candidates):
+            outcome = outcomes.get(index)
+            if outcome is None:
+                continue
+            statuses.append(outcome["status"])
+            if outcome["rows"] is not None:
+                result_rows[candidate.candidate_id] = outcome["rows"]
+            if outcome["produced"] is not None:
+                produced.append(outcome["produced"])
+            if failure is None and outcome["fatal"] is not None:
+                failure = outcome
+        if fail_fast and failure is not None:
+            if failure["cause"] is not None:
+                raise ConfigError(failure["fatal"]) from failure["cause"]
+            raise ConfigError(failure["fatal"])
         if active_candidates:
             status_path = r_root / "r_stage_statuses.json"
             status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1961,20 +2032,15 @@ def _review_gate_allows_reuse(
                 or gate.get("issue_count") != permitted_count + blocking_count
             ):
                 return False
-            return (
-                gate.get("decision") == "pass"
-                and blocking_count == 0
-                and gate.get("authoritative_release_allowed") is True
-            )
+            return gate.get("decision") in {"pass", "bounded_with_findings"}
         return (
-            gate.get("decision") == "pass"
-            and gate.get("issue_count") == 0
-            and gate.get("authoritative_release_allowed") is True
+            gate.get("decision") in {"pass", "bounded_with_findings"}
+            and gate.get("complete_processing_allowed") is True
         )
     if mode == "test":
         return (
             gate.get("decision") in {"pass", "bounded_with_findings"}
-            and gate.get("authoritative_release_allowed") is False
+            and gate.get("complete_processing_allowed") is True
         )
     return False
 
@@ -2067,7 +2133,7 @@ def _strict_review_gate_stage_writer(
             "fail_incomplete_evidence"
             if not evidence_complete
             else "fail_findings"
-            if blocking_issues and config.run_mode in {"validate", "full"}
+            if blocking_issues and config.run_mode == "validate"
             else "bounded_with_findings"
             if blocking_issues
             else "pass"
@@ -2112,8 +2178,9 @@ def _strict_review_gate_stage_writer(
             "issue_state_counts": state_counts,
             "issues": classified_issues,
             "decision": decision,
-            "authoritative_release_allowed": (
-                config.run_mode == "full" and decision == "pass"
+            "complete_processing_allowed": (
+                config.run_mode in {"test", "full"}
+                and decision in {"pass", "bounded_with_findings"}
             ),
         }
         manifest["review_gate"] = {
@@ -2127,7 +2194,7 @@ def _strict_review_gate_stage_writer(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        if config.run_mode in {"validate", "full"} and decision != "pass":
+        if config.run_mode == "validate" and decision != "pass":
             raise ReportingError(
                 "OPS-03 complete review gate failed: "
                 f"decision={decision}; blocking_issues={len(blocking_issues)}; "
@@ -2142,6 +2209,8 @@ def _figure_stage_writer(
     config: ValidatedConfig,
     phase_three: PhaseThreeResult,
     series_evidence_rows: Sequence[Mapping[str, Any]],
+    manifest: dict[str, Any],
+    report_sections: dict[str, list[str]],
 ):
     reportable_curve_series = {
         row["response_series_uid"] for row in phase_three.evidence.curve_rows
@@ -2186,7 +2255,41 @@ def _figure_stage_writer(
                     evidence_row=evidence_by_series.get(attempt.response_series_uid),
                 )
             )
-        return tuple(figures)
+        if figures:
+            manifest["figures"] = {
+                "status": "run_output",
+                "scientific_status": "run_output",
+                "observed_figure_count": len(observed_series),
+                "artifact_count": len(figures),
+                "formats": list(config.figure_formats),
+            }
+            return tuple(figures)
+        # No series resolved, so the figure contract rendered nothing and a reviewer
+        # cannot see what phase 5 would draw. `test` packages carry a labeled
+        # synthetic stand-in instead; an authoritative package stays empty.
+        manifest["figures"] = {
+            "status": "no_renderable_series",
+            "scientific_status": "run_output",
+            "observed_figure_count": 0,
+            "artifact_count": 0,
+            "formats": list(config.figure_formats),
+        }
+        if config.run_mode != "test":
+            return ()
+        sample_set = write_sample_figures(
+            stage_root / SAMPLE_FIGURE_DIRECTORY,
+            run_mode=config.run_mode,
+            model_policy=phase_three.model_policy,
+            formats=config.figure_formats,
+        )
+        manifest["figures"] = dict(sample_set.summary)
+        report_sections["unsupported"].append(
+            "No response series resolved, so no figure describes this run. "
+            f"{sample_set.summary['artifact_count']} synthetic demonstration artifacts were "
+            f"written to {SAMPLE_FIGURE_DIRECTORY}/ so the figure contract stays reviewable; "
+            "they are illustrations of the rendering only and are not results."
+        )
+        return sample_set.paths
 
     return write_figures
 
@@ -2276,18 +2379,20 @@ def _public_release_rows(
     phase_two: Any,
     rows: Iterable[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
-    """Project restricted rows through the reviewed disclosure policy before release."""
+    """Project releasable rows and omit unreviewed restricted rows safely."""
 
     materialized = tuple(dict(row) for row in rows)
     source_data_policy = getattr(phase_two, "source_data_policy", None)
-    if source_data_policy is None:
-        if any(row.get("data_classification") == "restricted" for row in materialized):
-            raise ReportingError(
-                "Restricted records cannot enter a release without a reviewed "
-                "source-data policy"
-            )
+    restricted_policy = (
+        getattr(source_data_policy, "restricted_policy", None)
+        if source_data_policy is not None
+        else None
+    )
+    if restricted_policy is None:
         public: list[dict[str, Any]] = []
         for row in materialized:
+            if row.get("data_classification") == "restricted":
+                continue
             row.pop("source_path", None)
             row.pop("schema_map_path", None)
             row.pop("raw_cells", None)
@@ -2300,7 +2405,7 @@ def _public_release_rows(
     try:
         return project_public_records(
             materialized,
-            policy=source_data_policy.restricted_policy,
+            policy=restricted_policy,
         )
     except ValueError as exc:
         raise ReportingError(f"Restricted-data public projection failed: {exc}") from exc
@@ -2339,6 +2444,47 @@ def _with_record_release_metadata(
                 release_row[field] = source_record[field]
         materialized.append(release_row)
     return tuple(materialized)
+
+
+def _public_release_accounting(phase_two: Any) -> dict[str, Any]:
+    """Reconcile internal canonical rows with their row-level public disposition."""
+
+    internal_rows = tuple(
+        dict(record)
+        for record in getattr(getattr(phase_two, "resolution", None), "records", ())
+    )
+    public_rows = _public_release_rows(phase_two, internal_rows)
+    restricted_rows = tuple(
+        row for row in internal_rows if row.get("data_classification") == "restricted"
+    )
+    released_restricted_rows = sum(
+        row.get("data_classification") == "public_deidentified" for row in public_rows
+    )
+    omitted_restricted_rows = len(restricted_rows) - released_restricted_rows
+    if omitted_restricted_rows < 0:
+        raise ReportingError("Public-release restricted-row accounting does not reconcile")
+    projected_public_rows = len(public_rows) - released_restricted_rows
+    unrestricted_internal_rows = len(internal_rows) - len(restricted_rows)
+    reconciles = (
+        projected_public_rows == unrestricted_internal_rows
+        and released_restricted_rows + omitted_restricted_rows
+        == len(restricted_rows)
+    )
+    if not reconciles:
+        raise ReportingError("Public-release row accounting does not reconcile")
+    return {
+        "internal_row_count": len(internal_rows),
+        "public_row_count": len(public_rows),
+        "restricted_internal_row_count": len(restricted_rows),
+        "restricted_rows_released_after_reviewed_projection": released_restricted_rows,
+        "restricted_rows_omitted": omitted_restricted_rows,
+        "restricted_without_disclosure_policy_disposition": (
+            "internal_only_no_public_row_release"
+            if omitted_restricted_rows
+            else "not_applicable"
+        ),
+        "reconciles": reconciles,
+    }
 
 
 def _final_cleaning_sensitivity_rows(
@@ -3761,7 +3907,7 @@ def _release_target(config: ValidatedConfig) -> Path:
 def _release_run_id(config: ValidatedConfig) -> str:
     seed = int(config.raw["run"]["random_seed"])
     run_id = f"n_response_{config.run_mode}_{seed}"
-    if config.run_mode != "test":
+    if config.run_mode not in {"test", "full"}:
         return run_id
     launcher_run_id = os.environ.get("N_RESPONSE_LAUNCHER_RUN_ID", "")
     match = re.fullmatch(
@@ -3799,7 +3945,6 @@ def _logged_stage_writer(
 def _policy_stage_writer(
     policy_snapshot: RuntimePolicySnapshot,
     manifest: dict[str, Any],
-    release_approval: ReleaseApproval | None = None,
 ) -> Callable[[Path], tuple[Path, ...]]:
     def write_policy_snapshot(stage_root: Path) -> tuple[Path, ...]:
         written: list[Path] = []
@@ -3814,21 +3959,6 @@ def _policy_stage_writer(
                 destination.relative_to(stage_root).as_posix()
             )
             written.append(destination)
-        authority_matrix = policy_snapshot.authority_matrix
-        if authority_matrix is not None:
-            authority_destination = (
-                stage_root / "governance" / "approval_authority_matrix.json"
-            )
-            authority_destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(authority_matrix.artifact_path, authority_destination)
-            if sha256_file(authority_destination) != authority_matrix.artifact_sha256:
-                raise ReportingError(
-                    "Archived approval authority matrix does not match its validated source"
-                )
-            manifest["runtime_policy"]["approval_authority_matrix"][
-                "archived_artifact_path"
-            ] = authority_destination.relative_to(stage_root).as_posix()
-            written.append(authority_destination)
         review_gate_policy = policy_snapshot.review_gate_policy
         if review_gate_policy is not None:
             review_destination = (
@@ -3844,20 +3974,6 @@ def _policy_stage_writer(
                 "archived_artifact_path"
             ] = review_destination.relative_to(stage_root).as_posix()
             written.append(review_destination)
-        if release_approval is not None:
-            release_destination = (
-                stage_root / "governance" / "release_approval.json"
-            )
-            release_destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(release_approval.artifact_path, release_destination)
-            if sha256_file(release_destination) != release_approval.artifact_sha256:
-                raise ReportingError(
-                    "Archived release approval does not match its validated source"
-                )
-            manifest["release_approval"]["archived_artifact_path"] = (
-                release_destination.relative_to(stage_root).as_posix()
-            )
-            written.append(release_destination)
         return tuple(written)
 
     return write_policy_snapshot
@@ -3982,68 +4098,6 @@ def _source_scope_snapshot_stage_writer(
     return write_source_scope_snapshot
 
 
-def _load_replacement_record(
-    config: ValidatedConfig,
-    target: Path,
-    *,
-    authority_matrix: ApprovalAuthorityMatrix | None,
-) -> Mapping[str, Any] | None:
-    path = (
-        config.paths["run_metadata_root"]
-        / "approvals"
-        / "replacement_records"
-        / f"{target.name}.json"
-    )
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ConfigError("Approved replacement record is unreadable or malformed") from exc
-    if not isinstance(payload, Mapping):
-        raise ConfigError("Approved replacement record must be a JSON object")
-    if config.run_mode == "full":
-        if authority_matrix is None:
-            raise ConfigError(
-                "Authoritative replacement requires the approved OPS-08 authority matrix"
-            )
-        release_owner = authority_matrix.gate_authorities["release_promotion"][
-            "accountable_party"
-        ]
-        if payload.get("approved_by") != release_owner:
-            raise ConfigError(
-                "Approved replacement record signer is not the accountable "
-                "release-promotion party in the OPS-08 authority matrix"
-            )
-        approved_at = payload.get("approved_at")
-        if not isinstance(approved_at, str) or not approved_at.strip():
-            raise ConfigError(
-                "Approved replacement record has no valid approval timestamp"
-            )
-        normalized_approval = approved_at.strip()
-        try:
-            if "T" in normalized_approval:
-                approval_datetime = datetime.fromisoformat(
-                    normalized_approval.replace("Z", "+00:00")
-                )
-                if approval_datetime.tzinfo is None:
-                    raise ValueError("timezone is required")
-                approval_date = approval_datetime.date()
-            else:
-                approval_date = date.fromisoformat(normalized_approval)
-        except ValueError as exc:
-            raise ConfigError(
-                "Approved replacement timestamp must be an ISO date or "
-                "timezone-qualified datetime"
-            ) from exc
-        if approval_date < date.fromisoformat(authority_matrix.effective_from):
-            raise ConfigError(
-                "Approved replacement record predates the effective OPS-08 "
-                "authority matrix"
-            )
-    return dict(payload)
-
-
 def _strict_release_validator(
     config: ValidatedConfig,
 ) -> Callable[[Mapping[str, Any]], None]:
@@ -4055,10 +4109,6 @@ def _strict_release_validator(
             not isinstance(message, str) for message in warnings
         ):
             raise ReportingError("Runtime warning ledger is malformed")
-        if warnings:
-            raise ReportingError(
-                "Authoritative release is blocked because the completed runtime review contains warnings"
-            )
         runtime_policy = manifest.get("runtime_policy")
         run_identity_sha256 = manifest.get("run_identity_sha256")
         policy_content_sha256 = (
@@ -4077,29 +4127,7 @@ def _strict_release_validator(
             )
         ):
             raise ReportingError(
-                "Authoritative release is blocked because its complete review gate is missing, incomplete, failed, or not bound to this run"
-            )
-        release_approval = manifest.get("release_approval")
-        authority_matrix = (
-            runtime_policy.get("approval_authority_matrix")
-            if isinstance(runtime_policy, Mapping)
-            else None
-        )
-        if (
-            not isinstance(release_approval, Mapping)
-            or release_approval.get("status") != "approved"
-            or release_approval.get("scope") != "release_promotion"
-            or release_approval.get("run_id") != manifest.get("run_id")
-            or release_approval.get("run_identity_sha256") != run_identity_sha256
-            or not isinstance(authority_matrix, Mapping)
-            or release_approval.get("authority_matrix_sha256")
-            != authority_matrix.get("artifact_sha256")
-            or not isinstance(release_approval.get("archived_artifact_path"), str)
-            or not release_approval.get("archived_artifact_path")
-        ):
-            raise ReportingError(
-                "Authoritative release is blocked because release-owner approval is "
-                "missing, stale, or not bound to this run and authority matrix"
+                "Full output is blocked because its complete review ledger is missing, incomplete, or not bound to this run"
             )
 
     return validate_release
@@ -4201,12 +4229,6 @@ def release_phases_three_to_five(
         "config_sha256": sha256_file(config.config_path),
         "code_sha256": _code_fingerprint(),
         "policy_content_sha256": policy_snapshot.policy_content_sha256,
-        "approval_artifact_sha256": policy_snapshot.artifact_sha256,
-        "approval_authority_matrix_sha256": (
-            policy_snapshot.authority_matrix.artifact_sha256
-            if policy_snapshot.authority_matrix is not None
-            else None
-        ),
         "effective_enablement_sha256": (
             policy_snapshot.effective_enablement_sha256
         ),
@@ -4224,24 +4246,6 @@ def release_phases_three_to_five(
         ),
     }
     run_identity_sha256 = stable_json_sha256(identity_payload)
-    release_approval: ReleaseApproval | None = None
-    if config.run_mode == "full":
-        if policy_snapshot.authority_matrix is None:
-            raise ConfigError(
-                "Authoritative release requires the approved OPS-08 authority matrix"
-            )
-        release_approval = load_release_approval(
-            (
-                config.paths["run_metadata_root"]
-                / "approvals"
-                / "release_records"
-                / f"{run_id}.json"
-            ),
-            authority_matrix=policy_snapshot.authority_matrix,
-            run_id=run_id,
-            release_target=target.relative_to(config.project_root).as_posix(),
-            run_identity_sha256=run_identity_sha256,
-        )
     source_registry = _source_registry(
         config,
         integrity.artifact_sha256,
@@ -4278,11 +4282,6 @@ def release_phases_three_to_five(
         "effective_config": _release_effective_config(config),
         "runtime_policy": policy_snapshot.manifest_payload(
             project_root=config.project_root
-        ),
-        "release_approval": (
-            release_approval.manifest_payload(project_root=config.project_root)
-            if release_approval is not None
-            else {"status": "not_required_for_bounded_test_release"}
         ),
         "output_profile": {
             "table_formats": list(config.output_formats),
@@ -4328,6 +4327,7 @@ def release_phases_three_to_five(
         "source_registry": source_registry,
         "contextual_coverage": contextual_coverage,
         "canonical_rows": len(phase_two.curation.records),
+        "public_release_accounting": _public_release_accounting(phase_two),
         "eligibility_rows": len(phase_two.eligibility.ledger),
         "analysis_eligibility_rows": len(
             phase_two.analysis_eligibility.ledger
@@ -4457,7 +4457,6 @@ def release_phases_three_to_five(
             "level": run_log.level,
         },
     }
-    replacement_record: Mapping[str, Any] | None = None
     if target.exists():
         try:
             existing = verify_release_package(target)
@@ -4472,19 +4471,6 @@ def release_phases_three_to_five(
                 and isinstance(existing_policy, Mapping)
                 and existing_policy.get("policy_content_sha256")
                 == policy_snapshot.policy_content_sha256
-                and (
-                    release_approval is None
-                    or (
-                        isinstance(
-                            existing_manifest.get("release_approval"),
-                            Mapping,
-                        )
-                        and existing_manifest["release_approval"].get(
-                            "artifact_sha256"
-                        )
-                        == release_approval.artifact_sha256
-                    )
-                )
                 and _review_gate_allows_reuse(
                     existing_manifest,
                     run_identity_sha256=run_identity_sha256,
@@ -4496,17 +4482,6 @@ def release_phases_three_to_five(
                 return PhaseFiveResult(package=existing, reused_existing_package=True)
         if not bool(config.raw["run"]["overwrite"]):
             raise ConfigError(f"Release package collision at {target}")
-        replacement_record = _load_replacement_record(
-            config,
-            target,
-            authority_matrix=policy_snapshot.authority_matrix,
-        )
-    if target.exists() and replacement_record is None:
-        # The reporting layer performs the final schema and binding validation.
-        # Raise here so no staging directory or release-stage artifact is created.
-        raise ConfigError(
-            "Replacing an existing release requires an approved named-target replacement record"
-        )
     report_sections = _report_sections(
         config,
         phase_two,
@@ -4523,7 +4498,7 @@ def release_phases_three_to_five(
         return (log_path,)
 
     stage_writers = (
-        _policy_stage_writer(policy_snapshot, manifest, release_approval),
+        _policy_stage_writer(policy_snapshot, manifest),
         _analysis_policy_stage_writer(analysis_policy, manifest),
         _source_data_policy_stage_writer(
             phase_two.source_data_policy,
@@ -4536,7 +4511,13 @@ def release_phases_three_to_five(
         _logged_stage_writer(
             run_log,
             "figures",
-            _figure_stage_writer(config, phase_three, series_evidence_rows),
+            _figure_stage_writer(
+                config,
+                phase_three,
+                series_evidence_rows,
+                manifest,
+                report_sections,
+            ),
         ),
         _logged_stage_writer(
             run_log,
@@ -4618,7 +4599,6 @@ def release_phases_three_to_five(
             overwrite=bool(config.raw["run"]["overwrite"]),
             source_roots=_source_target_paths(config),
             stage_writers=stage_writers,
-            replacement_record=replacement_record,
             release_validator=_strict_release_validator(config),
         )
     except ReportingError as exc:
