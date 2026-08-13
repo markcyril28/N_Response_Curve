@@ -1098,6 +1098,7 @@ def write_release_package(
         and tuple(initial_profile["document_formats"]) != ("md", "pdf")
     ):
         raise ReportingError("Run manifest advertises a prohibited report-document profile")
+    _validate_analysis_population_selection(initial_manifest)
     formats = tuple(str(item).lower().lstrip(".") for item in output_formats)
     if not formats or set(formats) - SUPPORTED_TABLE_FORMATS or len(formats) != len(set(formats)):
         raise ReportingError("Output formats must be unique members of csv, parquet, xlsx")
