@@ -1035,6 +1035,8 @@ def _asymptote_support_rows(
                     "maximum_associated_n_basis"
                 ],
                 "in_domain_attainment_fraction": attainment,
+                "attainment_reference_quantity": support_policy["reference_quantity"],
+                "asymptote_interval_method": interval_method,
                 "asymptote_relative_se": relative_se,
                 "asymptote_influence_max_relative_shift": influence_shift,
                 "asymptote_influence_fold_count": (
