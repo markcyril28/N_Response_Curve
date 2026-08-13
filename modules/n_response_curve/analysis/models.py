@@ -2670,6 +2670,17 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "distinct_n_level_count": attempt.distinct_n_level_count,
         "observed_n_min_kg_ha": attempt.observed_n_min_kg_ha,
         "observed_n_max_kg_ha": attempt.observed_n_max_kg_ha,
+        # Plan Section 10.7's canonical names for the series' tested N design.
+        # They are required on every curve-feature row, available or withheld,
+        # because a curve feature is withheld exactly when the turning point
+        # reaches this series' own highest tested rate, so the range is the
+        # truncation point Phase 4 needs to read either outcome. The three
+        # fields immediately above are the same quantities under their
+        # pre-existing spellings and are retained as deprecated aliases for one
+        # release; `MV-022` owns the registry reconciliation and the removal.
+        "tested_n_min_kg_ha": attempt.observed_n_min_kg_ha,
+        "tested_n_max_kg_ha": attempt.observed_n_max_kg_ha,
+        "tested_n_level_count": attempt.distinct_n_level_count,
         "residual_df": attempt.residual_df,
         "rss": attempt.rss,
         "aicc": attempt.aicc,
