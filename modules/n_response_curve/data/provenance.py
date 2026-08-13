@@ -108,6 +108,15 @@ class ChecksumRevisionApproval:
     new_sha256: str
     manifest_revision: str
     structural_comparison_sha256: str
+    prior_encoding: str
+    candidate_encoding: str
+    prior_data_classification: str
+    candidate_data_classification: str
+    prior_workbook_sha256: str | None
+    candidate_workbook_sha256: str | None
+    prior_workbook_path: Path | None
+    prior_sheet: str | None
+    candidate_sheet: str | None
     prior_registered_path: Path
 
 
