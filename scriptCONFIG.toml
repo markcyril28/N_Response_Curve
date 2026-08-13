@@ -10,7 +10,7 @@
 #              series and writes under paths.test_output_root.
 #   "full"     runs all resolved series and writes under paths.reports_root;
 #              every enabled source must be verified with an assigned adapter.
-mode = "test"
+mode = "validate"
 overwrite = true
 random_seed = 20260720
 test_group_limit = 12
@@ -141,10 +141,19 @@ atomic_writes = true
 allow_source_targets = false
 row_level_qc = true
 collision_policy = "replace_only_with_overwrite"
+# Clear the mode-specific release root (test -> paths.test_output_root,
+# full -> paths.reports_root) before the run writes anything. Every run writes a
+# new package directory, so leaving this false accumulates one per run; true
+# removes ALL prior packages under that root, not just the current run's target.
+# Requires [run].overwrite = true, and must stay false in validate mode.
+clear_output_root_before_run = false
 
 [logging]
 level = "INFO"
-write_logs_in_validate = false
+write_logs_in_validate = true
+# Clear the launcher's log subdirectories (log_files, jsonl_logs,
+# error_warn_logs) before logging starts. Must stay false in validate mode.
+clear_log_root_before_run = false
 
 # Runtime and engine controls
 [engines]

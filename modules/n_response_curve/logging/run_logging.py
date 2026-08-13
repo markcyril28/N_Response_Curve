@@ -285,6 +285,31 @@ def console_colors_enabled(stream: TextIO) -> bool:
     return bool(hasattr(stream, "isatty") and stream.isatty())
 
 
+def _collapse_repeated_traceback_message(
+    traceback_lines: list[str], message: Any
+) -> list[str]:
+    """Drop a multi-line exception message the console already printed above.
+
+    ``format_exception`` terminates with ``Type: str(exc)``, so a long multi-line
+    message is rendered twice in the same block -- once as the ``message`` detail
+    and again as the traceback tail, which buries the frames. Only the console
+    view is trimmed; the JSONL ``traceback`` field keeps the full text.
+    """
+
+    if not isinstance(message, str) or "\n" not in message:
+        return traceback_lines
+    first_line = message.split("\n", 1)[0].strip()
+    if not first_line:
+        return traceback_lines
+    suffix = f": {first_line}"
+    for index in range(len(traceback_lines) - 1, -1, -1):
+        stripped = traceback_lines[index].rstrip()
+        if stripped.endswith(suffix):
+            exception_type = stripped[: -len(suffix)]
+            return [*traceback_lines[:index], f"{exception_type}: (message shown above)"]
+    return traceback_lines
+
+
 def format_console_event(
     *,
     timestamp: str,
@@ -334,6 +359,9 @@ def format_console_event(
         traceback_value.splitlines()
         if isinstance(traceback_value, str) and traceback_value
         else []
+    )
+    traceback_lines = _collapse_repeated_traceback_message(
+        traceback_lines, fields.get("error")
     )
     if not details and not traceback_lines:
         return header

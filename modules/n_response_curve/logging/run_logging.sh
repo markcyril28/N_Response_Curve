@@ -15,6 +15,7 @@ NRC_LOGGING_ACTIVE=0
 NRC_LOG_STDOUT_TEE_PID=""
 NRC_LOG_STDERR_TEE_PID=""
 NRC_LOG_FULL_WRITER_PID=""
+NRC_LOG_ERROR_WRITER_PID=""
 NRC_LOG_FDS_SAVED=0
 NRC_LOG_COLOR_ACTIVE=0
 NRC_LOG_COLOR_AUTO=0
@@ -52,6 +53,13 @@ nrc_colors_enabled() {
     1|true|always) return 0 ;;
   esac
   [[ -t 1 || -t 2 ]]
+}
+
+# Persisted logs are read in editors, not terminals. Color is added at format
+# time in Python and Bash, and the tee splits downstream of that, so the only
+# place a plain-text file can be produced is at the sink that owns it.
+nrc_strip_ansi() {
+  sed -E $'s/\033\\[[0-9;]*[A-Za-z]//g'
 }
 
 nrc_human_paint() {
@@ -241,19 +249,23 @@ nrc_setup_logging() {
     export NRC_CONSOLE_COLOR=always
   fi
   command -v tee >/dev/null 2>&1 || return 2
-  command -v cat >/dev/null 2>&1 || return 2
+  command -v sed >/dev/null 2>&1 || return 2
 
   exec 3>&1 4>&2
   NRC_LOG_FDS_SAVED=1
-  # One process owns the full-log file. Both channels forward to its pipe,
-  # avoiding concurrent file appenders while preserving terminal stdout/stderr.
-  exec 5> >(cat >>"$NRC_FULL_LOG_FILE")
+  # One process owns each log file. Both channels forward to its pipe, avoiding
+  # concurrent file appenders while preserving terminal stdout/stderr. Each
+  # owner strips ANSI on the way in, so the terminal keeps its accents and the
+  # files stay plain text.
+  exec 5> >(nrc_strip_ansi >>"$NRC_FULL_LOG_FILE")
   NRC_LOG_FULL_WRITER_PID="$!"
+  exec 6> >(nrc_strip_ansi >>"$NRC_ERROR_WARN_FILE")
+  NRC_LOG_ERROR_WRITER_PID="$!"
   exec > >(tee -- /dev/fd/5 >&3)
   NRC_LOG_STDOUT_TEE_PID="$!"
   # Keep stderr on stderr while retaining every Bash/Python diagnostic in both
   # the full transcript and the dedicated error/warning log.
-  exec 2> >(tee -a -- "$NRC_ERROR_WARN_FILE" /dev/fd/5 >&4)
+  exec 2> >(tee -- /dev/fd/6 /dev/fd/5 >&4)
   NRC_LOG_STDERR_TEE_PID="$!"
   NRC_LOGGING_ACTIVE=1
 }
@@ -263,7 +275,7 @@ nrc_teardown_logging() {
   [[ "$NRC_LOGGING_ACTIVE" -eq 1 ]] || return 0
   if [[ "$NRC_LOG_FDS_SAVED" -eq 1 ]]; then
     exec 1>&3 2>&4
-    exec 5>&-
+    exec 5>&- 6>&-
     exec 3>&- 4>&-
     NRC_LOG_FDS_SAVED=0
   fi
@@ -278,6 +290,10 @@ nrc_teardown_logging() {
   if [[ -n "$NRC_LOG_FULL_WRITER_PID" ]]; then
     wait "$NRC_LOG_FULL_WRITER_PID" 2>/dev/null || wait_status=2
     NRC_LOG_FULL_WRITER_PID=""
+  fi
+  if [[ -n "$NRC_LOG_ERROR_WRITER_PID" ]]; then
+    wait "$NRC_LOG_ERROR_WRITER_PID" 2>/dev/null || wait_status=2
+    NRC_LOG_ERROR_WRITER_PID=""
   fi
   NRC_LOGGING_ACTIVE=0
   return "$wait_status"

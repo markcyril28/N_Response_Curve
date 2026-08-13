@@ -44,6 +44,11 @@ fi
 
 LAUNCHER_RUN_ID="n_response_launcher_$(date -u +%Y%m%dT%H%M%SZ)_$$"
 export N_RESPONSE_LAUNCHER_RUN_ID="$LAUNCHER_RUN_ID"
+# Matplotlib otherwise falls back noisily when the user's Linux config directory
+# is unavailable (for example, in a restricted WSL/session environment).
+MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/n-response-matplotlib-${UID:-$$}}"
+mkdir -p -- "$MPLCONFIGDIR" || preflight_die "cannot create Matplotlib cache: $MPLCONFIGDIR"
+export MPLCONFIGDIR
 "$PYTHON_BIN" -c 'import tomllib' >/dev/null 2>&1 || preflight_die "Python must provide tomllib"
 
 export PYTHONDONTWRITEBYTECODE=1
