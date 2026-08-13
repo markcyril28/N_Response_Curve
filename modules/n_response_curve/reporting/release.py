@@ -52,6 +52,7 @@ class ReleasePackage:
 
 
 _SAFE_TABLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_SAFE_TABLE_GROUP = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _SAFE_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_ARTIFACT_SUFFIXES = frozenset({".htm", ".html", ".svg"})
