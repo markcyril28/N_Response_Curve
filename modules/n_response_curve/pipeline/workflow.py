@@ -3862,7 +3862,7 @@ def release_phases_three_to_five(
             "code_sha256": identity_payload["code_sha256"],
             "git": _git_inventory(config.project_root),
         },
-        "effective_config": _redact(config.raw),
+        "effective_config": _release_effective_config(config),
         "runtime_policy": policy_snapshot.manifest_payload(
             project_root=config.project_root
         ),
@@ -3908,7 +3908,7 @@ def release_phases_three_to_five(
         "runtime_inventory": _runtime_inventory(str(config.raw["engines"]["rscript_command"])),
         "source_integrity": {
             "checked_files": integrity.checked_files,
-            "artifact_sha256": dict(integrity.artifact_sha256),
+            "artifact_sha256": release_source_artifact_sha256,
         },
         "source_data_policy": source_policy_evidence,
         "literature_verification": literature_verification_evidence,
@@ -4110,6 +4110,10 @@ def release_phases_three_to_five(
         _analysis_policy_stage_writer(analysis_policy, manifest),
         _source_data_policy_stage_writer(
             phase_two.source_data_policy,
+            manifest,
+        ),
+        _source_scope_snapshot_stage_writer(
+            phase_two.source_scope_snapshot,
             manifest,
         ),
         _logged_stage_writer(
