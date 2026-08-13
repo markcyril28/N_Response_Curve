@@ -16,6 +16,21 @@ NRC_LOG_STDOUT_TEE_PID=""
 NRC_LOG_STDERR_TEE_PID=""
 NRC_LOG_FULL_WRITER_PID=""
 NRC_LOG_FDS_SAVED=0
+NRC_LOG_COLOR_ACTIVE=0
+NRC_LOG_COLOR_AUTO=0
+NRC_ANSI_RESET=$'\033[0m'
+NRC_ANSI_DIM=$'\033[2m'
+NRC_ANSI_BOLD=$'\033[1m'
+NRC_ANSI_BLUE=$'\033[34m'
+NRC_ANSI_CYAN=$'\033[36m'
+NRC_ANSI_GREEN=$'\033[32m'
+NRC_ANSI_MAGENTA=$'\033[35m'
+NRC_ANSI_YELLOW=$'\033[33m'
+NRC_ANSI_BRIGHT_BLUE=$'\033[1;34m'
+NRC_ANSI_BRIGHT_CYAN=$'\033[1;36m'
+NRC_ANSI_BRIGHT_GREEN=$'\033[1;32m'
+NRC_ANSI_BRIGHT_RED=$'\033[1;31m'
+NRC_ANSI_BRIGHT_YELLOW=$'\033[1;33m'
 
 nrc_log_level_rank() {
   case "$1" in
@@ -25,6 +40,68 @@ nrc_log_level_rank() {
     ERROR) printf '40\n' ;;
     *) return 2 ;;
   esac
+}
+
+nrc_colors_enabled() {
+  local requested="${NRC_CONSOLE_COLOR:-}"
+  if [[ -n "${NO_COLOR+x}" || "${TERM:-}" == "dumb" ]]; then
+    return 1
+  fi
+  case "${requested,,}" in
+    0|false|never) return 1 ;;
+    1|true|always) return 0 ;;
+  esac
+  [[ -t 1 || -t 2 ]]
+}
+
+nrc_human_paint() {
+  local code="$1" value="$2"
+  if [[ "$NRC_LOG_COLOR_ACTIVE" -eq 1 && -n "$code" ]]; then
+    printf '%s%s%s' "$code" "$value" "$NRC_ANSI_RESET"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+nrc_human_event_color() {
+  local level="$1" event="$2"
+  if [[ "$level" == "ERROR" || "$event" == *_failed ]]; then
+    printf '%s' "$NRC_ANSI_BRIGHT_RED"
+  elif [[ "$level" == "WARNING" ]]; then
+    printf '%s' "$NRC_ANSI_BRIGHT_YELLOW"
+  elif [[ "$event" == *_completed ]]; then
+    printf '%s' "$NRC_ANSI_BRIGHT_GREEN"
+  elif [[ "$event" == "resource_snapshot" ]]; then
+    printf '%s' "$NRC_ANSI_MAGENTA"
+  elif [[ "$event" == "stage_started" || "$event" == "launcher_handoff" || "$event" == *_started ]]; then
+    printf '%s' "$NRC_ANSI_BRIGHT_BLUE"
+  else
+    printf '%s' "$NRC_ANSI_BRIGHT_CYAN"
+  fi
+}
+
+nrc_human_value_color() {
+  local key="$1" value="$2" lower_key
+  lower_key="${key,,}"
+  if [[ "$value" == *'[REDACTED]'* ]]; then
+    printf '%s' "$NRC_ANSI_MAGENTA"
+  elif [[ "$key" == "error" || "$key" == "root_cause" || "$key" == "failure_location" ]]; then
+    printf '%s' "$NRC_ANSI_BRIGHT_RED"
+  elif [[ "$key" == "status" ]]; then
+    if [[ "$value" == "0" || "$value" == "ok" || "$value" == "success" ]]; then
+      printf '%s' "$NRC_ANSI_GREEN"
+    elif [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+      printf '%s' "$NRC_ANSI_BRIGHT_RED"
+    fi
+  elif [[ "$lower_key" == *_path || "$lower_key" == *_package ]]; then
+    printf '%s' "$NRC_ANSI_CYAN"
+  elif [[ "$key" == "writes_outputs" ]]; then
+    if [[ "$value" == "true" ]]; then
+      printf '%s' "$NRC_ANSI_GREEN"
+    elif [[ "$value" == "false" ]]; then
+      printf '%s' "$NRC_ANSI_YELLOW"
+    fi
+  fi
 }
 
 nrc_json_escape() {
@@ -132,6 +209,7 @@ nrc_log_init() {
   NRC_LOG_FILE="$output_path"
   NRC_LOG_PROJECT_ROOT=""
   NRC_LOG_SEQUENCE=0
+  NRC_LOG_COLOR_AUTO=0
   NRC_LOG_INITIALIZED=1
 }
 
@@ -158,6 +236,10 @@ nrc_setup_logging() {
   touch -- "$NRC_FULL_LOG_FILE" "$NRC_LOG_FILE" "$NRC_ERROR_WARN_FILE" || return 2
   nrc_log_init "$component" "$run_id" "$level" "$NRC_LOG_FILE" || return 2
   NRC_LOG_PROJECT_ROOT="$project_root"
+  if nrc_colors_enabled; then
+    NRC_LOG_COLOR_AUTO=1
+    export NRC_CONSOLE_COLOR=always
+  fi
   command -v tee >/dev/null 2>&1 || return 2
   command -v cat >/dev/null 2>&1 || return 2
 
@@ -203,10 +285,10 @@ nrc_teardown_logging() {
 
 nrc_log() {
   local level="$1" event="$2" rank timestamp line field key value lower_key index
-  local human_level human_line title icon stage="" phase="" label branch rendered
+  local human_level human_line title icon stage="" phase="" label branch rendered event_color value_color
   local label_width=0 visible_count=0 visible_index=0
   local -a field_keys=() field_values=()
-  local -a visible_values=() visible_labels=()
+  local -a visible_keys=() visible_values=() visible_labels=()
   shift 2
   [[ "$NRC_LOG_INITIALIZED" -eq 1 ]] || return 2
   [[ -n "$event" ]] || return 2
@@ -261,7 +343,17 @@ nrc_log() {
   [[ "$human_level" != "WARNING" ]] || human_level="WARN"
   title="$(nrc_human_title "$event" "$stage" "$phase")"
   icon="$(nrc_human_icon "$level" "$event")"
-  printf -v human_line '%s  %-5s  %s %s' "${timestamp:11:12}" "$human_level" "$icon" "$title"
+  if [[ "$NRC_LOG_COLOR_AUTO" -eq 1 ]] || nrc_colors_enabled; then
+    NRC_LOG_COLOR_ACTIVE=1
+  else
+    NRC_LOG_COLOR_ACTIVE=0
+  fi
+  event_color="$(nrc_human_event_color "$level" "$event")"
+  printf -v human_line '%s  %s  %s %s' \
+    "$(nrc_human_paint "$NRC_ANSI_DIM" "${timestamp:11:12}")" \
+    "$(nrc_human_paint "$event_color" "$(printf '%-5s' "$human_level")")" \
+    "$(nrc_human_paint "$event_color" "$icon")" \
+    "$(nrc_human_paint "$NRC_ANSI_BOLD" "$title")"
   for index in "${!field_keys[@]}"; do
     key="${field_keys[$index]}"
     if [[ ( "$event" == "stage_started" || "$event" == "stage_completed" || "$event" == "stage_failed" ) && "$key" == "stage" ]]; then
@@ -271,6 +363,7 @@ nrc_log() {
       continue
     fi
     label="$(nrc_human_label "$key")"
+    visible_keys+=("$key")
     visible_values+=("${field_values[$index]}")
     visible_labels+=("$label")
     if (( ${#label} > label_width )); then
@@ -287,8 +380,11 @@ nrc_log() {
       branch='└─'
     fi
     rendered="$(nrc_human_value "${visible_values[$visible_index]}")"
-    printf -v line '                  %s %-*s  %s' \
-      "$branch" "$label_width" "${visible_labels[$visible_index]}" "$rendered"
+    value_color="$(nrc_human_value_color "${visible_keys[$visible_index]}" "${visible_values[$visible_index]}")"
+    printf -v line '                  %s %s  %s' \
+      "$(nrc_human_paint "$NRC_ANSI_DIM" "$branch")" \
+      "$(nrc_human_paint "$NRC_ANSI_BLUE" "$(printf "%-*s" "$label_width" "${visible_labels[$visible_index]}")")" \
+      "$(nrc_human_paint "$value_color" "$rendered")"
     human_line+=$'\n'"$line"
   done
 
