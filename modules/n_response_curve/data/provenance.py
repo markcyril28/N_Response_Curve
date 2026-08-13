@@ -795,15 +795,58 @@ def validate_checksum_revision_approval(
         or parsed.new_sha256 != actual_new_sha256
     ):
         raise ConfigError("Checksum revision approval is not bound to the exact old/new artifact")
+    actual_workbook_sha256 = (
+        sha256_file(candidate_workbook_path)
+        if candidate_workbook_path is not None
+        else None
+    )
+    candidate_context = (
+        candidate_encoding,
+        candidate_data_classification,
+        actual_workbook_sha256,
+        _optional_text(candidate_sheet),
+    )
+    approved_context = (
+        parsed.candidate_encoding,
+        parsed.candidate_data_classification,
+        parsed.candidate_workbook_sha256,
+        parsed.candidate_sheet,
+    )
+    if approved_context != candidate_context or (
+        prior_encoding is not None and parsed.prior_encoding != prior_encoding
+    ):
+        raise ConfigError(
+            "Checksum revision approval does not match the exact source revision context"
+        )
     if not parsed.prior_registered_path.is_file():
         raise ConfigError("Checksum revision approval does not preserve an accessible prior artifact")
     if sha256_file(parsed.prior_registered_path) != expected_old:
         raise ConfigError("Preserved prior artifact does not match the registered old checksum")
+    if (parsed.prior_workbook_sha256 is None) != (
+        parsed.prior_workbook_path is None
+    ):
+        raise ConfigError(
+            "Checksum revision approval must preserve the prior workbook path and hash together"
+        )
+    if parsed.prior_workbook_path is not None and (
+        not parsed.prior_workbook_path.is_file()
+        or sha256_file(parsed.prior_workbook_path)
+        != parsed.prior_workbook_sha256
+    ):
+        raise ConfigError(
+            "Preserved prior workbook does not match the approved old workbook checksum"
+        )
     comparison = compare_checksum_revision(
         parsed.prior_registered_path,
         candidate,
-        prior_encoding=prior_encoding,
-        candidate_encoding=candidate_encoding,
+        prior_encoding=parsed.prior_encoding,
+        candidate_encoding=parsed.candidate_encoding,
+        prior_data_classification=parsed.prior_data_classification,
+        candidate_data_classification=parsed.candidate_data_classification,
+        prior_workbook_sha256=parsed.prior_workbook_sha256,
+        candidate_workbook_sha256=parsed.candidate_workbook_sha256,
+        prior_sheet=parsed.prior_sheet,
+        candidate_sheet=parsed.candidate_sheet,
     )
     if comparison.comparison_sha256 != parsed.structural_comparison_sha256:
         raise ConfigError("Checksum revision approval does not match the automated structural comparison")
