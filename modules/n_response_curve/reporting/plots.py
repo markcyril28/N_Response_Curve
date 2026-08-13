@@ -301,6 +301,69 @@ def prediction_rows(attempt: ModelAttempt) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
+def model_attempt_display_rows(
+    records: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Apply Plan Section 10.2's display rules to emitted model-attempt records.
+
+    Two diagnostics need a display rule that no per-candidate computation can
+    supply, because both are properties of the *set* a reader compares.
+
+    **AICc** (STAT-009). A three-mean-parameter candidate reaches `k = 4` once
+    residual variance is counted, so AICc needs six distinct N levels, while
+    `linear` reaches `k = 3` and qualifies from five. At exactly five levels the
+    column is therefore populated for `linear` alone, and a single populated cell
+    among unavailable ones reads as the candidate that passed a comparison no
+    other candidate was eligible for. The column is suppressed entirely below two
+    available candidates, with the reason recorded rather than the field
+    silently emptied.
+
+    **Leave-one-N-level-out** (PRF-014). Folds are dropped per candidate, by the
+    roster gate or as boundary folds, so two candidates on one series can carry
+    values computed from different folds. Those are different quantities — the
+    statistic conditions on which predictions were attempted, exactly as AICc is
+    comparable only across identical response records — so the fold basis travels
+    with every value and unequal fold sets are marked not comparable rather than
+    juxtaposed as though they measured the same thing.
+
+    Neither diagnostic selects a model under `MOD-02`, so a suppressed value
+    removes a display rather than a decision rule.
+    """
+
+    rows = [dict(record) for record in records]
+    by_series: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_series.setdefault(str(row.get("response_series_uid") or ""), []).append(row)
+    for series_rows in by_series.values():
+        with_aicc = [row for row in series_rows if row.get("aicc") is not None]
+        if len(with_aicc) >= 2:
+            aicc_status = "available_comparable_candidate_set"
+        elif len(with_aicc) == 1:
+            aicc_status = "suppressed_single_available_candidate"
+        else:
+            aicc_status = "unavailable_no_candidate"
+        fold_signatures = {
+            (
+                str(row.get("grouped_prediction_basis") or ""),
+                row.get("grouped_prediction_fold_count"),
+            )
+            for row in series_rows
+            if row.get("grouped_prediction_rmse") is not None
+        }
+        if len(fold_signatures) > 1:
+            fold_status = "not_comparable_unequal_fold_sets"
+        elif len(fold_signatures) == 1:
+            fold_status = "comparable_common_fold_set"
+        else:
+            fold_status = "unavailable_no_candidate"
+        for row in series_rows:
+            if aicc_status == "suppressed_single_available_candidate":
+                row["aicc"] = None
+            row["aicc_display_status"] = aicc_status
+            row["grouped_prediction_comparability_status"] = fold_status
+    return tuple(rows)
+
+
 def _normalize_figure_formats(formats: Sequence[str], *, figure_type: str) -> tuple[str, ...]:
     normalized = tuple(str(item).lower().lstrip(".") for item in formats)
     if not normalized or any(item not in SUPPORTED_FIGURE_FORMATS for item in normalized):
