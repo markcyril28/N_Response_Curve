@@ -2333,6 +2333,166 @@ def _final_cleaning_sensitivity_rows(
     return tuple(rows)
 
 
+_ANALYSIS_POPULATION_INCLUDED_STATUSES = frozenset(
+    {"credible_model_reported", "credible_model_set_reported"}
+)
+_ANALYSIS_POPULATION_DESCRIPTIVE_STATUSES = frozenset(
+    {"contrast_only", "descriptive_only"}
+)
+
+
+def _analysis_population_selection_rows(
+    phase_two: Any,
+    series_evidence_rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Record every series that had to be resolved or removed to reach success.
+
+    Literal `OPS-03` makes any warning, unresolved field, or excluded series
+    fatal — including the two-level and review-only evidence the goal requires
+    retaining — so a successful run's analysis population is by construction the
+    subset that produced none of those states. That is selection on a QC or
+    model-support outcome, the mechanism `ANA-08` forbids one level down, and it
+    is invisible unless the run says which series the subset cost
+    (Plan Sections 11 and 15, STAT-008).
+
+    The ledger is deliberately pre-resolution: it enumerates the series that did
+    **not** reach the fitted population, each with its disposition and reason,
+    rather than only those the operator happened to remove by hand.
+    """
+
+    tiers: dict[str, str] = {}
+    record_counts: dict[str, int] = {}
+    sources: dict[str, str] = {}
+    for row in phase_two.analysis_eligibility.ledger:
+        series_uid = str(row.get("response_series_uid") or "")
+        if not series_uid:
+            continue
+        record_counts[series_uid] = record_counts.get(series_uid, 0) + 1
+        sources.setdefault(series_uid, str(row.get("source_name") or ""))
+        tier = str(row.get("series_eligibility_tier") or row.get("eligibility_tier") or "")
+        if tier and (series_uid not in tiers or tier < tiers[series_uid]):
+            tiers[series_uid] = tier
+    evidence_by_series = {
+        str(row.get("response_series_uid") or ""): row
+        for row in series_evidence_rows
+    }
+    rows: list[dict[str, Any]] = []
+    for series_uid in sorted(record_counts):
+        evidence = evidence_by_series.get(series_uid)
+        status = str(evidence.get("evidence_status") or "") if evidence else ""
+        if status in _ANALYSIS_POPULATION_INCLUDED_STATUSES:
+            continue
+        if evidence is None:
+            disposition = "removed_from_analysis_population"
+        elif status in _ANALYSIS_POPULATION_DESCRIPTIVE_STATUSES:
+            disposition = "retained_descriptive_only"
+        else:
+            disposition = "retained_without_credible_model"
+        reason_codes = tuple(evidence.get("reason_codes") or ()) if evidence else ()
+        rows.append(
+            {
+                "response_series_uid": series_uid,
+                "source_name": sources.get(series_uid) or None,
+                "disposition": disposition,
+                "evidence_status": status or None,
+                "series_eligibility_tier": tiers.get(series_uid) or None,
+                "reason_codes": reason_codes,
+                "record_count": record_counts[series_uid],
+                "tested_n_min_kg_ha": (
+                    evidence.get("tested_n_min_kg_ha") if evidence else None
+                ),
+                "tested_n_max_kg_ha": (
+                    evidence.get("tested_n_max_kg_ha") if evidence else None
+                ),
+                "tested_n_level_count": (
+                    evidence.get("tested_n_level_count") if evidence else None
+                ),
+            }
+        )
+    return tuple(rows)
+
+
+def _analysis_population_composition_rows(
+    series_evidence_rows: Sequence[Mapping[str, Any]],
+    selection_rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Compare included and excluded analysis-population composition.
+
+    This is the comparison `ANA-08` already mandates for factor-level complete
+    cases, applied one level up to the analysis population itself: if the series
+    a successful run kept differ in source, tier, or tested N design from the
+    ones it could not keep, the retained population is not the target population
+    and the release must say so.
+
+    Included membership is decided by the same evidence-status test that produces
+    `included_series_count`, not by complement of the ledger, so the two numbers
+    cannot drift apart if a series reaches Phase 3 without an eligibility-ledger
+    row.
+    """
+
+    included_rows = tuple(
+        row
+        for row in series_evidence_rows
+        if str(row.get("evidence_status") or "")
+        in _ANALYSIS_POPULATION_INCLUDED_STATUSES
+    )
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+
+    def _record(grain: str, key: Any, bucket: str) -> None:
+        group = "__missing__" if key is None or key == "" else str(key)
+        entry = counts.setdefault((grain, group), {"included": 0, "excluded": 0})
+        entry[bucket] += 1
+
+    for row in included_rows:
+        _record("source_name", row.get("source_name"), "included")
+        _record("tested_n_level_count", row.get("tested_n_level_count"), "included")
+        _record("evidence_status", row.get("evidence_status"), "included")
+    for row in selection_rows:
+        _record("source_name", row.get("source_name"), "excluded")
+        _record("tested_n_level_count", row.get("tested_n_level_count"), "excluded")
+        _record("evidence_status", row.get("evidence_status"), "excluded")
+        _record("series_eligibility_tier", row.get("series_eligibility_tier"), "excluded")
+    return tuple(
+        {
+            "composition_grain": grain,
+            "group_key": group,
+            "included_series_count": entry["included"],
+            "excluded_series_count": entry["excluded"],
+        }
+        for (grain, group), entry in sorted(counts.items())
+    )
+
+
+def _analysis_population_selection_manifest(
+    phase_two: Any,
+    series_evidence_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Assemble the manifest block the release gate refuses to promote without."""
+
+    selection_rows = _analysis_population_selection_rows(
+        phase_two,
+        series_evidence_rows,
+    )
+    composition_rows = _analysis_population_composition_rows(
+        series_evidence_rows,
+        selection_rows,
+    )
+    included_count = sum(
+        1
+        for row in series_evidence_rows
+        if str(row.get("evidence_status") or "")
+        in _ANALYSIS_POPULATION_INCLUDED_STATUSES
+    )
+    return {
+        "status": "recorded",
+        "gate_policy": "literal_ops03_strict_failure",
+        "included_series_count": included_count,
+        "resolved_or_removed_series_count": len(selection_rows),
+        "ledger": [dict(row) for row in selection_rows],
+        "composition_comparison": [dict(row) for row in composition_rows],
+    }
+
+
 def _complete_case_composition_rows(
     phase_four: PhaseFourResult,
 ) -> tuple[dict[str, Any], ...]:
