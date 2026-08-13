@@ -2110,9 +2110,22 @@ def _first_stage_contextual_uncertainty_policy(
     )
 
 
+_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"ceiling_level", "response_range"})
+# PRF-012: on a weakly approached fit the sensitivities to `C` and `A` are nearly
+# collinear, so the likelihood is a ridge and the Wald standard error on the
+# ceiling is unreliable exactly for the fits this gate exists to reject — and an
+# unreliable interval that happens to come out narrow would promote one. Only a
+# method valid under the Section 10.4 nonregular rule may be recorded.
+_ASYMPTOTE_INTERVAL_METHODS = frozenset(
+    {"profile_likelihood", "design_respecting_bootstrap"}
+)
+
+
 def _asymptote_support_policy(value: object) -> Mapping[str, Any]:
     fields = (
         "minimum_in_domain_attainment_fraction",
+        "reference_quantity",
+        "asymptote_interval_method",
         "maximum_asymptote_relative_se",
         "maximum_influence_relative_shift",
         "minimum_influence_fold_count",
@@ -2154,6 +2167,32 @@ def _asymptote_support_policy(value: object) -> Mapping[str, Any]:
         ),
         include_zero=False,
     )
+    # PRF-011: "in-domain attainment" of a ceiling can be measured against the
+    # ceiling level or against the response range, and the two are not
+    # interchangeable. The ceiling reading starts at `(C - A) / C` before any
+    # nitrogen is applied, so on a high-baseline site it measures baseline
+    # fertility rather than approach; the range reading starts at zero
+    # regardless of baseline. This is the MOD-07 fork one record over, so it
+    # takes the same required field, the same vocabulary, and the same refusal
+    # to activate on a bare threshold.
+    attainment_reference_quantity = _nonempty_text(
+        raw["reference_quantity"],
+        where="curve model policy asymptote_support.reference_quantity",
+    )
+    if attainment_reference_quantity not in _ASYMPTOTE_REFERENCE_QUANTITIES:
+        raise PolicyArtifactError(
+            "MOD-08 support policy reference_quantity must be one of "
+            + ", ".join(sorted(_ASYMPTOTE_REFERENCE_QUANTITIES))
+        )
+    asymptote_interval_method = _nonempty_text(
+        raw["asymptote_interval_method"],
+        where="curve model policy asymptote_support.asymptote_interval_method",
+    )
+    if asymptote_interval_method not in _ASYMPTOTE_INTERVAL_METHODS:
+        raise PolicyArtifactError(
+            "MOD-08 ceiling-interval method must be one of "
+            + ", ".join(sorted(_ASYMPTOTE_INTERVAL_METHODS))
+        )
     relative_se = _finite_number(
         raw["maximum_asymptote_relative_se"],
         where="curve model policy asymptote_support.maximum_asymptote_relative_se",
@@ -2193,6 +2232,8 @@ def _asymptote_support_policy(value: object) -> Mapping[str, Any]:
             "policy_id": policy_id,
             "review_status": review_status,
             "minimum_in_domain_attainment_fraction": attainment,
+            "reference_quantity": attainment_reference_quantity,
+            "asymptote_interval_method": asymptote_interval_method,
             "maximum_asymptote_relative_se": relative_se,
             "maximum_influence_relative_shift": influence,
             "minimum_influence_fold_count": fold_count,
@@ -2200,9 +2241,6 @@ def _asymptote_support_policy(value: object) -> Mapping[str, Any]:
             "maximum_associated_n_basis": n_basis,
         }
     )
-
-
-_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"ceiling_level", "response_range"})
 
 
 def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
@@ -2215,6 +2253,7 @@ def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
                 "reference_quantity": None,
                 "rate_label": None,
                 "uncertainty_method": None,
+                "uncertainty_validity_demonstration": None,
                 "scope": None,
             }
         )
@@ -2227,6 +2266,7 @@ def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
             "reference_quantity",
             "rate_label",
             "uncertainty_method",
+            "uncertainty_validity_demonstration",
             "scope",
         },
         where="curve model policy asymptote_reporting",
@@ -2247,6 +2287,7 @@ def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
                 "reference_quantity",
                 "rate_label",
                 "uncertainty_method",
+                "uncertainty_validity_demonstration",
                 "scope",
             )
         ):
@@ -2287,6 +2328,24 @@ def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
         raw["uncertainty_method"],
         where="curve model policy asymptote_reporting.uncertainty_method",
     )
+    # STAT-003's residual: naming a method is not the same as showing it is
+    # valid. Section 10.4 makes a normal delta interval on a weakly approached
+    # asymptote non-self-authorizing, so the artifact carries the demonstration
+    # of validity under the approved design and estimator as its own field.
+    # `None` is a legitimate recorded state -- it means no demonstration exists,
+    # and the rate then carries no interval -- but the key may not be absent.
+    raw_demonstration = raw["uncertainty_validity_demonstration"]
+    uncertainty_validity_demonstration = (
+        None
+        if raw_demonstration is None
+        else _nonempty_text(
+            raw_demonstration,
+            where=(
+                "curve model policy asymptote_reporting."
+                "uncertainty_validity_demonstration"
+            ),
+        )
+    )
     scope = _nonempty_text(
         raw["scope"],
         where="curve model policy asymptote_reporting.scope",
@@ -2307,6 +2366,9 @@ def _asymptote_reporting_policy(value: object) -> Mapping[str, Any]:
             "reference_quantity": reference_quantity,
             "rate_label": rate_label,
             "uncertainty_method": uncertainty_method,
+            "uncertainty_validity_demonstration": (
+                uncertainty_validity_demonstration
+            ),
             "scope": scope,
         }
     )
