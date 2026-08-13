@@ -27,6 +27,7 @@ SUPPORTED_SHAPE_ADAPTERS = frozenset(
         "core-trial-csv-v1",
         "fixture-csv-v1",
         "combined-nopt-rcm-csv-v1",
+        "ltcce-long-csv-v1",
     }
 )
 KNOWN_REPRESENTATION_BASES = frozenset(
@@ -87,6 +88,31 @@ COMBINED_NOPT_RCM_ADAPTER_SPEC = SourceAdapterSpec(
     map_version="ph-combined-nopt-rcm-physical-v1",
     expected_header_sha256=(
         "82a1092162f42debc73134167b84ad025e8986b612d4b753dc5a6be85c13ca69"
+    ),
+)
+LTCCE_LONG_ADAPTER_SPEC = SourceAdapterSpec(
+    version="ltcce-long-csv-v1",
+    expected_physical_columns=12,
+    # The LTCCE extract is already long/tidy, so every physical column is named and
+    # position-pinned. `VarCode` is a within-season positional slot that reuses codes
+    # across varieties: it is carried as context and must never key variety identity.
+    expected_headers={
+        1: "Design",
+        2: "Expt",
+        3: "Site",
+        4: "Year",
+        5: "Season",
+        6: "Crop",
+        7: "Establishment",
+        8: "Variety",
+        9: "VarCode",
+        10: "Nfert",
+        11: "Rep",
+        12: "GYtha",
+    },
+    map_version="ltcce-gy-long-physical-v1",
+    expected_header_sha256=(
+        "e0214334997e40569e38c9a6a60a0dd715b2ffae95e5495327a583f86e695d35"
     ),
 )
 BUILTIN_ADAPTER_SPECS: Mapping[str, SourceAdapterSpec] = {
