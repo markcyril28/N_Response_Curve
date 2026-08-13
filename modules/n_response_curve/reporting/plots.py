@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import re
+import textwrap
 from typing import Any, Iterable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
@@ -12,13 +14,22 @@ from n_response_curve.contracts import SUPPORTED_FIGURE_FORMATS
 
 
 _SAFE_FILENAME_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
+_MAX_SERIES_FILENAME_TOKEN_BYTES = 160
 
 
 def sanitize_series_filename(response_series_uid: str) -> str:
     """Return a deterministic portable filename token without changing the source ID."""
 
     token = _SAFE_FILENAME_TOKEN.sub("_", response_series_uid).strip("._")
-    return token or "response_series"
+    token = token or "response_series"
+    encoded = token.encode("utf-8")
+    if len(encoded) <= _MAX_SERIES_FILENAME_TOKEN_BYTES:
+        return token
+    digest = hashlib.sha256(response_series_uid.encode("utf-8")).hexdigest()[:16]
+    suffix = f"__{digest}"
+    byte_budget = _MAX_SERIES_FILENAME_TOKEN_BYTES - len(suffix.encode("ascii"))
+    prefix = encoded[:byte_budget].decode("utf-8", errors="ignore").rstrip("._-")
+    return f"{prefix or 'response_series'}{suffix}"
 
 
 def _validated_predictions(attempt: ModelAttempt) -> tuple[Mapping[str, float], ...]:
@@ -76,10 +87,25 @@ def _mark_observed_domain(axes: Any, lower: float, upper: float, *, mark_equal_u
         axes.axvline(upper, color="grey", linestyle="--", linewidth=1)
 
 
-def _finalize_axes(axes: Any, title: str) -> None:
+def _wrapped_plot_text(lines: Iterable[str], *, width: int = 84) -> str:
+    """Wrap unbounded source identifiers and reason ledgers for stable layouts."""
+
+    wrapped: list[str] = []
+    for line in lines:
+        parts = textwrap.wrap(
+            str(line),
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+        wrapped.extend(parts or [""])
+    return "\n".join(wrapped)
+
+
+def _finalize_axes(axes: Any, title_lines: Iterable[str]) -> None:
     axes.set_xlabel("kg N/ha")
     axes.set_ylabel("t/ha")
-    axes.set_title(title)
+    axes.set_title(_wrapped_plot_text(title_lines))
     axes.legend(loc="best", fontsize=8)
 
 
@@ -179,7 +205,7 @@ def create_observed_series_figure(
     observations = _observations(records, response_series_uid)
     if not observations:
         raise ValueError("An observed-series plot requires at least one finite N/yield pair")
-    figure, axes = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    figure, axes = plt.subplots(figsize=(10, 7), constrained_layout=True)
     _plot_observations(axes, observations)
     axes.plot(
         [row["n_rate_kg_ha"] for row in observations],
@@ -195,13 +221,11 @@ def create_observed_series_figure(
     _mark_observed_domain(axes, lower, upper, mark_equal_upper=False)
     _finalize_axes(
         axes,
-        " | ".join(
-            (
-                f"series={response_series_uid}",
-                "observed only",
-                f"distinct N={len(set(n_values))}",
-                f"N range={lower:g}-{upper:g} kg/ha",
-            )
+        (
+            f"series={response_series_uid}",
+            "observed only",
+            f"distinct N={len(set(n_values))}",
+            f"N range={lower:g}-{upper:g} kg/ha",
         ),
     )
     annotation = _evidence_annotation(evidence_row)
@@ -209,7 +233,7 @@ def create_observed_series_figure(
         axes.text(
             0.01,
             0.01,
-            "\n".join(annotation),
+            _wrapped_plot_text(annotation),
             transform=axes.transAxes,
             va="bottom",
             ha="left",
@@ -230,7 +254,7 @@ def create_response_curve_figure(
     if not observations:
         raise ValueError("A curve plot requires at least one finite observation for its response series")
     predictions = _validated_predictions(attempt)
-    figure, axes = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    figure, axes = plt.subplots(figsize=(10, 7), constrained_layout=True)
     _plot_observations(axes, observations)
     if attempt.status == "fitted" and predictions:
         axes.plot(
@@ -250,13 +274,11 @@ def create_response_curve_figure(
     )
     _finalize_axes(
         axes,
-        " | ".join(
-            (
-                f"series={attempt.response_series_uid}",
-                f"model={attempt.model_name}",
-                f"status={attempt.status}",
-                f"distinct N={attempt.distinct_n_level_count}",
-            )
+        (
+            f"series={attempt.response_series_uid}",
+            f"model={attempt.model_name}",
+            f"status={attempt.status}",
+            f"distinct N={attempt.distinct_n_level_count}",
         ),
     )
     annotation = _evidence_annotation(evidence_row, attempt=attempt)
@@ -264,7 +286,7 @@ def create_response_curve_figure(
         axes.text(
             0.01,
             0.01,
-            "\n".join(annotation),
+            _wrapped_plot_text(annotation),
             transform=axes.transAxes,
             va="bottom",
             ha="left",
