@@ -2249,12 +2249,25 @@ def fit_candidate_model(
     # means the policy rejected the shape; an observed-domain hit means the
     # plateau onset ran to the edge of the data and the candidate has degenerated
     # into a lower-order model. Reporting both under one code reproduces the
-    # confusion this check exists to remove.
-    boundary_reason = (
-        "PARAMETER_AT_DISALLOWED_REVIEWED_BOUNDARY"
-        if at_effective_boundary
-        and _at_reviewed_parameter_boundary(parameters, model_gate)
-        else "PLATEAU_ONSET_AT_OBSERVED_DOMAIN_CONSTRAINT"
+    # confusion this check exists to remove — but they can also co-occur, on a
+    # plateau fit whose onset ran to the edge of the data while some other
+    # parameter came to rest on its reviewed bound. Both codes are then recorded,
+    # because dropping either would hide a real rejection behind the other.
+    domain_constraint_reasons = _plateau_onset_domain_constraint_reasons(
+        model_name,
+        parameters,
+        model_gate,
+        effective_lower=effective_lower,
+        effective_upper=effective_upper,
+    )
+    at_reviewed_boundary = _at_reviewed_parameter_boundary(parameters, model_gate)
+    boundary_reason_codes = (
+        *domain_constraint_reasons,
+        *(
+            ("PARAMETER_AT_DISALLOWED_REVIEWED_BOUNDARY",)
+            if at_reviewed_boundary or not domain_constraint_reasons
+            else ()
+        ),
     )
     if not model_gate.allow_boundary_parameters and at_effective_boundary:
         return _attempt(
@@ -2262,7 +2275,7 @@ def fit_candidate_model(
             model_name=model_name,
             identity_payload=identity_payload,
             status="failed",
-            reason_codes=(boundary_reason,),
+            reason_codes=boundary_reason_codes,
             n_observations=n_observations,
             distinct_n_level_count=distinct_levels,
             observed_n_min_kg_ha=observed_min,
