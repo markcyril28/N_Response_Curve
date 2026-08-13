@@ -232,7 +232,6 @@ def ingest_csv(
             candidate_path=path,
             expected_old_sha256=expected_sha256,
             artifact_path=checksum_revision_artifact_path,
-            prior_encoding=encoding,
             candidate_encoding=encoding,
             candidate_data_classification=data_classification,
             candidate_workbook_path=candidate_workbook_path,
