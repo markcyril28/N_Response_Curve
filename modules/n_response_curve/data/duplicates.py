@@ -449,6 +449,32 @@ def _connected_components(
     records: list[dict[str, Any]],
     rules: DuplicateRuleSet,
 ) -> list[list[dict[str, Any]]]:
+    # Probable matching has exact contextual fields plus a small set of numeric
+    # tolerances.  Block by the exact fields before comparing numeric values;
+    # an all-pairs scan turns a normal 18k-row full run into hundreds of
+    # millions of comparisons without changing a single match decision.
+    casefold_fields = set(rules.casefold_fields)
+    blocking_fields = tuple(
+        field
+        for field in rules.probable_key_fields
+        if field not in rules.probable_numeric_tolerances
+    )
+    blocks: dict[tuple[object, ...], list[int]] = {}
+    for index, record in enumerate(records):
+        signature = tuple(
+            _normalized_key_value(
+                record,
+                field,
+                casefold_fields=casefold_fields,
+            )
+            for field in blocking_fields
+        )
+        # `_probable_match` rejects either-side missing values, so such a row
+        # cannot participate in any component and need not enter a block.
+        if any(value is None for value in signature):
+            continue
+        blocks.setdefault(signature, []).append(index)
+
     parent = list(range(len(records)))
 
     def find(index: int) -> int:
@@ -463,10 +489,12 @@ def _connected_components(
         if left_root != right_root:
             parent[right_root] = left_root
 
-    for left_index, left in enumerate(records):
-        for right_index in range(left_index + 1, len(records)):
-            if _probable_match(left, records[right_index], rules):
-                union(left_index, right_index)
+    for candidate_indices in blocks.values():
+        for offset, left_index in enumerate(candidate_indices):
+            left = records[left_index]
+            for right_index in candidate_indices[offset + 1 :]:
+                if _probable_match(left, records[right_index], rules):
+                    union(left_index, right_index)
     components: dict[int, list[dict[str, Any]]] = {}
     for index, record in enumerate(records):
         components.setdefault(find(index), []).append(record)
@@ -987,15 +1015,40 @@ def resolve_response_series(
         raise ValueError("Series identity dimensions must be unique")
     if n_level_tolerance_kg_ha <= 0:
         raise ValueError("N-level tolerance must be positive")
-    dimensions = (
-        *dimensions,
-        *(
+    # Intrinsic management fields are provisional-context-specific.  Requiring a
+    # field merely because it exists elsewhere in a heterogeneous source makes
+    # unrelated trials impossible to resolve (for example, a literature trial
+    # that reports N splits would make N split mandatory in every other paper).
+    # Within the same source/study/trial/configured context, however, any observed
+    # intrinsic field remains fail-closed: rows missing it cannot silently join.
+    configured_dimensions = dimensions
+    def provisional_context_key(record: Mapping[str, Any]) -> tuple[object, ...]:
+        return (
+            str(record.get("source_uid") or ""),
+            str(record.get("study_id") or "").strip(),
+            str(record.get("trial_id") or "").strip(),
+            str(record.get("scope_country_code") or "unresolved"),
+            *(
+                _context_value(record, dimension)
+                for dimension in configured_dimensions
+            ),
+        )
+
+    provisional_groups: dict[tuple[object, ...], list[Mapping[str, Any]]] = {}
+    for record in ledger:
+        provisional_groups.setdefault(provisional_context_key(record), []).append(record)
+    intrinsic_dimensions_by_context = {
+        context_key: tuple(
             dimension
             for dimension in _INTRINSIC_SERIES_IDENTITY_DIMENSIONS
-            if dimension not in dimensions
-            and any(_context_value(record, dimension) is not None for record in ledger)
-        ),
-    )
+            if dimension not in configured_dimensions
+            and any(
+                _context_value(record, dimension) is not None
+                for record in context_records
+            )
+        )
+        for context_key, context_records in provisional_groups.items()
+    }
 
     for record in ledger:
         record["response_series_uid"] = None
@@ -1005,6 +1058,10 @@ def resolve_response_series(
         record["same_n_status"] = "not_assessed"
         record["repeat_group_uid"] = None
         record["analytical_record_status"] = "included"
+        if "LTCCE_UNRESOLVED_ROW_MULTIPLICITY" in set(
+            record.get("source_row_multiplicity_reason_codes", ())
+        ):
+            record["analytical_record_status"] = "review"
     _initialize_dispatched_duplicate_statuses(
         ledger,
         rules=duplicate_rules,
@@ -1019,6 +1076,11 @@ def resolve_response_series(
     candidate_groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
     comparison_keys: dict[tuple[object, ...], tuple[object, ...]] = {}
     for record in ledger:
+        if "LTCCE_UNRESOLVED_ROW_MULTIPLICITY" in set(
+            record.get("source_row_multiplicity_reason_codes", ())
+        ):
+            _mark_unresolved(record, "LTCCE_UNRESOLVED_ROW_MULTIPLICITY")
+            continue
         if duplicate_rules is None:
             _mark_unresolved(record, "DUPLICATE_RULES_NOT_SUPPLIED")
             continue
@@ -1042,9 +1104,16 @@ def resolve_response_series(
         if not study_id or not trial_id:
             _mark_unresolved(record, "MISSING_STUDY_OR_TRIAL_IDENTIFIER")
             continue
+        record_dimensions = (
+            *configured_dimensions,
+            *intrinsic_dimensions_by_context.get(
+                provisional_context_key(record),
+                (),
+            ),
+        )
         context_values: list[str] = []
         missing_context = False
-        for dimension in dimensions:
+        for dimension in record_dimensions:
             if _has_mixed_context(record, dimension):
                 _mark_unresolved(record, f"MIXED_CONTEXT:{dimension}")
                 missing_context = True
