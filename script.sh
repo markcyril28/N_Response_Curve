@@ -54,7 +54,7 @@ if ! nrc_setup_logging "$PROJECT_ROOT" "pipeline_launcher" "$LAUNCHER_RUN_ID" "I
   printf 'script.sh: failed to initialize logging under: %s\n' "$LOG_ROOT" >&2
   exit 2
 fi
-trap 'nrc_teardown_logging' EXIT
+trap 'nrc_teardown_logging || true' EXIT
 
 nrc_log INFO "launcher_started" \
   "config_path=$CONFIG_FILE" \
@@ -78,6 +78,15 @@ else
     "full_log_path=$NRC_FULL_LOG_FILE" \
     "event_log_path=$NRC_LOG_FILE" || true
 fi
-nrc_teardown_logging
+logging_status=0
+if nrc_teardown_logging; then
+  :
+else
+  logging_status=$?
+  printf 'script.sh: logging output could not be completed under: %s\n' "$LOG_ROOT" >&2
+fi
 trap - EXIT
+if [[ "$status" -eq 0 && "$logging_status" -ne 0 ]]; then
+  status=2
+fi
 exit "$status"
