@@ -1133,15 +1133,16 @@ def _parameter_influence_summary(
     )
 
 
-def _parameter_precision_summary(
+def _parameter_standard_errors(
     model_name: str,
     x: np.ndarray,
     parameters: np.ndarray,
     *,
     rss: float,
     residual_df: int,
-    scale_floor: float,
-) -> float | None:
+) -> np.ndarray | None:
+    """Return each fitted parameter's estimated standard error."""
+
     if residual_df <= 0 or not math.isfinite(rss) or rss < 0.0:
         return None
     try:
