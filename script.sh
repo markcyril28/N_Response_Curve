@@ -49,6 +49,8 @@ export N_RESPONSE_LAUNCHER_RUN_ID="$LAUNCHER_RUN_ID"
 export PYTHONDONTWRITEBYTECODE=1
 cd -- "$PROJECT_ROOT"
 "$PYTHON_BIN" "$MODULE_SCRIPT" --config "$CONFIG_FILE" --governance-preflight
+# Any configured log clearing happens here, before the log files are opened.
+"$PYTHON_BIN" "$MODULE_SCRIPT" --config "$CONFIG_FILE" --prepare-run-workspace --log-root "$LOG_ROOT"
 
 if ! nrc_setup_logging "$PROJECT_ROOT" "pipeline_launcher" "$LAUNCHER_RUN_ID" "INFO" "$LOG_ROOT"; then
   printf 'script.sh: failed to initialize logging under: %s\n' "$LOG_ROOT" >&2
