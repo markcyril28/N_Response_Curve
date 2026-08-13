@@ -43,6 +43,7 @@ from n_response_curve.data.provenance import (
     SourceIntegrityReport,
     VerificationRound,
     plan_literature_verification_round,
+    stable_json_sha256,
     verify_source_integrity,  # noqa: F401  (Phase 1 compatibility re-export)
 )
 from n_response_curve.data.qc import QcReport, build_qc_report
