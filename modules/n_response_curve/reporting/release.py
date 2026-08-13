@@ -93,6 +93,10 @@ def _validate_table(name: str, artifact: TableArtifact) -> tuple[dict[str, Any],
         raise ReportingError(f"Table name is unsafe: {name!r}")
     if not isinstance(artifact, TableArtifact):
         raise ReportingError(f"Table {name!r} must be a TableArtifact")
+    if artifact.group is not None and (
+        not isinstance(artifact.group, str) or not _SAFE_TABLE_GROUP.fullmatch(artifact.group)
+    ):
+        raise ReportingError(f"Table {name!r} has an unsafe group: {artifact.group!r}")
     rows = tuple(_json_value(dict(row)) for row in artifact.rows)
     if any(not isinstance(row, Mapping) for row in rows):
         raise ReportingError(f"Table {name!r} contains a non-mapping row")
@@ -119,6 +123,8 @@ def _write_json(path: Path, payload: Any) -> None:
 def _write_table(stage_root: Path, name: str, artifact: TableArtifact, formats: Sequence[str]) -> tuple[dict[str, Any], dict[str, str]]:
     rows = _validate_table(name, artifact)
     tables_root = stage_root / "tables"
+    if artifact.group is not None:
+        tables_root = tables_root / artifact.group
     tables_root.mkdir(parents=True, exist_ok=True)
     normalized_rows = [{str(key): _flat_value(value) for key, value in row.items()} for row in rows]
     frame = pd.DataFrame(normalized_rows)
