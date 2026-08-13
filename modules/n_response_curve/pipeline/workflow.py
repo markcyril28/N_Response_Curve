@@ -2520,6 +2520,95 @@ def _complete_case_composition_rows(
     )
 
 
+_DOMAIN_DEPENDENT_CURVE_OUTCOMES = frozenset(
+    {
+        "agronomic_optimum_n_kg_ha",
+        "plateau_onset_n_kg_ha",
+        "maximum_associated_n_kg_ha",
+        "attainable_yield_t_ha",
+    }
+)
+
+
+def _domain_dependent_contrast_group_rows(
+    candidate_id: str,
+    outcome_name: str,
+    factor_names: Sequence[str],
+    membership_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Report tested-range distribution and withholding rate by contrast group.
+
+    A curve feature whose availability depends on the observed N domain is
+    withheld exactly when the estimated turning point falls at or beyond that
+    series' own highest tested rate. The probability a value survives therefore
+    falls as the optimum rises and rises with the tested range, which is a
+    property of the design rather than of the agronomy. Two contexts are then
+    truncated at *different* points, so the contrast can be inflated or reversed
+    in sign with no agronomic difference present at all — the bias direction is
+    set by which group was tested over the narrower range.
+
+    Complete-case membership is unbiased under data missing completely at random
+    or missing at random given the modelled covariates; this mechanism depends on
+    the unobserved value itself and satisfies neither, so the comparison below is
+    a limitation on the contrast rather than a coverage footnote
+    (Plan Sections 10.8 and 10.10, PRF-001 and PRF-013).
+    """
+
+    if outcome_name not in _DOMAIN_DEPENDENT_CURVE_OUTCOMES:
+        return []
+    rows: list[dict[str, Any]] = []
+    for factor_name in factor_names:
+        groups: dict[str, list[Mapping[str, Any]]] = {}
+        for row in membership_rows:
+            level = (
+                "__missing__"
+                if row.get(factor_name) is None
+                else str(row.get(factor_name))
+            )
+            groups.setdefault(level, []).append(row)
+        for level, group_rows in sorted(groups.items()):
+            available = [
+                row for row in group_rows if row.get("outcome_value") is not None
+            ]
+            tested_maxima = [
+                float(value)
+                for row in group_rows
+                if isinstance(value := row.get("tested_n_max_kg_ha"), (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ]
+            rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    "membership_status": "all",
+                    "comparison_kind": (
+                        "domain_dependent_tested_range_by_contrast_group"
+                    ),
+                    "variable_name": factor_name,
+                    "level": level,
+                    "count": len(group_rows),
+                    "available_count": len(available),
+                    "missing_count": len(group_rows) - len(available),
+                    "withholding_rate": (
+                        (len(group_rows) - len(available)) / len(group_rows)
+                        if group_rows
+                        else None
+                    ),
+                    # The numeric summary describes `tested_n_max_kg_ha`, the
+                    # truncation point itself, not the outcome.
+                    "mean": (
+                        sum(tested_maxima) / len(tested_maxima)
+                        if tested_maxima
+                        else None
+                    ),
+                    "median": median(tested_maxima) if tested_maxima else None,
+                    "minimum": min(tested_maxima) if tested_maxima else None,
+                    "maximum": max(tested_maxima) if tested_maxima else None,
+                }
+            )
+    return rows
+
+
 def _complete_case_comparison_rows(
     phase_four: PhaseFourResult,
 ) -> tuple[dict[str, Any], ...]:
