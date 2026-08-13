@@ -768,7 +768,6 @@ def validate_checksum_revision_approval(
     candidate_path: str | Path,
     expected_old_sha256: str,
     artifact_path: str,
-    prior_encoding: str,
     candidate_encoding: str,
     candidate_data_classification: str,
     candidate_workbook_path: str | Path | None = None,
