@@ -87,6 +87,160 @@ class PhaseTwoResult:
     final_cleaning: FinalCleaningResult | None = None
     untrimmed_analysis_eligibility: EligibilityResult | None = None
     literature_verification: VerificationRound | None = None
+    source_scope_snapshot: Mapping[str, object] | None = None
+
+
+def _build_runtime_source_scope_snapshot(
+    config: ValidatedConfig,
+    source_data_policy: SourceDataPolicyBundle,
+    integrity_report: SourceIntegrityReport,
+) -> Mapping[str, object]:
+    """Materialize the exact approved source registry used by this Phase 2 run."""
+
+    authority = source_data_policy.artifact_authorities["source_scope"]
+    manifest_root = config.paths["source_manifest"].resolve().parent
+    restricted_artifact_aliases: dict[str, str] = {}
+    for source_name, raw in sorted(config.sources.items()):
+        if raw.get("data_classification") != "restricted":
+            continue
+        for field_name in ("data_path", "workbook", "schema_map"):
+            value = raw.get(field_name)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate_path = (config.project_root / value).resolve()
+            try:
+                relative = candidate_path.relative_to(manifest_root).as_posix()
+            except ValueError:
+                continue
+            if relative in integrity_report.artifact_sha256:
+                restricted_artifact_aliases[relative] = (
+                    "restricted_artifact_"
+                    + stable_json_sha256(
+                        {"source_name": source_name, "artifact_role": field_name}
+                    )[:24]
+                )
+    sources: list[dict[str, object]] = []
+    for source_name in sorted(config.sources):
+        raw = config.sources[source_name]
+        scope = source_data_policy.source_scope[source_name]
+        artifact_path: str | None = None
+        artifact_sha256: str | None = None
+        nonblank_data_row_count: int | None = None
+        availability_observation = "expected_unavailable"
+        if raw.get("availability") == "available":
+            data_path = (config.project_root / str(raw["data_path"])).resolve()
+            try:
+                candidate = data_path.relative_to(manifest_root).as_posix()
+            except ValueError as exc:
+                raise ConfigError(
+                    f"Configured source {source_name!r} is outside the manifest root"
+                ) from exc
+            if candidate not in integrity_report.artifact_sha256:
+                raise ConfigError(
+                    f"Configured available source {source_name!r} is absent from the verified manifest"
+                )
+            artifact_sha256 = integrity_report.artifact_sha256[candidate]
+            if raw.get("data_classification") != "restricted":
+                artifact_path = candidate
+            metadata = integrity_report.artifact_metadata.get(candidate, {})
+            rows_declaration = metadata.get("rows")
+            if isinstance(rows_declaration, str):
+                match = re.fullmatch(r"(\d+) data rows", rows_declaration.strip())
+                if match is not None:
+                    nonblank_data_row_count = int(match.group(1))
+            availability_observation = (
+                "observed_empty"
+                if nonblank_data_row_count == 0
+                else "present_artifact"
+            )
+        sources.append(
+            {
+                "source_name": source_name,
+                "source_type": raw.get("source_type"),
+                "source_family": raw.get("source_family"),
+                "country_code": raw.get("country_code"),
+                "availability": raw.get("availability"),
+                "availability_observation": availability_observation,
+                "nonblank_data_row_count": nonblank_data_row_count,
+                "confirmation_status": raw.get("confirmation_status"),
+                "activation_status": scope.activation_status,
+                "schema_harmonization_status": scope.schema_harmonization_status,
+                "unit_comparability_status": scope.unit_comparability_status,
+                "review_id": scope.review_id,
+                "shape_adapter_version": raw.get("shape_adapter_version"),
+                "encoding": raw.get("encoding"),
+                "data_classification": raw.get("data_classification"),
+                "data_path": (
+                    None
+                    if raw.get("data_classification") == "restricted"
+                    else raw.get("data_path")
+                ),
+                "schema_map": (
+                    None
+                    if raw.get("data_classification") == "restricted"
+                    else raw.get("schema_map")
+                ),
+                "source_locator_disclosure_status": (
+                    "withheld_restricted_source_locator"
+                    if raw.get("data_classification") == "restricted"
+                    else "registered_internal_source_locator"
+                ),
+                "manifest_artifact_path": artifact_path,
+                "manifest_artifact_sha256": artifact_sha256,
+            }
+        )
+    inventory_counts = {
+        "expected_source_count": len(sources),
+        "source_family_count": len(
+            {str(source["source_family"]) for source in sources}
+        ),
+        "expected_unavailable_source_count": sum(
+            source["availability_observation"] == "expected_unavailable"
+            for source in sources
+        ),
+        "observed_empty_source_count": sum(
+            source["availability_observation"] == "observed_empty"
+            for source in sources
+        ),
+        "present_source_count": sum(
+            source["availability_observation"] == "present_artifact"
+            for source in sources
+        ),
+        "present_artifact_count": integrity_report.checked_files,
+        "present_nonblank_data_row_count": sum(
+            source["nonblank_data_row_count"]
+            if isinstance(source["nonblank_data_row_count"], int)
+            else 0
+            for source in sources
+        ),
+    }
+    payload: dict[str, object] = {
+        "snapshot_format": "source-scope-v1",
+        "scope_revision": authority.artifact_version,
+        "scope_artifact_sha256": authority.sha256,
+        "approved_by": authority.approved_by,
+        "approval_date": authority.approval_date,
+        "current_source_cutoff": authority.approval_date,
+        "cutoff_semantics": (
+            "Sources represented by the approved scope artifact through its approval date; "
+            "later receipts require a new approved source-scope artifact."
+        ),
+        "enabled_sources": tuple(sorted(config.enabled_sources)),
+        "scanned_roots": (manifest_root.relative_to(config.project_root).as_posix(),),
+        "manifest_artifact_count": integrity_report.checked_files,
+        "manifest_artifact_sha256": {
+            restricted_artifact_aliases.get(path, path): digest
+            for path, digest in integrity_report.artifact_sha256.items()
+        },
+        "duplicate_byte_groups": tuple(
+            tuple(restricted_artifact_aliases.get(path, path) for path in group)
+            for group in integrity_report.duplicate_byte_groups
+        ),
+        "inventory_counts": inventory_counts,
+        "sources": tuple(sources),
+    }
+    payload["snapshot_sha256"] = stable_json_sha256(payload)
+    return MappingProxyType(payload)
 
 
 def _resource_snapshot(
