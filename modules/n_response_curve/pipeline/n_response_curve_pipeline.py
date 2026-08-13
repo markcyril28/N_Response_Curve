@@ -597,6 +597,7 @@ def run_phase_two(
         final_cleaning=final_cleaning,
         untrimmed_analysis_eligibility=untrimmed_analysis_eligibility,
         literature_verification=literature_verification,
+        source_scope_snapshot=source_scope_snapshot,
     )
 
 
