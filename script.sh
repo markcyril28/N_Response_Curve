@@ -71,7 +71,12 @@ set -e
 if [[ "$status" -eq 0 ]]; then
   nrc_log INFO "launcher_completed" "status=$status" || true
 else
-  nrc_log ERROR "launcher_failed" "status=$status" || true
+  nrc_log ERROR "launcher_failed" \
+    "status=$status" \
+    "failed_stage=python_pipeline" \
+    "config_path=$CONFIG_FILE" \
+    "full_log_path=$NRC_FULL_LOG_FILE" \
+    "event_log_path=$NRC_LOG_FILE" || true
 fi
 nrc_teardown_logging
 trap - EXIT
