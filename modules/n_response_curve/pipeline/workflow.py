@@ -3546,6 +3546,41 @@ def _source_data_policy_stage_writer(
     return write_source_data_policy
 
 
+def _source_scope_snapshot_stage_writer(
+    snapshot: Mapping[str, object] | None,
+    manifest: dict[str, Any],
+) -> Callable[[Path], tuple[Path, ...]]:
+    """Archive the deterministic SRC-02 run snapshot as controlled release evidence."""
+
+    def write_source_scope_snapshot(stage_root: Path) -> tuple[Path, ...]:
+        if snapshot is None:
+            return ()
+        expected = snapshot.get("snapshot_sha256")
+        if not isinstance(expected, str) or stable_json_sha256(
+            {key: value for key, value in snapshot.items() if key != "snapshot_sha256"}
+        ) != expected:
+            raise ReportingError("Source-scope runtime snapshot digest does not reconcile")
+        destination = stage_root / "governance" / "source_scope_snapshot.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(
+                _redact(snapshot),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        manifest["source_data_policy"]["source_scope_snapshot_path"] = (
+            destination.relative_to(stage_root).as_posix()
+        )
+        manifest["source_data_policy"]["source_scope_snapshot_sha256"] = expected
+        return (destination,)
+
+    return write_source_scope_snapshot
+
+
 def _load_replacement_record(
     config: ValidatedConfig,
     target: Path,
