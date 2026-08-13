@@ -339,6 +339,12 @@ def validate_config(
     data["run"] = dict(data["run"])
     data["selection"] = dict(data["selection"])
     data["eligibility"] = dict(data["eligibility"])
+    data["outputs"] = dict(data["outputs"])
+    data["logging"] = dict(data["logging"])
+    # Absent workspace-clearing controls mean "disabled": an opt-in destructive
+    # action must never be implied by a key the operator did not write.
+    data["outputs"].setdefault("clear_output_root_before_run", False)
+    data["logging"].setdefault("clear_log_root_before_run", False)
     data["sources"] = {
         name: dict(source) if isinstance(source, Mapping) else source
         for name, source in data["sources"].items()
@@ -502,14 +508,6 @@ def validate_config(
     mode = run["mode"]
     if mode not in RUN_MODES:
         raise ConfigError(f"[run].mode must be one of {sorted(RUN_MODES)}, got {mode!r}")
-    if mode == "full" and analysis_policy_manifest is None:
-        raise ConfigError(
-            "full mode requires a hash-bound standalone analysis policy manifest"
-        )
-    if mode == "full" and source_data_policy_manifest is None:
-        raise ConfigError(
-            "full mode requires a hash-bound standalone source-data policy manifest"
-        )
     _require_bool(run, "overwrite", where="[run]")
     _require_int(run, "random_seed", where="[run]")
     _require_bool(run, "fail_fast", where="[run]")
