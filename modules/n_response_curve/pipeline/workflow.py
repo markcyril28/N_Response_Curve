@@ -3008,12 +3008,12 @@ def _table_artifacts(
             rows=tuple(asdict(entry) for entry in phase_four.factor_catalog),
             stable_key="factor_name",
         ),
-        "model_attempts": TableArtifact(rows=phase_three.evidence.model_attempt_records, stable_key="model_attempt_uid"),
+        "model_attempts": TableArtifact(rows=attempt_display_rows, stable_key="model_attempt_uid"),
         "model_predictions": TableArtifact(rows=phase_three.evidence.prediction_rows),
         "credible_models": TableArtifact(
             rows=tuple(
                 row
-                for row in phase_three.evidence.model_attempt_records
+                for row in attempt_display_rows
                 if row["model_attempt_uid"]
                 in {
                     attempt.model_attempt_uid
@@ -3029,7 +3029,7 @@ def _table_artifacts(
         "selected_models": TableArtifact(
             rows=tuple(
                 row
-                for row in phase_three.evidence.model_attempt_records
+                for row in attempt_display_rows
                 if row["model_attempt_uid"]
                 in {attempt.model_attempt_uid for attempt in phase_three.evidence.selected_attempts}
             ),
