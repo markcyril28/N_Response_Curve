@@ -2820,6 +2820,25 @@ def _table_artifacts(
         phase_two,
         _with_record_release_metadata(phase_two, final_cleaning_rows),
     )
+    # Plan Section 10.2's set-level display rules. They are applied once, over
+    # the whole attempt ledger, so the credible and selected subsets below stay
+    # consistent with it: recomputing "how many candidates have AICc" inside a
+    # filtered table would answer a different question and could suppress the
+    # column in one table while publishing it in another.
+    attempt_display_rows = model_attempt_display_rows(
+        phase_three.evidence.model_attempt_records
+    )
+    # Computed once and shared: the ledger and its composition comparison must
+    # describe the same selection, and recomputing it per table invites drift.
+    selection_rows = _analysis_population_selection_rows(
+        phase_two,
+        series_evidence_rows,
+    )
+    derived_attempt_display_rows = tuple(
+        row
+        for view in phase_four.derived_curve_views
+        for row in model_attempt_display_rows(view.model_attempt_records)
+    )
     return {
         "curated_master": TableArtifact(rows=public_curated_rows),
         "final_cleaning_decisions": TableArtifact(
@@ -2875,6 +2894,16 @@ def _table_artifacts(
         ),
         "candidate_complete_case_comparison": TableArtifact(
             rows=_complete_case_comparison_rows(phase_four),
+        ),
+        "analysis_population_selection_ledger": TableArtifact(
+            rows=selection_rows,
+            stable_key="response_series_uid",
+        ),
+        "analysis_population_composition_comparison": TableArtifact(
+            rows=_analysis_population_composition_rows(
+                series_evidence_rows,
+                selection_rows,
+            ),
         ),
         "analysis_pruned_families": TableArtifact(rows=tuple(asdict(item) for item in phase_four.registry.pruned_families)),
         "curve_features": TableArtifact(rows=phase_three.evidence.curve_rows, stable_key="response_series_uid"),
@@ -2941,11 +2970,7 @@ def _table_artifacts(
             stable_key="view_id",
         ),
         "derived_model_attempts": TableArtifact(
-            rows=tuple(
-                row
-                for view in phase_four.derived_curve_views
-                for row in view.model_attempt_records
-            ),
+            rows=derived_attempt_display_rows,
             stable_key="derived_model_attempt_uid",
         ),
         "derived_model_predictions": TableArtifact(
