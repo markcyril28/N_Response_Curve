@@ -717,6 +717,42 @@ def parse_checksum_revision_approval(payload: Mapping[str, object]) -> ChecksumR
             where="checksum approval manifest_revision",
         ),
         structural_comparison_sha256=comparison_sha256,
+        prior_encoding=_nonempty_text(
+            payload["prior_encoding"],
+            where="checksum approval prior_encoding",
+        ),
+        candidate_encoding=_nonempty_text(
+            payload["candidate_encoding"],
+            where="checksum approval candidate_encoding",
+        ),
+        prior_data_classification=_source_classification(
+            payload["prior_data_classification"],
+            where="checksum approval prior_data_classification",
+        ),
+        candidate_data_classification=_source_classification(
+            payload["candidate_data_classification"],
+            where="checksum approval candidate_data_classification",
+        ),
+        prior_workbook_sha256=_optional_sha256(
+            payload["prior_workbook_sha256"],
+            where="checksum approval prior_workbook_sha256",
+        ),
+        candidate_workbook_sha256=_optional_sha256(
+            payload["candidate_workbook_sha256"],
+            where="checksum approval candidate_workbook_sha256",
+        ),
+        prior_workbook_path=(
+            Path(
+                _nonempty_text(
+                    payload["prior_workbook_path"],
+                    where="checksum approval prior_workbook_path",
+                )
+            ).resolve()
+            if payload["prior_workbook_path"] is not None
+            else None
+        ),
+        prior_sheet=_optional_text(payload["prior_sheet"]),
+        candidate_sheet=_optional_text(payload["candidate_sheet"]),
         prior_registered_path=Path(
             _nonempty_text(
                 payload["prior_registered_path"],
