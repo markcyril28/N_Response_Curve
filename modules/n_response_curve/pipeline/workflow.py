@@ -3802,7 +3802,7 @@ def release_phases_three_to_five(
         "random_seed": config.raw["run"]["random_seed"],
         "scope_countries": list(config.scope_countries),
         "series_identity_dimensions": list(config.series_identity_dimensions),
-        "source_artifact_sha256": dict(integrity.artifact_sha256),
+        "source_artifact_sha256": release_source_artifact_sha256,
         "source_data_policy": source_policy_evidence,
         "literature_verification": literature_verification_evidence,
         "analysis_policy": analysis_policy_evidence,
