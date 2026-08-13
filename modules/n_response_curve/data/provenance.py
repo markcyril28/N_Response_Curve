@@ -770,6 +770,10 @@ def validate_checksum_revision_approval(
     artifact_path: str,
     prior_encoding: str,
     candidate_encoding: str,
+    candidate_data_classification: str,
+    candidate_workbook_path: str | Path | None = None,
+    candidate_sheet: str | None = None,
+    prior_encoding: str | None = None,
     designated_reviewers: Iterable[str],
 ) -> ChecksumRevisionComparison:
     """Accept only exact, reviewer-bound evidence for one changed artifact."""
