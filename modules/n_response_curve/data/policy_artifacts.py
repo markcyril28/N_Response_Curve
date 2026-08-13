@@ -926,6 +926,18 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                 where=f"{where}.declared_constant_fields",
                 allow_empty=True,
             ),
+            yield_precedence=_nonempty_text(
+                record.get("yield_precedence", "require_consistency"),
+                where=f"{where}.yield_precedence",
+            ),
+            yield_precedence_review_id=(
+                _nonempty_text(
+                    record.get("yield_precedence_review_id"),
+                    where=f"{where}.yield_precedence_review_id",
+                )
+                if record.get("yield_precedence_review_id") is not None
+                else None
+            ),
         )
         try:
             validate_reviewed_fill_down_policy(source_map)
