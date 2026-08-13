@@ -4239,6 +4239,10 @@ def release_phases_three_to_five(
             "reason_counts": dict(phase_two.qc.reason_counts),
             "row_level_qc_enabled": config.raw["outputs"]["row_level_qc"],
         },
+        "analysis_population_selection": _analysis_population_selection_manifest(
+            phase_two,
+            series_evidence_rows,
+        ),
         "curve_model_attempt_count": len(phase_three.evidence.model_attempts),
         "test_subset": (
             dict(phase_three.test_subset)
