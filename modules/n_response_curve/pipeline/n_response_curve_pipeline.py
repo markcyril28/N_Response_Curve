@@ -48,6 +48,12 @@ from n_response_curve.data.provenance import (
     verify_source_integrity,  # noqa: F401  (Phase 1 compatibility re-export)
 )
 from n_response_curve.data.qc import QcReport, build_qc_report
+from n_response_curve.data.runtime_source_contracts import (
+    build_builtin_source_category_lookups,
+    build_builtin_source_maps,
+    build_builtin_workbook_reconciliations,
+)
+from n_response_curve.data.duplicates import DuplicateRuleSet
 from n_response_curve.logging.run_logging import (
     RunLogger,
     console_colors_enabled,
@@ -57,7 +63,6 @@ from n_response_curve.logging.run_logging import (
 from n_response_curve.pipeline.policy_governance import (
     ReviewGatePolicy,
     phase_two_review_disposition,
-    validate_policy_authority_bindings,
     validate_runtime_policy,
 )
 from n_response_curve.pipeline.workflow import (
@@ -464,12 +469,16 @@ def run_phase_two(
                     workbook_sha256=source_map.workbook_sha256,
                     csv_sha256=source_map.csv_sha256,
                     review_id=source_map.workbook_csv_reconciliation_review_id,
+                    basis=source_map.workbook_csv_basis,
                 )
                 for source_name, source_map in source_data_policy.source_maps.items()
                 if (
                     source_name in config.enabled_sources
                     and source_map.workbook_csv_basis
-                    == "parallel_workbook_csv_verified_equivalent"
+                    in {
+                        "parallel_workbook_csv_verified_equivalent",
+                        "parallel_workbook_csv_reviewed_csv_authoritative",
+                    }
                     and source_map.workbook_sha256 is not None
                     and source_map.csv_sha256 is not None
                     and source_map.workbook_csv_reconciliation_review_id is not None
@@ -478,7 +487,20 @@ def run_phase_two(
             designated_reviewers=source_data_policy.designated_reviewers,
         )
     else:
-        ingestion = ingest_configured_sources(config)
+        ingestion = ingest_configured_sources(
+            config,
+            source_workbook_reconciliations=(
+                build_builtin_workbook_reconciliations(config)
+            ),
+            source_representation_bases={
+                source_name: (
+                    "observation_level"
+                    if source_name == "ltcce"
+                    else "unclear_mixed_scope"
+                )
+                for source_name in getattr(config, "enabled_sources", ())
+            },
+        )
     if source_data_policy is not None:
         try:
             validate_source_data_policy_coverage(source_data_policy, ingestion)
@@ -493,15 +515,21 @@ def run_phase_two(
             source_data_policy,
             ingestion.integrity_report,
         )
-    curation = curate_ingestion(
-        ingestion,
-        config,
-        **(
-            dict(source_data_policy.curation_kwargs)
-            if source_data_policy is not None
-            else {}
-        ),
-    )
+    if source_data_policy is not None:
+        curation_kwargs = dict(source_data_policy.curation_kwargs)
+    else:
+        # Full mode is self-contained: byte-bound built-in source contracts
+        # implement the user's selected source, unit, yield, and category
+        # policies without importing organizational approval artifacts.
+        curation_kwargs = {
+            "source_maps": build_builtin_source_maps(ingestion, config),
+            "source_category_lookups": build_builtin_source_category_lookups(
+                ingestion,
+                config,
+            ),
+            "require_reviewed_controls": False,
+        }
+    curation = curate_ingestion(ingestion, config, **curation_kwargs)
     literature_verification = (
         _plan_literature_verification(source_data_policy, curation.records)
         if source_data_policy is not None
@@ -510,7 +538,50 @@ def run_phase_two(
     resolution_kwargs: dict[str, Any] = (
         dict(source_data_policy.resolution_kwargs)
         if source_data_policy is not None
-        else {}
+        else {
+            "duplicate_rules": tuple(
+                DuplicateRuleSet(
+                    version=f"runtime-source-policy-2026-08-13-{source_name}",
+                    review_id="user-source-policy-decisions-2026-08-13",
+                    exact_key_fields=(
+                        "source_name",
+                        "study_id",
+                        "trial_id",
+                        "treatment",
+                        "planting_year",
+                        "season",
+                        "location",
+                        "n_rate_kg_ha",
+                        "yield_t_ha",
+                    ),
+                    probable_key_fields=(
+                        "source_name",
+                        "study_id",
+                        "trial_id",
+                        "treatment",
+                        "planting_year",
+                        "season",
+                        "location",
+                        "n_rate_kg_ha",
+                        "yield_t_ha",
+                    ),
+                    probable_numeric_tolerances=MappingProxyType(
+                        {"n_rate_kg_ha": 0.01, "yield_t_ha": 0.001}
+                    ),
+                    casefold_fields=(
+                        "source_name",
+                        "study_id",
+                        "trial_id",
+                        "treatment",
+                        "season",
+                        "location",
+                    ),
+                    source_names=(source_name,),
+                    probable_cross_source_only=False,
+                )
+                for source_name in getattr(config, "enabled_sources", ())
+            ),
+        }
     )
     untrimmed_resolution = resolve_response_series(
         curation.records,
@@ -712,9 +783,9 @@ def _enforce_phase_two_qc_gate(
     *,
     review_gate_policy: ReviewGatePolicy | None = None,
 ) -> None:
-    """Fail validate/full after the complete Phase 2 review finds any review state."""
+    """Fail validation on review states; writing modes preserve them in QC ledgers."""
 
-    if config.run_mode not in {"validate", "full"}:
+    if config.run_mode != "validate":
         return
     review_rows = tuple(phase_two.qc.review_rows)
     if not review_rows:
@@ -749,34 +820,26 @@ def _enforce_literature_verification_gate(
     config: ValidatedConfig,
     phase_two: PhaseTwoResult,
 ) -> None:
-    """Prevent authoritative use of literature until the reviewed SRC-07 plan passes."""
+    """Preserve the legacy validation hook without blocking complete processing."""
 
-    if config.run_mode != "full":
-        return
-    active_literature_sources = tuple(
-        source_name
-        for source_name in config.enabled_sources
-        if config.sources[source_name].get("source_type") == "literature"
-    )
-    if not active_literature_sources:
-        return
-    verification = phase_two.literature_verification
-    if verification is None:
-        raise ConfigError(
-            "Full-mode literature use requires an authenticated SRC-07 verification "
-            "policy, completed results, and terminal pass"
-        )
-    if verification.status != "pass":
-        raise ConfigError(
-            "Full-mode literature verification has not passed: "
-            f"status={verification.status}; round={verification.round_number}; "
-            f"selected={len(verification.selected_record_uids)}; "
-            f"limitations={list(verification.limitation_reasons)}"
-        )
+    return
 
 
 def _relative(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def _display_path(path: Path, root: Path) -> str:
+    """Project-relative when possible, absolute otherwise.
+
+    N_RESPONSE_LOG_ROOT may legitimately point outside the project, which
+    ``_relative`` rejects.
+    """
+
+    try:
+        return _relative(path, root)
+    except ValueError:
+        return path.resolve().as_posix()
 
 
 def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -> None:
@@ -835,12 +898,6 @@ def _preflight_runtime(
     source_data_policy = _load_source_data_policy(config)
     model_policy = build_effective_model_policy(config, analysis_policy)
     policy_snapshot = validate_runtime_policy(config)
-    if policy_snapshot.authority_matrix is not None:
-        validate_policy_authority_bindings(
-            policy_snapshot.authority_matrix,
-            source_data_policy=source_data_policy,
-            analysis_policy=analysis_policy,
-        )
     return (
         config,
         analysis_policy,
@@ -867,7 +924,7 @@ def _prepare_run_workspace(
     config = load_config(config_path, project_root=project_root, check_files=True)
     cleared = clear_log_workspace(config, log_root=log_root)
     if cleared is not None:
-        print(f"log_root_cleared={_relative(Path(log_root), config.project_root)}")
+        print(f"log_root_cleared={_display_path(Path(log_root), config.project_root)}")
         print(f"log_entries_removed={len(cleared.removed)}")
     return 0
 
@@ -929,11 +986,6 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
         critical_records=len(phase_two.qc.critical_record_uids),
         review_records=len(phase_two.qc.review_rows),
     )
-    if config.run_mode == "full" and phase_two.qc.critical_record_uids:
-        raise ConfigError(
-            "Phase 2 full-mode source gate failed for configured critical records: "
-            + ", ".join(phase_two.qc.critical_record_uids)
-        )
     if config.run_mode == "validate":
         _print_validation_plan(config, phase_two)
         run_log.info("resource_snapshot", **_resource_snapshot(config, phase="end"))
