@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 import hmac
 import hashlib
 import json
@@ -200,6 +201,12 @@ class SourceArmMap:
     comparability_review_id: str | None = None
     recommendation_set_membership_status: str = "not_verified"
     recommendation_set_review_id: str | None = None
+    representation_basis: str | None = None
+    representation_basis_status: str = "review_required"
+    representation_basis_review_id: str | None = None
+    representation_basis_reviewer: str | None = None
+    representation_basis_reviewed_on: str | None = None
+    representation_basis_rationale: str | None = None
 
     def __post_init__(self) -> None:
         if (self.comparability_group_id is None) != (
@@ -237,6 +244,58 @@ class SourceArmMap:
             raise ValueError(
                 "Unverified source-arm recommendation membership cannot declare a review ID"
             )
+        if self.representation_basis_status not in {"review_required", "reviewed"}:
+            raise ValueError("Source-arm representation-basis status is unsupported")
+        if self.representation_basis_status == "review_required":
+            for label, value in zip(
+                ("review ID", "reviewer", "review date", "rationale"),
+                (
+                    self.representation_basis_review_id,
+                    self.representation_basis_reviewer,
+                    self.representation_basis_reviewed_on,
+                    self.representation_basis_rationale,
+                ),
+                strict=True,
+            ):
+                if value is not None:
+                    raise ValueError(
+                        "Source-arm representation basis pending review cannot declare a "
+                        f"{label}"
+                    )
+            return
+        if not (
+            isinstance(self.representation_basis, str)
+            and self.representation_basis.strip()
+        ):
+            raise ValueError(
+                "Reviewed source-arm representation basis requires a nonempty basis"
+            )
+        for label, value in zip(
+            ("review ID", "reviewer", "review date", "rationale"),
+            (
+                self.representation_basis_review_id,
+                self.representation_basis_reviewer,
+                self.representation_basis_reviewed_on,
+                self.representation_basis_rationale,
+            ),
+            strict=True,
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"Reviewed source-arm representation basis requires a nonempty {label}"
+                )
+        try:
+            arm_reviewed_on = date.fromisoformat(
+                str(self.representation_basis_reviewed_on)
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Reviewed source-arm representation-basis date must use ISO YYYY-MM-DD"
+            ) from exc
+        if arm_reviewed_on.isoformat() != self.representation_basis_reviewed_on:
+            raise ValueError(
+                "Reviewed source-arm representation-basis date must use ISO YYYY-MM-DD"
+            )
 
 
 @dataclass(frozen=True)
@@ -267,6 +326,11 @@ class ReviewedSourceMap:
     dispositions: tuple[PhysicalColumnDisposition, ...]
     representation_basis: str = "unclear_mixed_scope"
     representation_basis_status: str = "review_required"
+    representation_basis_review_id: str | None = None
+    representation_basis_reviewer: str | None = None
+    representation_basis_reviewed_on: str | None = None
+    representation_basis_rationale: str | None = None
+    representation_basis_scope_kind: str | None = None
     fill_down_headers: tuple[str, ...] = ()
     arms: tuple[SourceArmMap, ...] = ()
     normalization_map_version: str | None = None
@@ -284,6 +348,52 @@ class ReviewedSourceMap:
     workbook_csv_reconciliation_review_id: str | None = None
     yield_precedence: str = "require_consistency"
     yield_precedence_review_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.representation_basis_status not in {"review_required", "reviewed"}:
+            raise ValueError("Representation-basis status is unsupported")
+        evidence = (
+            self.representation_basis_review_id,
+            self.representation_basis_reviewer,
+            self.representation_basis_reviewed_on,
+            self.representation_basis_rationale,
+            self.representation_basis_scope_kind,
+        )
+        labels = (
+            "review ID",
+            "reviewer",
+            "review date",
+            "rationale",
+            "scope kind",
+        )
+        if self.representation_basis_status == "review_required":
+            for label, value in zip(labels, evidence, strict=True):
+                if value is not None:
+                    raise ValueError(
+                        "Representation basis pending review cannot declare a "
+                        f"{label}"
+                    )
+            return
+        for label, value in zip(labels, evidence, strict=True):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"Reviewed representation basis requires a nonempty {label}"
+                )
+        try:
+            reviewed_on = date.fromisoformat(str(self.representation_basis_reviewed_on))
+        except ValueError as exc:
+            raise ValueError(
+                "Reviewed representation-basis date must use ISO YYYY-MM-DD"
+            ) from exc
+        if reviewed_on.isoformat() != self.representation_basis_reviewed_on:
+            raise ValueError(
+                "Reviewed representation-basis date must use ISO YYYY-MM-DD"
+            )
+        if self.representation_basis_scope_kind != "whole_source":
+            raise ValueError(
+                "Reviewed source-level representation basis requires whole_source scope; "
+                "subset evidence cannot authorize a source-wide ingestion mapping"
+            )
 
 
 @dataclass(frozen=True)
@@ -674,6 +784,23 @@ def _validate_reviewed_source_map(
         arm_ids.add(arm.arm_id)
         if not arm.role.strip():
             raise ValueError("Reviewed source arms require an analytical role")
+        if (
+            arm.representation_basis_status == "reviewed"
+            and arm.representation_basis not in KNOWN_REPRESENTATION_BASES
+        ):
+            raise ValueError(
+                f"Reviewed source-arm {arm.arm_id!r} representation basis is not a "
+                "supported category"
+            )
+        if (
+            source_map.representation_basis_status == "reviewed"
+            and arm.representation_basis_status == "reviewed"
+            and arm.representation_basis != source_map.representation_basis
+        ):
+            raise ValueError(
+                f"Reviewed source-arm {arm.arm_id!r} representation basis conflicts with "
+                "the reviewed whole-source representation basis"
+            )
         for canonical_name, position in arm.field_positions.items():
             if not canonical_name.strip() or position not in by_position:
                 raise ValueError("Reviewed source arm mapping is outside the physical shape")
@@ -965,23 +1092,23 @@ def _source_arms(source_map: ReviewedSourceMap) -> tuple[SourceArmMap, ...]:
     )
 
 
-def _ltcce_unresolved_multiplicity_row_numbers(
+def _ltcce_unresolved_multiplicity_groups(
     source: IngestedSource,
-) -> frozenset[int]:
-    """Return every LTCCE row in a multiply represented nominal plot key.
+) -> Mapping[int, tuple[str, int]]:
+    """Bind every LTCCE repeated nominal-plot row to a stable review group.
 
     The delivered file has no column that explains these extra observations.
     They are therefore neither automatically deduplicated nor interpreted as
-    exchangeable replicates.  Binding the hold to the physical nominal-key
-    positions keeps all source rows in the inventory while making the unknown
-    analytical grain explicit.
+    exchangeable replicates. The opaque group UID is bound to the source bytes
+    and exact physical row membership; canonical record membership is attached
+    after record UIDs exist in ``_curate_source``.
     """
 
     if not (
         source.shape_adapter_version == "ltcce-long-csv-v1"
         or source.source_name == "ltcce"
     ):
-        return frozenset()
+        return MappingProxyType({})
     key_positions = tuple(range(1, 12))
     groups: dict[tuple[str, ...], list[int]] = {}
     for raw_row in source.rows:
@@ -990,12 +1117,19 @@ def _ltcce_unresolved_multiplicity_row_numbers(
             for position in key_positions
         )
         groups.setdefault(key, []).append(raw_row.source_row_number)
-    return frozenset(
-        row_number
-        for row_numbers in groups.values()
-        if len(row_numbers) > 1
-        for row_number in row_numbers
-    )
+    result: dict[int, tuple[str, int]] = {}
+    for row_numbers in groups.values():
+        if len(row_numbers) <= 1:
+            continue
+        ordered_rows = tuple(sorted(row_numbers))
+        group_uid = _stable_uid(
+            "ltcce-nominal-plot-multiplicity-v1",
+            source.source_sha256,
+            *ordered_rows,
+        )
+        for row_number in ordered_rows:
+            result[row_number] = (group_uid, len(ordered_rows))
+    return MappingProxyType(result)
 
 
 def _reviewed_or_configured_category(
@@ -1428,9 +1562,7 @@ def _curate_source(
     records: list[dict[str, Any]] = []
     previous_source_row_number = 1
     source_arms = _source_arms(effective_map)
-    unresolved_multiplicity_rows = _ltcce_unresolved_multiplicity_row_numbers(
-        source
-    )
+    unresolved_multiplicity_groups = _ltcce_unresolved_multiplicity_groups(source)
 
     for raw_row in source.rows:
         if any(
@@ -1467,6 +1599,32 @@ def _curate_source(
             if (alias := sensitive_path_alias(value)) is not None
         )
         for arm in source_arms:
+            if arm.representation_basis_status == "reviewed":
+                arm_representation_basis = arm.representation_basis
+                arm_representation_basis_status = "reviewed"
+                arm_representation_basis_review_id = arm.representation_basis_review_id
+                arm_representation_basis_reviewer = arm.representation_basis_reviewer
+                arm_representation_basis_reviewed_on = arm.representation_basis_reviewed_on
+                arm_representation_basis_rationale = arm.representation_basis_rationale
+                arm_representation_basis_scope_kind = "source_arm"
+                arm_representation_basis_scope_value = arm.arm_id
+            else:
+                arm_representation_basis = effective_map.representation_basis
+                arm_representation_basis_status = effective_map.representation_basis_status
+                arm_representation_basis_review_id = (
+                    effective_map.representation_basis_review_id
+                )
+                arm_representation_basis_reviewer = (
+                    effective_map.representation_basis_reviewer
+                )
+                arm_representation_basis_reviewed_on = (
+                    effective_map.representation_basis_reviewed_on
+                )
+                arm_representation_basis_rationale = (
+                    effective_map.representation_basis_rationale
+                )
+                arm_representation_basis_scope_kind = "whole_source"
+                arm_representation_basis_scope_value = source.source_name
             record: dict[str, Any] = {
                 "source_name": source.source_name,
                 "source_path": str(source.source_path),
@@ -1487,8 +1645,14 @@ def _curate_source(
                 "normalization_map_version": effective_map.normalization_map_version,
                 "normalization_review_id": effective_map.normalization_review_id,
                 "workbook_csv_basis": effective_map.workbook_csv_basis,
-                "representation_basis": effective_map.representation_basis,
-                "representation_basis_status": effective_map.representation_basis_status,
+                "representation_basis": arm_representation_basis,
+                "representation_basis_status": arm_representation_basis_status,
+                "representation_basis_review_id": arm_representation_basis_review_id,
+                "representation_basis_reviewer": arm_representation_basis_reviewer,
+                "representation_basis_reviewed_on": arm_representation_basis_reviewed_on,
+                "representation_basis_rationale": arm_representation_basis_rationale,
+                "representation_basis_scope_kind": arm_representation_basis_scope_kind,
+                "representation_basis_scope_value": arm_representation_basis_scope_value,
                 "source_uid": source_uid,
                 "parent_row_uid": parent_row_uid,
                 "source_arm_id": arm.arm_id,
@@ -1502,10 +1666,13 @@ def _curate_source(
                     arm.arm_id,
                 ),
                 "comparison_set_uid": (
-                    _stable_uid("comparison-set-v1", parent_row_uid)
+                    _stable_uid(
+                        "comparison-set-v2",
+                        parent_row_uid,
+                        arm.comparability_group_id,
+                        arm.comparability_review_id,
+                    )
                     if arm.comparability_group_id is not None
-                    or arm.recommendation_set_membership_status
-                    == "verified_context_comparable"
                     else None
                 ),
                 "recommendation_set_membership_status": (
@@ -1552,14 +1719,25 @@ def _curate_source(
                 ),
                 "source_row_multiplicity_status": (
                     "unresolved_nominal_plot_multiplicity"
-                    if raw_row.source_row_number in unresolved_multiplicity_rows
+                    if raw_row.source_row_number in unresolved_multiplicity_groups
                     else "not_detected"
                 ),
                 "source_row_multiplicity_reason_codes": (
                     ("LTCCE_UNRESOLVED_ROW_MULTIPLICITY",)
-                    if raw_row.source_row_number in unresolved_multiplicity_rows
+                    if raw_row.source_row_number in unresolved_multiplicity_groups
                     else ()
                 ),
+                "source_row_multiplicity_group_uid": (
+                    unresolved_multiplicity_groups[raw_row.source_row_number][0]
+                    if raw_row.source_row_number in unresolved_multiplicity_groups
+                    else None
+                ),
+                "source_row_multiplicity_group_size": (
+                    unresolved_multiplicity_groups[raw_row.source_row_number][1]
+                    if raw_row.source_row_number in unresolved_multiplicity_groups
+                    else 0
+                ),
+                "source_row_multiplicity_group_record_uids": (),
             }
             effective_fields = dict(schema_fields)
             effective_fields.update(arm.field_positions)
@@ -1648,6 +1826,17 @@ def _curate_source(
                 )
             )
         previous_source_row_number = raw_row.source_row_number
+    records_by_multiplicity_group: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        group_uid = record.get("source_row_multiplicity_group_uid")
+        if group_uid:
+            records_by_multiplicity_group.setdefault(str(group_uid), []).append(record)
+    for group_records in records_by_multiplicity_group.values():
+        member_uids = tuple(
+            sorted(str(record["record_uid"]) for record in group_records)
+        )
+        for record in group_records:
+            record["source_row_multiplicity_group_record_uids"] = member_uids
     return records
 
 
