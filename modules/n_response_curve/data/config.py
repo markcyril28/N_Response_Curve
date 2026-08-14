@@ -512,8 +512,12 @@ def validate_config(
     _require_int(run, "random_seed", where="[run]")
     _require_bool(run, "fail_fast", where="[run]")
     _require_string(run, "qc_gate", where="[run]")
-    if run["qc_gate"] not in {"critical_only", "fail_on_any_review"}:
-        raise ConfigError("[run].qc_gate is invalid")
+    if run["qc_gate"] != "fail_on_any_review":
+        raise ConfigError(
+            "[run].qc_gate must be 'fail_on_any_review'; validation fails on "
+            "every review-bearing row while writing modes preserve findings "
+            "in their review ledgers"
+        )
     _require_int_at_least(run, "test_group_limit", 1, where="[run]")
     _require_int_at_least(run, "r_threads_per_job", 1, where="[run]")
     _require_int_at_least(run, "max_parallel_r_jobs", 1, where="[run]")
