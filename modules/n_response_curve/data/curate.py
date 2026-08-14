@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from .config import KNOWN_FILL_DOWN_FIELDS
 from .ingest import (
     COMBINED_NOPT_RCM_ADAPTER_SPEC,
+    CURVE_CAPABLE_REPRESENTATION_BASES,
     KNOWN_REPRESENTATION_BASES,
     IngestedSource,
     IngestionResult,
@@ -84,9 +85,6 @@ _SERIES_IDENTITY_LOOKUP_FIELDS = MappingProxyType(
         "experimental_design": "experimental_design",
         "soil_texture": "soil_texture",
     }
-)
-_CURVE_CAPABLE_REPRESENTATION_BASES = frozenset(
-    {"observation_level", "treatment_mean"}
 )
 _REQUIRED_CURVE_FIELD_ROLES = MappingProxyType(
     {
@@ -936,7 +934,7 @@ def validate_reviewed_curation_controls(
             available_canonical_fields.update(arm.constants)
         if (
             source_map.representation_basis
-            in _CURVE_CAPABLE_REPRESENTATION_BASES
+            in CURVE_CAPABLE_REPRESENTATION_BASES
             and source_map.representation_basis_status == "reviewed"
         ):
             missing_roles = sorted(
