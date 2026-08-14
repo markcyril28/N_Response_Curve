@@ -107,6 +107,7 @@ def _reason_for_parse_status(prefix: str, status: object) -> str:
 def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
     unresolved: list[str] = []
     exact_controls = {
+        "representation_basis_status": {"reviewed"},
         "representation_review_status": {"resolved"},
         "schema_mapping_status": {"reviewed"},
         "cleaning_review_status": {
