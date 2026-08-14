@@ -17,7 +17,9 @@ overwrite = true
 random_seed = 20260720
 test_group_limit = 12
 fail_fast = true
-qc_gate = "fail_on_any_review" # OPS-03 Option B: validate/full fail after complete warning/unresolved/exclusion review.
+# Validation fails on every review-bearing row. Writing modes complete all
+# technically processable data and preserve findings in their review ledgers.
+qc_gate = "fail_on_any_review"
 # R CPU budget: max_parallel_r_jobs * r_threads_per_job must stay at or below the
 # affinity-visible CPU count (12 on this workstation). max_parallel_r_jobs is the
 # real dispatch width; r_threads_per_job pins BLAS/OpenMP inside each R process.
@@ -66,12 +68,12 @@ comparison_dimensions = [
 
 output_formats = [
   "csv",
-  "parquet",
+  #"parquet",
   # "xlsx",
 ]
 
 figure_formats = [
-  "png",
+  #"png",
   "jpeg",
 ]
 
@@ -112,9 +114,10 @@ yield_min_t_ha = 0.0
 yield_max_t_ha = 30.0
 high_n_review_threshold_kg_ha = 200.0
 
-# Named critical codes remain useful severity metadata. Independently, the
-# implemented OPS-03 Option B gate makes every warning, unresolved state, or
-# exclusion found by complete Phase 2 review block validate/full promotion.
+# Named critical codes remain useful severity metadata. Independently,
+# fail_on_any_review makes every warning, unresolved state, or exclusion found
+# by complete Phase 2 review fail validation. Test/full preserve those findings
+# in their complete review ledgers while processing technically eligible data.
 critical_error_codes = [
   "YIELD_UNIT_CONFLICT",
 ]
@@ -281,10 +284,11 @@ deferred_analysis_families = [
 interaction_orders = [
   1,
   # 2, # ANA-06 Option C: disabled.
-  # 3, # ANA-06 Option C: disabled.
+  #3, # Selected; remains inert while all interaction analysis families are deferred.
 ]
 
 deferred_interaction_orders = [
+  #1,
   2,
   3,
 ]
