@@ -418,10 +418,11 @@ def _probable_match(
     right: Mapping[str, Any],
     rules: DuplicateRuleSet,
 ) -> bool:
-    if rules.probable_cross_source_only and str(left.get("source_uid")) == str(
-        right.get("source_uid")
-    ):
-        return False
+    if rules.probable_cross_source_only:
+        left_source = str(left.get("source_name") or "").strip()
+        right_source = str(right.get("source_name") or "").strip()
+        if not left_source or not right_source or left_source == right_source:
+            return False
     casefold_fields = set(rules.casefold_fields)
     for field in rules.probable_key_fields:
         left_value = _normalized_key_value(left, field, casefold_fields=casefold_fields)
@@ -436,8 +437,13 @@ def _probable_match(
                 (int, float),
             ):
                 return False
-            if abs(float(left_value) - float(right_value)) > float(
-                rules.probable_numeric_tolerances[field]
+            difference = abs(float(left_value) - float(right_value))
+            tolerance = float(rules.probable_numeric_tolerances[field])
+            if difference > tolerance and not math.isclose(
+                difference,
+                tolerance,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
             ):
                 return False
         elif left_value != right_value:
@@ -587,6 +593,15 @@ def _initialize_duplicate_statuses(
         ordered = sorted(duplicates, key=_record_sort_key)
         if len(ordered) == 1:
             continue
+        if rules.scope_kind == "cross_source" and len(
+            {
+                str(record.get("source_name") or "").strip()
+                for record in ordered
+            }
+        ) < 2:
+            # Cross-source rules run after source-local rules and must never
+            # reclassify a collision that exists wholly inside one source.
+            continue
         group_uid = _stable_identifier(
             "duplicate",
             ("exact", rules.version, *signature),
@@ -613,6 +628,17 @@ def _initialize_duplicate_statuses(
             if adjudication.canonical_record_uid not in ordered_uids:
                 raise ValueError(
                     "Exact duplicate adjudication canonical record is outside its group"
+                )
+            if adjudication.disposition == "same_trial" and any(
+                str(record["record_uid"])
+                == adjudication.canonical_record_uid
+                and "exact_duplicate_noncanonical"
+                in record.get("duplicate_relationships", ())
+                for record in ordered
+            ):
+                raise ValueError(
+                    "Cross-source exact duplicate adjudication canonical record conflicts "
+                    "with prior source-local exact duplicate canonical assignment"
                 )
             canonical = next(
                 record
@@ -670,6 +696,17 @@ def _initialize_duplicate_statuses(
             ):
                 raise ValueError(
                     "Duplicate adjudication canonical record is outside its candidate group"
+                )
+            if adjudication.disposition == "same_trial" and any(
+                str(record["record_uid"])
+                == adjudication.canonical_record_uid
+                and "exact_duplicate_noncanonical"
+                in record.get("duplicate_relationships", ())
+                for record in candidates
+            ):
+                raise ValueError(
+                    "Probable duplicate adjudication canonical record conflicts with "
+                    "prior exact duplicate canonical assignment"
                 )
             canonical_uid = adjudication.canonical_record_uid
             review_status = "adjudicated"
