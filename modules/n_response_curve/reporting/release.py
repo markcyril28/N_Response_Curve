@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -13,7 +14,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
-from n_response_curve.contracts import SUPPORTED_TABLE_FORMATS
+from n_response_curve.contracts import SUPPORTED_FIGURE_FORMATS, SUPPORTED_TABLE_FORMATS
 from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 
 
@@ -56,6 +57,34 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_ARTIFACT_SUFFIXES = frozenset({".htm", ".html", ".svg"})
 _RESERVED_PACKAGE_PATHS = frozenset(
     {"CHECKSUMS.sha256", "report.md", "report.pdf", "run_manifest.json"}
+)
+_REVIEW_ISSUE_LEDGER_PATH = "ledgers/review_issue_ledger.json"
+_REVIEW_GATE_SCHEMA_VERSIONS = frozenset(
+    {"ops-03-review-gate-v1", "ops-09-review-gate-v2"}
+)
+_REVIEW_GATE_EXPECTED_LEDGERS = (
+    "phase_2_review",
+    "phase_3_series_evidence",
+    "model_attempts",
+    "runtime_warnings",
+    "analysis_terminal_statuses",
+    "multiplicity_reconciliation",
+    "claim_classification",
+)
+_REVIEW_ISSUE_UID = re.compile(r"^review_issue_[0-9a-f]{24}$")
+_REVIEW_ISSUE_STATES = frozenset(
+    {"structural", "unresolved", "warning", "excluded_series"}
+)
+_REVIEW_ISSUE_STAGES = frozenset({"phase_2", "phase_3", "phase_4", "runtime"})
+_FIGURE_LAYOUT_VERSION = "figures-by-source-and-model-v1"
+_SAFE_FIGURE_DIRECTORY_TOKEN = re.compile(r"^[A-Za-z0-9_-]+$")
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
+_PIPELINE_RELEASE_STATUSES = frozenset(
+    {"phase_5_test_release_complete", "phase_5_full_release_complete"}
 )
 
 
@@ -654,6 +683,549 @@ def _verify_full_release_governance(
     # it is deliberately independent of organizational approval artifacts.
 
 
+def _nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _verify_manifest_artifact_inventory(
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> None:
+    """Reconcile the writer's pre-manifest inventory when it is advertised."""
+
+    inventory = manifest.get("artifact_sha256_before_manifest")
+    if inventory is None:
+        return
+    expected = {
+        relative: digest
+        for relative, digest in checksums.items()
+        if relative != "run_manifest.json"
+    }
+    if (
+        not isinstance(inventory, Mapping)
+        or any(
+            not isinstance(relative, str)
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            for relative, digest in inventory.items()
+        )
+        or dict(inventory) != expected
+    ):
+        raise ReportingError(
+            "Release run manifest artifact inventory does not reconcile with the package"
+        )
+
+
+def _verify_review_issue_ledger(
+    target: Path,
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> None:
+    """Validate the complete review ledger semantically, not only by checksum."""
+
+    pipeline_release = manifest.get("status") in _PIPELINE_RELEASE_STATUSES
+    manifest_gate = manifest.get("review_gate")
+    ledger_advertised = _REVIEW_ISSUE_LEDGER_PATH in checksums
+    if not pipeline_release and manifest_gate is None and not ledger_advertised:
+        return
+    if not isinstance(manifest_gate, Mapping) or not ledger_advertised:
+        raise ReportingError(
+            "Release review ledger and run-manifest review gate must be present together"
+        )
+    ledger_path = target / _REVIEW_ISSUE_LEDGER_PATH
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReportingError("Release review issue ledger is not valid JSON") from exc
+    if not isinstance(ledger, Mapping):
+        raise ReportingError("Release review issue ledger must be a JSON object")
+
+    required_fields = {
+        "schema_version",
+        "policy_id",
+        "prospective_effective_version",
+        "review_gate_policy_sha256",
+        "mode",
+        "run_identity_sha256",
+        "policy_content_sha256",
+        "expected_ledgers",
+        "observed_ledgers",
+        "evidence_complete",
+        "issue_count",
+        "permitted_disposition_count",
+        "blocking_issue_count",
+        "issue_state_counts",
+        "issues",
+        "decision",
+        "complete_processing_allowed",
+    }
+    if set(ledger) != required_fields:
+        raise ReportingError("Release review issue ledger schema is invalid")
+    schema_version = ledger.get("schema_version")
+    if schema_version not in _REVIEW_GATE_SCHEMA_VERSIONS:
+        raise ReportingError("Release review issue ledger schema version is unsupported")
+
+    issues = ledger.get("issues")
+    if not isinstance(issues, list):
+        raise ReportingError("Release review issue ledger issues must be a list")
+    permitted_count = 0
+    blocking_count = 0
+    issue_uids: set[str] = set()
+    issue_state_counts: Counter[str] = Counter()
+    required_issue_fields = {
+        "review_issue_uid",
+        "stage",
+        "issue_scope",
+        "subject_id",
+        "issue_state",
+        "status",
+        "reason_codes",
+        "detail",
+        "gate_classification",
+        "blocking_reason_codes",
+    }
+    semantic_issue_fields = (
+        "stage",
+        "issue_scope",
+        "subject_id",
+        "issue_state",
+        "status",
+        "reason_codes",
+        "detail",
+    )
+    for issue in issues:
+        if not isinstance(issue, Mapping) or not required_issue_fields <= set(issue):
+            raise ReportingError("Release review issue ledger contains an invalid issue record")
+        issue_uid = issue.get("review_issue_uid")
+        stage = issue.get("stage")
+        issue_scope = issue.get("issue_scope")
+        subject_id = issue.get("subject_id")
+        issue_state = issue.get("issue_state")
+        status = issue.get("status")
+        reason_codes = issue.get("reason_codes")
+        detail = issue.get("detail")
+        classification = issue.get("gate_classification")
+        blocking_reasons = issue.get("blocking_reason_codes")
+        if (
+            not isinstance(issue_uid, str)
+            or _REVIEW_ISSUE_UID.fullmatch(issue_uid) is None
+            or issue_uid in issue_uids
+            or stage not in _REVIEW_ISSUE_STAGES
+            or not isinstance(issue_scope, str)
+            or not issue_scope.strip()
+            or not isinstance(subject_id, str)
+            or not subject_id.strip()
+            or issue_state not in _REVIEW_ISSUE_STATES
+            or not isinstance(status, str)
+            or not status.strip()
+            or not isinstance(reason_codes, list)
+            or not reason_codes
+            or any(not isinstance(reason, str) or not reason.strip() for reason in reason_codes)
+            or (detail is not None and (not isinstance(detail, str) or not detail.strip()))
+            or classification not in {"blocking", "permitted_resolved_disposition"}
+            or not isinstance(blocking_reasons, list)
+            or any(
+                not isinstance(reason, str) or not reason.strip()
+                for reason in blocking_reasons
+            )
+            or set(blocking_reasons) - {"ANALYTICAL_LEAKAGE_DETECTED"}
+            or (
+                classification == "permitted_resolved_disposition"
+                and (issue_state != "excluded_series" or blocking_reasons)
+            )
+        ):
+            raise ReportingError("Release review issue ledger contains an invalid issue record")
+        expected_issue_uid = "review_issue_" + stable_json_sha256(
+            {field: issue.get(field) for field in semantic_issue_fields}
+        )[:24]
+        if issue_uid != expected_issue_uid:
+            raise ReportingError(
+                "Release review issue ledger identity is not bound to its semantic payload"
+            )
+        issue_uids.add(issue_uid)
+        issue_state_counts[str(issue_state)] += 1
+        if classification == "permitted_resolved_disposition":
+            permitted_count += 1
+        else:
+            blocking_count += 1
+
+    issue_count = ledger.get("issue_count")
+    recorded_permitted_count = ledger.get("permitted_disposition_count")
+    recorded_blocking_count = ledger.get("blocking_issue_count")
+    recorded_state_counts = ledger.get("issue_state_counts")
+    if (
+        not _nonnegative_integer(issue_count)
+        or not _nonnegative_integer(recorded_permitted_count)
+        or not _nonnegative_integer(recorded_blocking_count)
+        or issue_count != len(issues)
+        or recorded_permitted_count != permitted_count
+        or recorded_blocking_count != blocking_count
+        or issue_count != permitted_count + blocking_count
+        or not isinstance(recorded_state_counts, Mapping)
+        or any(
+            state not in _REVIEW_ISSUE_STATES or not _nonnegative_integer(count)
+            for state, count in recorded_state_counts.items()
+        )
+        or dict(recorded_state_counts) != dict(sorted(issue_state_counts.items()))
+    ):
+        raise ReportingError("Release review issue ledger counts do not reconcile")
+
+    expected_ledgers = ledger.get("expected_ledgers")
+    observed_ledgers = ledger.get("observed_ledgers")
+    mode = ledger.get("mode")
+    decision = ledger.get("decision")
+    expected_decision = "bounded_with_findings" if blocking_count else "pass"
+    if (
+        not isinstance(expected_ledgers, list)
+        or tuple(expected_ledgers) != _REVIEW_GATE_EXPECTED_LEDGERS
+        or not isinstance(observed_ledgers, list)
+        or tuple(observed_ledgers) != _REVIEW_GATE_EXPECTED_LEDGERS
+        or ledger.get("evidence_complete") is not True
+        or mode not in {"test", "full"}
+        or decision != expected_decision
+        or ledger.get("complete_processing_allowed") is not True
+    ):
+        raise ReportingError(
+            "Release review issue ledger completeness or decision does not reconcile"
+        )
+
+    run_identity_sha256 = ledger.get("run_identity_sha256")
+    policy_content_sha256 = ledger.get("policy_content_sha256")
+    runtime_policy = manifest.get("runtime_policy")
+    run_identity = manifest.get("run_identity")
+    status = manifest.get("status")
+    if (
+        not isinstance(run_identity_sha256, str)
+        or _SHA256.fullmatch(run_identity_sha256) is None
+        or manifest.get("run_identity_sha256") != run_identity_sha256
+        or not isinstance(policy_content_sha256, str)
+        or _SHA256.fullmatch(policy_content_sha256) is None
+        or not isinstance(runtime_policy, Mapping)
+        or runtime_policy.get("policy_content_sha256") != policy_content_sha256
+        or runtime_policy.get("mode") not in {None, mode}
+        or (isinstance(run_identity, Mapping) and run_identity.get("mode") != mode)
+        or (
+            isinstance(run_identity, Mapping)
+            and stable_json_sha256(run_identity) != run_identity_sha256
+        )
+        or (
+            isinstance(status, str)
+            and status.endswith("_release_complete")
+            and status != f"phase_5_{mode}_release_complete"
+        )
+    ):
+        raise ReportingError("Release review issue ledger run or policy identity is misbound")
+
+    policy_id = ledger.get("policy_id")
+    prospective_version = ledger.get("prospective_effective_version")
+    review_policy_sha256 = ledger.get("review_gate_policy_sha256")
+    if schema_version == "ops-03-review-gate-v1":
+        if (
+            policy_id != "OPS-03-option-b"
+            or prospective_version is not None
+            or review_policy_sha256 is not None
+        ):
+            raise ReportingError("Release review issue ledger v1 policy binding is invalid")
+    else:
+        review_policy = runtime_policy.get("review_gate_policy")
+        if (
+            not isinstance(policy_id, str)
+            or not policy_id.strip()
+            or not isinstance(prospective_version, str)
+            or not prospective_version.strip()
+            or not isinstance(review_policy_sha256, str)
+            or _SHA256.fullmatch(review_policy_sha256) is None
+            or not isinstance(review_policy, Mapping)
+            or review_policy.get("policy_id") != policy_id
+            or review_policy.get("prospective_effective_version") != prospective_version
+            or review_policy.get("artifact_sha256") != review_policy_sha256
+        ):
+            raise ReportingError("Release review issue ledger v2 policy binding is invalid")
+
+    manifest_projection = {key: value for key, value in ledger.items() if key != "issues"}
+    if dict(manifest_gate) != manifest_projection:
+        raise ReportingError(
+            "Release review issue ledger does not agree with the run manifest"
+        )
+
+
+def _figure_formats(manifest: Mapping[str, Any], figures: Mapping[str, Any]) -> tuple[str, ...]:
+    raw_formats = figures.get("formats")
+    output_profile = manifest.get("output_profile")
+    if (
+        not isinstance(raw_formats, list)
+        or not raw_formats
+        or any(not isinstance(item, str) for item in raw_formats)
+    ):
+        raise ReportingError("Release figure format inventory is invalid")
+    formats = tuple(item.casefold().lstrip(".") for item in raw_formats)
+    if (
+        len(formats) != len(set(formats))
+        or any(item not in SUPPORTED_FIGURE_FORMATS for item in formats)
+        or not isinstance(output_profile, Mapping)
+        or tuple(output_profile.get("figure_formats", ())) != formats
+    ):
+        raise ReportingError("Release figure format inventory is invalid")
+    runtime_policy = manifest.get("runtime_policy")
+    effective_enablement = (
+        runtime_policy.get("effective_enablement")
+        if isinstance(runtime_policy, Mapping)
+        else None
+    )
+    if isinstance(effective_enablement, Mapping) and (
+        "figure_formats" in effective_enablement
+        and tuple(effective_enablement["figure_formats"]) != formats
+    ):
+        raise ReportingError("Release figure formats disagree with the runtime policy")
+    return formats
+
+
+def _figure_token_map(
+    value: Any,
+    *,
+    name: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    if not isinstance(value, Mapping):
+        raise ReportingError(f"Release {name} figure-directory token inventory is invalid")
+    tokens: dict[str, str] = {}
+    owners: dict[str, str] = {}
+    for identity, token in value.items():
+        if (
+            not isinstance(identity, str)
+            or not identity.strip()
+            or not isinstance(token, str)
+            or _SAFE_FIGURE_DIRECTORY_TOKEN.fullmatch(token) is None
+            or token.upper() in _WINDOWS_RESERVED_BASENAMES
+            or len(token.encode("utf-8")) > 80
+            or token.casefold() in owners
+        ):
+            raise ReportingError(f"Release {name} figure-directory token inventory is invalid")
+        tokens[identity] = token
+        owners[token.casefold()] = identity
+    return tokens, {token: identity for identity, token in tokens.items()}
+
+
+def _integer_count_map(value: Any, *, where: str) -> dict[str, int]:
+    if not isinstance(value, Mapping) or any(
+        not isinstance(key, str) or not key or not _nonnegative_integer(count)
+        for key, count in value.items()
+    ):
+        raise ReportingError(f"Release figure {where} count inventory is invalid")
+    return dict(value)
+
+
+def _verify_run_figure_inventory(
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+    figures: Mapping[str, Any],
+) -> None:
+    formats = _figure_formats(manifest, figures)
+    source_tokens, source_by_token = _figure_token_map(
+        figures.get("source_directory_tokens"),
+        name="source",
+    )
+    model_tokens, model_by_token = _figure_token_map(
+        figures.get("model_directory_tokens"),
+        name="model",
+    )
+    if (
+        figures.get("layout_version") != _FIGURE_LAYOUT_VERSION
+        or figures.get("observed_path_template")
+        != "figures/observed/<source>/<series>.<format>"
+        or figures.get("fitted_path_template")
+        != "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
+    ):
+        raise ReportingError("Release figure hierarchy metadata is invalid")
+
+    runtime_policy = manifest.get("runtime_policy")
+    effective_enablement = (
+        runtime_policy.get("effective_enablement")
+        if isinstance(runtime_policy, Mapping)
+        else None
+    )
+    if isinstance(effective_enablement, Mapping):
+        enabled_sources = effective_enablement.get("enabled_sources")
+        enabled_models = effective_enablement.get("enabled_models")
+        if isinstance(enabled_sources, list) and set(source_tokens) != set(enabled_sources):
+            raise ReportingError("Release figure source hierarchy disagrees with runtime policy")
+        if isinstance(enabled_models, list) and set(model_tokens) != set(enabled_models):
+            raise ReportingError("Release figure model hierarchy disagrees with runtime policy")
+
+    figure_paths = sorted(
+        relative for relative in checksums if relative.startswith("figures/")
+    )
+    logical_formats: dict[str, list[str]] = {}
+    logical_metadata: dict[str, tuple[str, str, str | None]] = {}
+    for relative in figure_paths:
+        relative_path = Path(relative)
+        output_format = relative_path.suffix.casefold().lstrip(".")
+        if output_format not in formats:
+            raise ReportingError("Release figure hierarchy contains an undeclared artifact format")
+        parts = relative_path.parts
+        if len(parts) == 4 and parts[:2] == ("figures", "observed"):
+            source_name = source_by_token.get(parts[2])
+            model_name = None
+            kind = "observed"
+        elif len(parts) == 5 and parts[:2] == ("figures", "fitted"):
+            source_name = source_by_token.get(parts[2])
+            model_name = model_by_token.get(parts[3])
+            kind = "fitted"
+        else:
+            raise ReportingError("Release figure artifact is outside the declared hierarchy")
+        if source_name is None or (kind == "fitted" and model_name is None) or not relative_path.stem:
+            raise ReportingError("Release figure artifact is outside the declared hierarchy")
+        logical_path = relative_path.with_suffix("").as_posix()
+        logical_formats.setdefault(logical_path, []).append(output_format)
+        logical_metadata[logical_path] = (kind, source_name, model_name)
+    if any(
+        len(observed) != len(formats) or set(formats) != set(observed)
+        for observed in logical_formats.values()
+    ):
+        raise ReportingError("Release figure artifact formats are incomplete or inconsistent")
+
+    observed_by_source: Counter[str] = Counter()
+    fitted_by_source_model: Counter[tuple[str, str]] = Counter()
+    for kind, source_name, model_name in logical_metadata.values():
+        if kind == "observed":
+            observed_by_source[source_name] += 1
+        else:
+            assert model_name is not None
+            fitted_by_source_model[(source_name, model_name)] += 1
+    observed_count = sum(observed_by_source.values())
+    fitted_count = sum(fitted_by_source_model.values())
+    expected_observed_by_source = {
+        source: observed_by_source[source] for source in sorted(source_tokens)
+    }
+    expected_fitted_by_source = {
+        source: sum(
+            fitted_by_source_model[(source, model)] for model in sorted(model_tokens)
+        )
+        for source in sorted(source_tokens)
+    }
+    expected_fitted_matrix = {
+        source: {
+            model: fitted_by_source_model[(source, model)]
+            for model in sorted(model_tokens)
+        }
+        for source in sorted(source_tokens)
+    }
+    observed_counts = _integer_count_map(
+        figures.get("observed_figure_count_by_source"),
+        where="observed-by-source",
+    )
+    fitted_counts = _integer_count_map(
+        figures.get("fitted_figure_count_by_source"),
+        where="fitted-by-source",
+    )
+    raw_fitted_matrix = figures.get("fitted_figure_count_by_source_model")
+    if not isinstance(raw_fitted_matrix, Mapping):
+        raise ReportingError("Release figure fitted-by-source/model count inventory is invalid")
+    fitted_matrix = {
+        source: _integer_count_map(counts, where="fitted-by-source/model")
+        for source, counts in raw_fitted_matrix.items()
+        if isinstance(source, str)
+    }
+    if len(fitted_matrix) != len(raw_fitted_matrix):
+        raise ReportingError("Release figure fitted-by-source/model count inventory is invalid")
+    if (
+        not _nonnegative_integer(figures.get("observed_figure_count"))
+        or figures.get("observed_figure_count") != observed_count
+        or not _nonnegative_integer(figures.get("fitted_figure_count"))
+        or figures.get("fitted_figure_count") != fitted_count
+        or not _nonnegative_integer(figures.get("artifact_count"))
+        or figures.get("artifact_count") != len(figure_paths)
+        or observed_counts != expected_observed_by_source
+        or fitted_counts != expected_fitted_by_source
+        or fitted_matrix != expected_fitted_matrix
+    ):
+        raise ReportingError("Release figure counts do not reconcile with the artifact hierarchy")
+    status = figures.get("status")
+    if status == "run_output" and not figure_paths:
+        raise ReportingError("Release run-output figure inventory is empty")
+    if status == "no_renderable_series" and figure_paths:
+        raise ReportingError("Release no-renderable-series figure inventory contains artifacts")
+
+
+def _verify_sample_figure_inventory(
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+    figures: Mapping[str, Any],
+) -> None:
+    formats = _figure_formats(manifest, figures)
+    if (
+        manifest.get("status") != "phase_5_test_release_complete"
+        or figures.get("directory") != "figures/sample"
+        or figures.get("index_path") != "figures/sample/INDEX.md"
+    ):
+        raise ReportingError("Synthetic sample figures are only valid in a test package")
+    figure_paths = sorted(
+        relative for relative in checksums if relative.startswith("figures/")
+    )
+    if "figures/sample/INDEX.md" not in figure_paths:
+        raise ReportingError("Synthetic sample figure index is missing")
+    logical_formats: dict[str, list[str]] = {}
+    observed_count = 0
+    fitted_count = 0
+    for relative in figure_paths:
+        if relative == "figures/sample/INDEX.md":
+            continue
+        path = Path(relative)
+        parts = path.parts
+        output_format = path.suffix.casefold().lstrip(".")
+        if (
+            len(parts) != 4
+            or parts[:2] != ("figures", "sample")
+            or parts[2] not in {"observed", "fitted"}
+            or output_format not in formats
+            or not path.stem
+        ):
+            raise ReportingError("Synthetic sample figure artifact inventory is invalid")
+        logical_path = path.with_suffix("").as_posix()
+        if logical_path not in logical_formats:
+            if parts[2] == "observed":
+                observed_count += 1
+            else:
+                fitted_count += 1
+        logical_formats.setdefault(logical_path, []).append(output_format)
+    if any(
+        len(observed) != len(formats) or set(formats) != set(observed)
+        for observed in logical_formats.values()
+    ):
+        raise ReportingError("Synthetic sample figure formats are incomplete or inconsistent")
+    if (
+        not _nonnegative_integer(figures.get("observed_figure_count"))
+        or figures.get("observed_figure_count") != observed_count
+        or not _nonnegative_integer(figures.get("fitted_figure_count"))
+        or figures.get("fitted_figure_count") != fitted_count
+        or not _nonnegative_integer(figures.get("artifact_count"))
+        or figures.get("artifact_count") != len(figure_paths)
+    ):
+        raise ReportingError("Synthetic sample figure counts do not reconcile")
+
+
+def _verify_figure_inventory(
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> None:
+    pipeline_release = manifest.get("status") in _PIPELINE_RELEASE_STATUSES
+    figures = manifest.get("figures")
+    if figures is None and not pipeline_release:
+        return
+    if figures is None:
+        raise ReportingError(
+            "Pipeline release is missing its required figure inventory contract"
+        )
+    if not isinstance(figures, Mapping):
+        raise ReportingError("Release run manifest figure inventory must be an object")
+    status = figures.get("status")
+    if status in {"run_output", "no_renderable_series"}:
+        _verify_run_figure_inventory(checksums, manifest, figures)
+    elif status == "synthetic_demonstration_substituted":
+        _verify_sample_figure_inventory(checksums, manifest, figures)
+    else:
+        raise ReportingError("Release run manifest figure inventory has an invalid status")
+
+
 def verify_release_package(target_path: str | Path) -> ReleasePackage:
     """Verify every promoted artifact against its immutable checksum ledger."""
 
@@ -729,7 +1301,10 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
             or expected.get(relative_path) != digest
         ):
             raise ReportingError("Release run manifest report-document metadata is invalid")
+    _verify_manifest_artifact_inventory(expected, payload)
     _verify_full_release_governance(target, expected, payload)
+    _verify_review_issue_ledger(target, expected, payload)
+    _verify_figure_inventory(expected, payload)
     try:
         report_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -835,6 +1410,7 @@ def write_release_package(
     source_roots: Iterable[str | Path],
     stage_writers: Sequence[Callable[[Path], Iterable[str | Path]]] = (),
     release_validator: Callable[[Mapping[str, Any]], None] | None = None,
+    staged_artifact_validator: Callable[[Path], None] | None = None,
 ) -> ReleasePackage:
     """Stage, validate, checksum, and atomically promote one auditable run package."""
 
@@ -967,6 +1543,16 @@ def write_release_package(
         manifest_payload["artifact_sha256_before_manifest"] = dict(sorted(artifact_sha256.items()))
         _write_json(manifest_path, manifest_payload)
         artifact_sha256[manifest_path.relative_to(stage).as_posix()] = sha256_file(manifest_path)
+        if staged_artifact_validator is not None:
+            if not callable(staged_artifact_validator):
+                raise ReportingError("Staged artifact validator must be callable")
+            staged_artifact_validator(stage)
+            for relative_path, digest in artifact_sha256.items():
+                if sha256_file(stage / relative_path) != digest:
+                    raise ReportingError(
+                        "Staged artifact validator changed a registered package artifact: "
+                        f"{relative_path}"
+                    )
         checksums_path = stage / "CHECKSUMS.sha256"
         checksums_path.write_text(
             "".join(f"{digest}  {relative}\n" for relative, digest in sorted(artifact_sha256.items())),
