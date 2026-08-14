@@ -46,6 +46,7 @@ from n_response_curve.analysis.explanatory import PythonAnalysisResult, execute_
 from n_response_curve.analysis.factor_catalog import FactorCatalogEntry, build_factor_catalog
 from n_response_curve.reporting.plots import (
     model_attempt_display_rows,
+    sanitize_figure_directory_token,
     write_observed_series_figures,
     write_response_curve_figures,
 )
@@ -1803,8 +1804,7 @@ def _collect_review_issues(
         }
         issues.append(
             {
-                "review_issue_uid": "review_issue_"
-                + stable_json_sha256(payload)[:24],
+                "review_issue_uid": _review_issue_uid(payload),
                 **payload,
             }
         )
@@ -1941,6 +1941,24 @@ _REVIEW_GATE_EXPECTED_LEDGERS = (
 )
 
 
+def _review_issue_uid(issue: Mapping[str, Any]) -> str:
+    """Bind a review issue identity to its released semantic payload."""
+
+    payload = {
+        field: issue.get(field)
+        for field in (
+            "stage",
+            "issue_scope",
+            "subject_id",
+            "issue_state",
+            "status",
+            "reason_codes",
+            "detail",
+        )
+    }
+    return "review_issue_" + stable_json_sha256(payload)[:24]
+
+
 def _review_gate_allows_reuse(
     existing_manifest: Mapping[str, Any],
     *,
@@ -2053,6 +2071,7 @@ def _strict_review_gate_stage_writer(
     terminal_state: Mapping[str, Any],
     *,
     review_gate_policy: ReviewGatePolicy | None = None,
+    release_identities: _ReleaseIdentityMap | None = None,
 ):
     def write_review_gate(stage_root: Path) -> tuple[Path, ...]:
         issues = _collect_review_issues(
@@ -2113,6 +2132,24 @@ def _strict_review_gate_stage_writer(
             for issue in classified_issues
             if issue["gate_classification"] == "blocking"
         )
+        if release_identities is None:
+            public_issues = tuple(classified_issues)
+        else:
+            projected_issues: list[dict[str, Any]] = []
+            withheld_subject_count = 0
+            for row in classified_issues:
+                issue = _project_release_uid_fields(row, release_identities)
+                assert issue is not None
+                if issue.get("subject_id") is None:
+                    # The finding remains in the complete public ledger, while its
+                    # internal-only restricted record identity stays undisclosed.
+                    withheld_subject_count += 1
+                    issue["subject_id"] = (
+                        f"restricted-subject-withheld-{withheld_subject_count}"
+                    )
+                issue["review_issue_uid"] = _review_issue_uid(issue)
+                projected_issues.append(issue)
+            public_issues = tuple(projected_issues)
         observed_ledgers: list[str] = []
         if hasattr(phase_two.qc, "review_rows"):
             observed_ledgers.append("phase_2_review")
@@ -2176,7 +2213,7 @@ def _strict_review_gate_stage_writer(
             "permitted_disposition_count": len(permitted_issues),
             "blocking_issue_count": len(blocking_issues),
             "issue_state_counts": state_counts,
-            "issues": classified_issues,
+            "issues": public_issues,
             "decision": decision,
             "complete_processing_allowed": (
                 config.run_mode in {"test", "full"}
@@ -2222,8 +2259,93 @@ def _figure_stage_writer(
         else phase_three.evidence.selected_attempts
     )
 
+    sources_by_series: dict[str, set[str]] = {}
+    for record in phase_three.input_records:
+        series_uid = str(record.get("response_series_uid") or "").strip()
+        if not series_uid:
+            continue
+        source_name = str(record.get("source_name") or "").strip()
+        if not source_name:
+            raise ReportingError(
+                "Figure source hierarchy requires a nonempty source_name for every series row: "
+                f"{series_uid}"
+            )
+        sources_by_series.setdefault(series_uid, set()).add(source_name)
+    invalid_source_series = {
+        series_uid: tuple(sorted(source_names))
+        for series_uid, source_names in sources_by_series.items()
+        if len(source_names) != 1
+    }
+    if invalid_source_series:
+        raise ReportingError(
+            "Figure source hierarchy requires every response_series_uid to belong to exactly "
+            "one source: "
+            + "; ".join(
+                f"{series_uid}={list(source_names)}"
+                for series_uid, source_names in sorted(invalid_source_series.items())
+            )
+        )
+    source_by_series = {
+        series_uid: next(iter(source_names))
+        for series_uid, source_names in sources_by_series.items()
+    }
+    enabled_sources = tuple(str(source) for source in config.enabled_sources)
+    unknown_sources = set(source_by_series.values()) - set(enabled_sources)
+    if unknown_sources:
+        raise ReportingError(
+            "Figure source hierarchy contains source(s) outside enabled_sources: "
+            + ", ".join(sorted(unknown_sources))
+        )
+    missing_figure_series = {
+        str(series_uid)
+        for series_uid in reportable_curve_series
+        if str(series_uid) not in source_by_series
+    } | {
+        str(attempt.response_series_uid)
+        for attempt in fitted_attempts
+        if str(attempt.response_series_uid) not in source_by_series
+    }
+    if missing_figure_series:
+        raise ReportingError(
+            "Figure evidence or model attempts lack an authoritative series-to-source mapping: "
+            + ", ".join(sorted(missing_figure_series))
+        )
+    source_tokens: dict[str, str] = {}
+    token_owners: dict[str, str] = {}
+    for source_name in sorted(enabled_sources):
+        token = sanitize_figure_directory_token(source_name, fallback="source")
+        owner = token_owners.setdefault(token.casefold(), source_name)
+        if owner != source_name:
+            raise ReportingError(
+                "Enabled source names map to case-insensitively colliding figure directories: "
+                f"{owner!r}, {source_name!r}"
+            )
+        source_tokens[source_name] = token
+    model_tokens = {
+        model_name: sanitize_figure_directory_token(model_name, fallback="model")
+        for model_name in sorted(str(model) for model in config.enabled_models)
+    }
+    if len({token.casefold() for token in model_tokens.values()}) != len(model_tokens):
+        raise ReportingError(
+            "Enabled model names map to case-insensitively colliding figure directories"
+        )
+    unknown_attempt_models = sorted(
+        {
+            str(attempt.model_name)
+            for attempt in fitted_attempts
+            if str(attempt.model_name) not in model_tokens
+        }
+    )
+    if unknown_attempt_models:
+        raise ReportingError(
+            "Fitted figure attempt uses a model outside enabled_models: "
+            + ", ".join(unknown_attempt_models)
+        )
+
     def write_figures(stage_root: Path) -> tuple[Path, ...]:
         figures: list[Path] = []
+        observed_counts_by_source: Counter[str] = Counter()
+        fitted_counts_by_source_model: Counter[tuple[str, str]] = Counter()
         observed_series = sorted(
             {
                 str(record["response_series_uid"])
@@ -2234,34 +2356,91 @@ def _figure_stage_writer(
             }
         )
         for response_series_uid in observed_series:
+            source_name = source_by_series.get(response_series_uid)
+            if source_name is None:
+                raise ReportingError(
+                    "Observed figure series has no authoritative source mapping: "
+                    f"{response_series_uid}"
+                )
+            source_token = source_tokens[source_name]
             figures.extend(
                 write_observed_series_figures(
                     phase_three.input_records,
                     response_series_uid,
-                    output_root=stage_root / "figures" / "observed",
+                    output_root=stage_root / "figures" / "observed" / source_token,
                     formats=config.figure_formats,
                     evidence_row=evidence_by_series.get(response_series_uid),
                 )
             )
+            observed_counts_by_source[source_name] += 1
         for attempt in fitted_attempts:
             if attempt.response_series_uid not in reportable_curve_series:
                 continue
+            source_name = source_by_series.get(attempt.response_series_uid)
+            if source_name is None:
+                raise ReportingError(
+                    "Fitted figure series has no authoritative source mapping: "
+                    f"{attempt.response_series_uid}"
+                )
+            source_token = source_tokens[source_name]
+            model_token = model_tokens.get(attempt.model_name)
+            if model_token is None:
+                raise ReportingError(
+                    "Fitted figure attempt uses a model outside enabled_models: "
+                    f"{attempt.model_name}"
+                )
             figures.extend(
                 write_response_curve_figures(
                     phase_three.input_records,
                     attempt,
-                    output_root=stage_root / "figures" / "fitted",
+                    output_root=(
+                        stage_root
+                        / "figures"
+                        / "fitted"
+                        / source_token
+                        / model_token
+                    ),
                     formats=config.figure_formats,
                     evidence_row=evidence_by_series.get(attempt.response_series_uid),
                 )
             )
+            fitted_counts_by_source_model[(source_name, attempt.model_name)] += 1
         if figures:
             manifest["figures"] = {
                 "status": "run_output",
                 "scientific_status": "run_output",
                 "observed_figure_count": len(observed_series),
+                "fitted_figure_count": sum(fitted_counts_by_source_model.values()),
                 "artifact_count": len(figures),
                 "formats": list(config.figure_formats),
+                "layout_version": "figures-by-source-and-model-v1",
+                "observed_path_template": "figures/observed/<source>/<series>.<format>",
+                "fitted_path_template": (
+                    "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
+                ),
+                "source_directory_tokens": dict(sorted(source_tokens.items())),
+                "model_directory_tokens": dict(sorted(model_tokens.items())),
+                "observed_figure_count_by_source": {
+                    source_name: observed_counts_by_source[source_name]
+                    for source_name in sorted(enabled_sources)
+                },
+                "fitted_figure_count_by_source": {
+                    source_name: sum(
+                        count
+                        for (nested_source, _), count in fitted_counts_by_source_model.items()
+                        if nested_source == source_name
+                    )
+                    for source_name in sorted(enabled_sources)
+                },
+                "fitted_figure_count_by_source_model": {
+                    source_name: {
+                        model_name: fitted_counts_by_source_model[
+                            (source_name, model_name)
+                        ]
+                        for model_name in sorted(model_tokens)
+                    }
+                    for source_name in sorted(enabled_sources)
+                },
             }
             return tuple(figures)
         # No series resolved, so the figure contract rendered nothing and a reviewer
@@ -2271,8 +2450,28 @@ def _figure_stage_writer(
             "status": "no_renderable_series",
             "scientific_status": "run_output",
             "observed_figure_count": 0,
+            "fitted_figure_count": 0,
             "artifact_count": 0,
             "formats": list(config.figure_formats),
+            "layout_version": "figures-by-source-and-model-v1",
+            "observed_path_template": "figures/observed/<source>/<series>.<format>",
+            "fitted_path_template": (
+                "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
+            ),
+            "source_directory_tokens": dict(sorted(source_tokens.items())),
+            "model_directory_tokens": dict(sorted(model_tokens.items())),
+            "observed_figure_count_by_source": {
+                source_name: 0 for source_name in sorted(enabled_sources)
+            },
+            "fitted_figure_count_by_source": {
+                source_name: 0 for source_name in sorted(enabled_sources)
+            },
+            "fitted_figure_count_by_source_model": {
+                source_name: {
+                    model_name: 0 for model_name in sorted(model_tokens)
+                }
+                for source_name in sorted(enabled_sources)
+            },
         }
         if config.run_mode != "test":
             return ()
@@ -2475,9 +2674,18 @@ def _public_release_accounting(phase_two: Any) -> dict[str, Any]:
     return {
         "internal_row_count": len(internal_rows),
         "public_row_count": len(public_rows),
+        "unrestricted_internal_row_count": unrestricted_internal_rows,
+        "unrestricted_rows_released": projected_public_rows,
         "restricted_internal_row_count": len(restricted_rows),
         "restricted_rows_released_after_reviewed_projection": released_restricted_rows,
         "restricted_rows_omitted": omitted_restricted_rows,
+        "public_row_count_reconciled": (
+            projected_public_rows + released_restricted_rows
+        ),
+        "internal_row_count_reconciled": (
+            unrestricted_internal_rows + released_restricted_rows
+            + omitted_restricted_rows
+        ),
         "restricted_without_disclosure_policy_disposition": (
             "internal_only_no_public_row_release"
             if omitted_restricted_rows
@@ -2485,6 +2693,288 @@ def _public_release_accounting(phase_two: Any) -> dict[str, Any]:
         ),
         "reconciles": reconciles,
     }
+
+
+@dataclass(frozen=True)
+class _ReleaseIdentityMap:
+    """Map internal record identities to their permitted public identities."""
+
+    by_internal_uid: Mapping[str, str | None]
+    restricted_internal_uids: frozenset[str]
+
+    def translate(self, value: object) -> str | None:
+        uid = str(value or "").strip()
+        if not uid:
+            return None
+        return self.by_internal_uid.get(uid, uid)
+
+
+def _release_identity_map(phase_two: Any) -> _ReleaseIdentityMap:
+    """Build one authoritative UID projection for every release artifact."""
+
+    resolution = getattr(phase_two, "resolution", None)
+    canonical_rows = tuple(
+        dict(record) for record in getattr(resolution, "records", ())
+    )
+    aggregate_rows = tuple(
+        dict(record) for record in getattr(resolution, "aggregate_records", ())
+    )
+    canonical_classification_by_uid = {
+        str(row.get("record_uid") or "").strip(): row.get("data_classification")
+        for row in canonical_rows
+        if str(row.get("record_uid") or "").strip()
+    }
+    normalized_aggregate_rows: list[dict[str, Any]] = []
+    for raw_aggregate in aggregate_rows:
+        aggregate = dict(raw_aggregate)
+        source_uids = tuple(
+            str(uid).strip()
+            for uid in aggregate.get("source_record_uids", ())
+            if str(uid).strip()
+        )
+        if not source_uids or any(
+            uid not in canonical_classification_by_uid for uid in source_uids
+        ):
+            raise ReportingError(
+                "Aggregate release identity requires known canonical source records"
+            )
+        source_classifications = {
+            canonical_classification_by_uid[uid] for uid in source_uids
+        }
+        if len(source_classifications) != 1:
+            raise ReportingError(
+                "Aggregate release identity has inconsistent source classification"
+            )
+        source_classification = next(iter(source_classifications))
+        aggregate_classification = aggregate.get("data_classification")
+        if aggregate_classification not in {None, source_classification}:
+            raise ReportingError(
+                "Aggregate release identity has inconsistent source classification"
+            )
+        aggregate["data_classification"] = source_classification
+        normalized_aggregate_rows.append(aggregate)
+    aggregate_rows = tuple(normalized_aggregate_rows)
+    internal_rows = canonical_rows + aggregate_rows
+    internal_by_uid = {
+        str(row.get("record_uid") or "").strip(): row
+        for row in internal_rows
+        if str(row.get("record_uid") or "").strip()
+    }
+    if len(internal_by_uid) != len(internal_rows):
+        raise ReportingError(
+            "Release identity projection requires unique nonempty record IDs"
+        )
+    restricted_policy = getattr(
+        getattr(phase_two, "source_data_policy", None),
+        "restricted_policy",
+        None,
+    )
+    projected_by_internal: dict[str, str] = {}
+    if restricted_policy is not None:
+        # A one-row projection gives an unambiguous internal-to-public binding.
+        # It also reuses the exact disclosure-review digest already validated for
+        # the complete canonical projection rather than reproducing pseudonym logic.
+        public_rows = _public_release_rows(phase_two, canonical_rows)
+        public_iter = iter(public_rows)
+        for internal_row in canonical_rows:
+            projected = next(public_iter, None)
+            if projected is None:
+                raise ReportingError(
+                    "Restricted-data public identity projection did not reconcile"
+                )
+            internal_uid = str(internal_row["record_uid"])
+            release_uid = str(projected.get("release_record_uid") or "").strip()
+            if internal_row.get("data_classification") == "restricted":
+                if projected.get("data_classification") != "public_deidentified" or not release_uid:
+                    raise ReportingError(
+                        "Reviewed restricted row lacks a deidentified public identity"
+                    )
+                projected_by_internal[internal_uid] = release_uid
+        if next(public_iter, None) is not None:
+            raise ReportingError(
+                "Restricted-data public identity projection produced extra rows"
+            )
+    mapping: dict[str, str | None] = {}
+    restricted: set[str] = set()
+    for uid, row in internal_by_uid.items():
+        if row.get("data_classification") == "restricted":
+            restricted.add(uid)
+            mapping[uid] = projected_by_internal.get(uid)
+        else:
+            mapping[uid] = uid
+    return _ReleaseIdentityMap(
+        by_internal_uid=MappingProxyType(mapping),
+        restricted_internal_uids=frozenset(restricted),
+    )
+
+
+_UID_SEQUENCE_FIELDS = frozenset(
+    {
+        "all_evidence_record_uids",
+        "record_uids",
+        "selected_record_uids",
+        "source_record_uids",
+    }
+)
+_UID_SCALAR_FIELDS = frozenset(
+    {
+        "canonical_record_uid",
+        "duplicate_of_record_uid",
+        "membership_record_uid",
+        "record_uid",
+        "series_review_record_uid",
+        "source_record_uid",
+        "subject_id",
+    }
+)
+
+
+def _project_release_uid_sequence(
+    values: object,
+    identities: _ReleaseIdentityMap,
+) -> tuple[tuple[str, ...], int, int]:
+    if values is None:
+        materialized: tuple[object, ...] = ()
+    elif isinstance(values, (str, bytes)):
+        materialized = (values,)
+    elif isinstance(values, Iterable):
+        materialized = tuple(values)
+    else:
+        materialized = (values,)
+    projected: list[str] = []
+    omitted = 0
+    for value in materialized:
+        translated = identities.translate(value)
+        if translated is None:
+            omitted += 1
+        else:
+            projected.append(translated)
+    return tuple(projected), len(materialized), omitted
+
+
+def _project_release_uid_fields(
+    row: Mapping[str, Any],
+    identities: _ReleaseIdentityMap,
+    *,
+    omit_restricted_identity_rows: bool = False,
+) -> dict[str, Any] | None:
+    """Translate known record links without exposing restricted internal IDs."""
+
+    projected = dict(row)
+    if omit_restricted_identity_rows:
+        for field in _UID_SCALAR_FIELDS:
+            value = projected.get(field)
+            if str(value or "").strip() in identities.restricted_internal_uids:
+                if identities.translate(value) is None:
+                    return None
+    for field in _UID_SEQUENCE_FIELDS:
+        if field not in projected:
+            continue
+        values, internal_count, omitted_count = _project_release_uid_sequence(
+            projected[field],
+            identities,
+        )
+        projected[field] = values
+        prefix = field.removesuffix("_uids")
+        projected[f"{prefix}_internal_count"] = internal_count
+        projected[f"{prefix}_public_count"] = len(values)
+        projected[f"{prefix}_restricted_omitted_count"] = omitted_count
+    for field in _UID_SCALAR_FIELDS:
+        if field not in projected:
+            continue
+        original = projected[field]
+        translated = identities.translate(original)
+        projected[field] = translated
+        if str(original or "").strip() in identities.restricted_internal_uids:
+            projected[f"{field}_release_status"] = (
+                "public_deidentified"
+                if translated is not None
+                else "internal_only_omitted"
+            )
+    return {
+        key: _project_release_uid_value(nested, identities)
+        for key, nested in projected.items()
+    }
+
+
+def _project_release_uid_value(
+    value: Any,
+    identities: _ReleaseIdentityMap,
+    *,
+    key: str | None = None,
+) -> Any:
+    """Recursively translate UID-bearing nested records and result payloads."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(nested_key): _project_release_uid_value(
+                nested,
+                identities,
+                key=str(nested_key),
+            )
+            for nested_key, nested in value.items()
+        }
+    if isinstance(value, (tuple, list, set, frozenset)):
+        materialized = tuple(value)
+        if key in _UID_SEQUENCE_FIELDS:
+            return _project_release_uid_sequence(materialized, identities)[0]
+        return tuple(
+            _project_release_uid_value(nested, identities)
+            for nested in materialized
+        )
+    if isinstance(value, str) and value in identities.restricted_internal_uids:
+        return identities.translate(value)
+    if key in _UID_SCALAR_FIELDS:
+        return identities.translate(value)
+    return value
+
+
+def _project_release_uid_rows(
+    rows: Iterable[Mapping[str, Any]],
+    identities: _ReleaseIdentityMap,
+    *,
+    omit_restricted_identity_rows: bool = False,
+) -> tuple[dict[str, Any], ...]:
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        release_row = _project_release_uid_fields(
+            row,
+            identities,
+            omit_restricted_identity_rows=omit_restricted_identity_rows,
+        )
+        if release_row is not None:
+            projected.append(release_row)
+    return tuple(projected)
+
+
+def _public_n_efficiency_rows(
+    phase_three: PhaseThreeResult | Any,
+    identities: _ReleaseIdentityMap,
+) -> tuple[dict[str, Any], ...]:
+    """Release record-grain efficiency rows only through the UID projection."""
+
+    return _project_release_uid_rows(
+        phase_three.evidence.efficiency_rows,
+        identities,
+        omit_restricted_identity_rows=True,
+    )
+
+
+def _public_qc_summary_rows(
+    rows: Iterable[Mapping[str, Any]],
+    identities: _ReleaseIdentityMap,
+) -> tuple[dict[str, Any], ...]:
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        release_row = _project_release_uid_fields(row, identities)
+        assert release_row is not None
+        if (
+            row.get("group_status") == "unresolved_record"
+            and release_row.get("series_review_record_uid") is None
+        ):
+            continue
+        projected.append(release_row)
+    return tuple(projected)
 
 
 def _final_cleaning_sensitivity_rows(
@@ -3034,6 +3524,16 @@ def _literature_verification_rows(phase_two: Any) -> tuple[dict[str, Any], ...]:
     )
 
 
+def _public_literature_verification_rows(
+    phase_two: Any,
+    identities: _ReleaseIdentityMap,
+) -> tuple[dict[str, Any], ...]:
+    return _project_release_uid_rows(
+        _literature_verification_rows(phase_two),
+        identities,
+    )
+
+
 def _table_artifacts(
     phase_two: Any,
     phase_three: PhaseThreeResult,
@@ -3049,19 +3549,28 @@ def _table_artifacts(
         phase_two,
         integrity,
     )
+    identities = _release_identity_map(phase_two)
     series_qc_rows, source_qc_rows = _qc_summary_tables(phase_two)
-    public_curated_rows = _public_release_rows(
-        phase_two,
-        phase_two.resolution.records,
+    public_series_qc_rows = _public_qc_summary_rows(series_qc_rows, identities)
+    public_source_qc_rows = _public_qc_summary_rows(source_qc_rows, identities)
+    public_curated_rows = _project_release_uid_rows(
+        _public_release_rows(
+            phase_two,
+            phase_two.resolution.records,
+        ),
+        identities,
     )
     final_cleaning_rows = (
         phase_two.final_cleaning.decision_rows
         if phase_two.final_cleaning is not None
         else ()
     )
-    public_final_cleaning_rows = _public_release_rows(
-        phase_two,
-        _with_record_release_metadata(phase_two, final_cleaning_rows),
+    public_final_cleaning_rows = _project_release_uid_rows(
+        _public_release_rows(
+            phase_two,
+            _with_record_release_metadata(phase_two, final_cleaning_rows),
+        ),
+        identities,
     )
     # Plan Section 10.2's set-level display rules. They are applied once, over
     # the whole attempt ledger, so the credible and selected subsets below stay
@@ -3118,7 +3627,7 @@ def _table_artifacts(
             ),
         ),
         "literature_verification": TableArtifact(
-            rows=_literature_verification_rows(phase_two),
+            rows=_public_literature_verification_rows(phase_two, identities),
             stable_key="literature_verification_uid",
         ),
         "analysis_candidates": TableArtifact(
@@ -3126,10 +3635,14 @@ def _table_artifacts(
             stable_key="candidate_id",
         ),
         "candidate_complete_case_membership": TableArtifact(
-            rows=tuple(
-                dict(row)
-                for _, preparation in phase_four.r_preparations
-                for row in preparation.membership_rows
+            rows=_project_release_uid_rows(
+                (
+                    dict(row)
+                    for _, preparation in phase_four.r_preparations
+                    for row in preparation.membership_rows
+                ),
+                identities,
+                omit_restricted_identity_rows=True,
             ),
         ),
         "candidate_complete_case_composition": TableArtifact(
@@ -3149,13 +3662,19 @@ def _table_artifacts(
             ),
         ),
         "analysis_pruned_families": TableArtifact(rows=tuple(asdict(item) for item in phase_four.registry.pruned_families)),
-        "curve_features": TableArtifact(rows=phase_three.evidence.curve_rows, stable_key="response_series_uid"),
+        "curve_features": TableArtifact(
+            rows=_project_release_uid_rows(
+                phase_three.evidence.curve_rows,
+                identities,
+            ),
+            stable_key="response_series_uid",
+        ),
         "economic_optima": TableArtifact(
             rows=phase_three.evidence.economic_optimum_rows,
             stable_key="economic_optimum_uid",
         ),
         "n_efficiency": TableArtifact(
-            rows=phase_three.evidence.efficiency_rows,
+            rows=_public_n_efficiency_rows(phase_three, identities),
             stable_key="efficiency_metric_uid",
         ),
         "efficiency_operating_points": TableArtifact(
@@ -3174,19 +3693,31 @@ def _table_artifacts(
             rows=phase_three.evidence.environmental_risk_rows,
             stable_key="environmental_risk_uid",
         ),
-        "series_evidence": TableArtifact(rows=series_evidence_rows, stable_key="response_series_uid"),
+        "series_evidence": TableArtifact(
+            rows=_project_release_uid_rows(series_evidence_rows, identities),
+            stable_key="response_series_uid",
+        ),
         "descriptive_summaries": TableArtifact(
             rows=descriptive_summary_rows,
             stable_key="summary_uid",
         ),
         "management_system_proximity": TableArtifact(
-            rows=tuple(asdict(row) for row in phase_four.management_system_proximity),
+            rows=_project_release_uid_rows(
+                (asdict(row) for row in phase_four.management_system_proximity),
+                identities,
+            ),
             stable_key="management_proximity_uid",
         ),
-        "series_qc": TableArtifact(rows=series_qc_rows, stable_key="series_qc_uid"),
-        "source_qc": TableArtifact(rows=source_qc_rows, stable_key="source_qc_uid"),
+        "series_qc": TableArtifact(
+            rows=public_series_qc_rows,
+            stable_key="series_qc_uid",
+        ),
+        "source_qc": TableArtifact(
+            rows=public_source_qc_rows,
+            stable_key="source_qc_uid",
+        ),
         "derived_curve_features": TableArtifact(
-            rows=phase_four.curve_rows,
+            rows=_project_release_uid_rows(phase_four.curve_rows, identities),
             stable_key="derived_curve_row_uid",
         ),
         "derived_curve_views": TableArtifact(
@@ -3199,7 +3730,10 @@ def _table_artifacts(
                     "dataset_version_membership_sha256": view.dataset_version_membership_sha256,
                     "source_combination_id": view.source_combination_id,
                     "source_families": view.source_families,
-                    "record_uids": view.record_uids,
+                    **(_project_release_uid_fields(
+                        {"record_uids": view.record_uids},
+                        identities,
+                    ) or {}),
                     "canonical_input_sha256": view.canonical_input_sha256,
                     "model_policy_sha256": view.model_policy_sha256,
                     "model_attempt_count": len(view.model_attempt_records),
@@ -3217,33 +3751,48 @@ def _table_artifacts(
             stable_key="derived_model_attempt_uid",
         ),
         "derived_model_predictions": TableArtifact(
-            rows=tuple(
-                row
-                for view in phase_four.derived_curve_views
-                for row in view.prediction_rows
+            rows=_project_release_uid_rows(
+                (
+                    row
+                    for view in phase_four.derived_curve_views
+                    for row in view.prediction_rows
+                ),
+                identities,
             ),
             stable_key="derived_prediction_uid",
         ),
         "derived_economic_optima": TableArtifact(
-            rows=tuple(
-                row
-                for view in phase_four.derived_curve_views
-                for row in view.economic_optimum_rows
+            rows=_project_release_uid_rows(
+                (
+                    row
+                    for view in phase_four.derived_curve_views
+                    for row in view.economic_optimum_rows
+                ),
+                identities,
             ),
             stable_key="derived_economic_optimum_uid",
         ),
         "dataset_versions": TableArtifact(
-            rows=tuple(asdict(version) for version in phase_four.dataset_versions),
+            rows=_project_release_uid_rows(
+                (asdict(version) for version in phase_four.dataset_versions),
+                identities,
+            ),
             stable_key="version_id",
         ),
         "eligibility_ledger": TableArtifact(
-            rows=_public_release_rows(phase_two, phase_two.eligibility.ledger),
+            rows=_project_release_uid_rows(
+                _public_release_rows(phase_two, phase_two.eligibility.ledger),
+                identities,
+            ),
             stable_key="release_record_uid",
         ),
         "analysis_eligibility_ledger": TableArtifact(
-            rows=_public_release_rows(
-                phase_two,
-                phase_two.analysis_eligibility.ledger,
+            rows=_project_release_uid_rows(
+                _public_release_rows(
+                    phase_two,
+                    phase_two.analysis_eligibility.ledger,
+                ),
+                identities,
             ),
             stable_key="release_record_uid",
         ),
@@ -3252,7 +3801,12 @@ def _table_artifacts(
             stable_key="factor_name",
         ),
         "model_attempts": TableArtifact(rows=attempt_display_rows, stable_key="model_attempt_uid"),
-        "model_predictions": TableArtifact(rows=phase_three.evidence.prediction_rows),
+        "model_predictions": TableArtifact(
+            rows=_project_release_uid_rows(
+                phase_three.evidence.prediction_rows,
+                identities,
+            )
+        ),
         "credible_models": TableArtifact(
             rows=tuple(
                 row
@@ -3266,7 +3820,10 @@ def _table_artifacts(
             stable_key="model_attempt_uid",
         ),
         "python_analysis_execution": TableArtifact(
-            rows=tuple(asdict(result) for result in phase_four.python_results),
+            rows=_project_release_uid_rows(
+                (asdict(result) for result in phase_four.python_results),
+                identities,
+            ),
             stable_key="candidate_id",
         ),
         "selected_models": TableArtifact(
@@ -4098,6 +4655,87 @@ def _source_scope_snapshot_stage_writer(
     return write_source_scope_snapshot
 
 
+def _restricted_uid_leak_validator(
+    restricted_internal_uids: Iterable[str],
+) -> Callable[[Path], None]:
+    """Fail promotion if a staged artifact contains an exact restricted UID."""
+
+    restricted = frozenset(
+        str(uid).strip() for uid in restricted_internal_uids if str(uid).strip()
+    )
+
+    def validate(stage_root: Path) -> None:
+        if not restricted:
+            return
+
+        def assert_safe(value: Any, *, artifact_path: Path) -> None:
+            if isinstance(value, Mapping):
+                for key, nested in value.items():
+                    assert_safe(key, artifact_path=artifact_path)
+                    assert_safe(nested, artifact_path=artifact_path)
+            elif isinstance(value, (tuple, list, set, frozenset)):
+                for nested in value:
+                    assert_safe(nested, artifact_path=artifact_path)
+            elif isinstance(value, str) and value in restricted:
+                raise ReportingError(
+                    "Staged public artifact contains a restricted internal record "
+                    f"identity: {artifact_path.relative_to(stage_root).as_posix()}"
+                )
+
+        for path in sorted(stage_root.rglob("*")):
+            if not path.is_file():
+                continue
+            suffix = path.suffix.casefold()
+            try:
+                if suffix == ".json":
+                    assert_safe(
+                        json.loads(path.read_text(encoding="utf-8")),
+                        artifact_path=path,
+                    )
+                elif suffix == ".jsonl":
+                    for line in path.read_text(encoding="utf-8").splitlines():
+                        if line.strip():
+                            assert_safe(json.loads(line), artifact_path=path)
+                elif suffix == ".csv":
+                    import csv
+
+                    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                        for row in csv.reader(handle):
+                            for value in row:
+                                decoded: Any = value
+                                if value[:1] in {"[", "{"}:
+                                    try:
+                                        decoded = json.loads(value)
+                                    except json.JSONDecodeError:
+                                        pass
+                                assert_safe(decoded, artifact_path=path)
+                elif suffix == ".parquet":
+                    import pandas as pd
+
+                    frame = pd.read_parquet(path)
+                    for column in frame.columns:
+                        assert_safe(str(column), artifact_path=path)
+                        for value in frame[column].dropna().tolist():
+                            if isinstance(value, str) and value[:1] in {"[", "{"}:
+                                try:
+                                    value = json.loads(value)
+                                except json.JSONDecodeError:
+                                    pass
+                            assert_safe(value, artifact_path=path)
+                elif suffix in {".txt", ".md"}:
+                    # Text artifacts are scanned token-wise so an unrelated hash
+                    # containing the UID merely as a substring is not rejected.
+                    tokens = re.findall(r"[A-Za-z0-9_.:-]+", path.read_text(encoding="utf-8"))
+                    assert_safe(tokens, artifact_path=path)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                raise ReportingError(
+                    "Restricted-record leak scan could not parse staged artifact: "
+                    f"{path.relative_to(stage_root).as_posix()}"
+                ) from exc
+
+    return validate
+
+
 def _strict_release_validator(
     config: ValidatedConfig,
 ) -> Callable[[Mapping[str, Any]], None]:
@@ -4225,7 +4863,11 @@ def release_phases_three_to_five(
         if literature_verification_rows
         else {"status": "not_configured"}
     )
-    identity_payload = {
+    # Materialize a detached, public-safe identity snapshot.  The governance
+    # stage writers add archive paths to their manifest sections later; those
+    # operational annotations must not mutate the already-hashed run identity
+    # through shared nested dictionaries.
+    identity_payload = _redact({
         "config_sha256": sha256_file(config.config_path),
         "code_sha256": _code_fingerprint(),
         "policy_content_sha256": policy_snapshot.policy_content_sha256,
@@ -4244,7 +4886,7 @@ def release_phases_three_to_five(
         "effective_curve_model_policy_sha256": (
             phase_three.model_policy_sha256
         ),
-    }
+    })
     run_identity_sha256 = stable_json_sha256(identity_payload)
     source_registry = _source_registry(
         config,
@@ -4261,7 +4903,20 @@ def release_phases_three_to_five(
         ),
     )
     contextual_coverage = _contextual_coverage_summary(phase_two.curation.records)
+    release_identities = _release_identity_map(phase_two)
     series_qc_rows, source_qc_rows = _qc_summary_tables(phase_two)
+    critical_public_uids, critical_internal_count, critical_omitted_count = (
+        _project_release_uid_sequence(
+            phase_two.qc.critical_record_uids,
+            release_identities,
+        )
+    )
+    review_internal_uids = tuple(
+        sorted(str(row["record_uid"]) for row in phase_two.qc.review_rows)
+    )
+    review_public_uids, review_internal_count, review_omitted_count = (
+        _project_release_uid_sequence(review_internal_uids, release_identities)
+    )
     r_stage_statuses: list[dict[str, Any]] = []
     r_stage_result_rows: dict[str, tuple[dict[str, Any], ...]] = {}
     multiplicity_reconciliation: dict[str, Any] = {}
@@ -4333,7 +4988,10 @@ def release_phases_three_to_five(
             phase_two.analysis_eligibility.ledger
         ),
         "tier_counts": dict(phase_two.qc.tier_counts),
-        "critical_record_uids": list(phase_two.qc.critical_record_uids),
+        "critical_record_uids": list(critical_public_uids),
+        "critical_record_internal_count": critical_internal_count,
+        "critical_record_public_count": len(critical_public_uids),
+        "critical_record_restricted_omitted_count": critical_omitted_count,
         "qc_summary": {
             "gate_policy": config.raw["run"]["qc_gate"],
             "reconciles": phase_two.qc.reconciles,
@@ -4356,7 +5014,10 @@ def release_phases_three_to_five(
                 == phase_two.qc.inventory_rows
             ),
             "review_record_count": len(phase_two.qc.review_rows),
-            "review_record_uids": sorted(str(row["record_uid"]) for row in phase_two.qc.review_rows),
+            "review_record_uids": list(review_public_uids),
+            "review_record_internal_count": review_internal_count,
+            "review_record_public_count": len(review_public_uids),
+            "review_record_restricted_omitted_count": review_omitted_count,
             "reason_counts": dict(phase_two.qc.reason_counts),
             "row_level_qc_enabled": config.raw["outputs"]["row_level_qc"],
         },
@@ -4577,6 +5238,7 @@ def release_phases_three_to_five(
                 manifest,
                 terminal_state,
                 review_gate_policy=policy_snapshot.review_gate_policy,
+                release_identities=release_identities,
             ),
         ),
         write_run_log,
@@ -4600,6 +5262,9 @@ def release_phases_three_to_five(
             source_roots=_source_target_paths(config),
             stage_writers=stage_writers,
             release_validator=_strict_release_validator(config),
+            staged_artifact_validator=_restricted_uid_leak_validator(
+                release_identities.restricted_internal_uids
+            ),
         )
     except ReportingError as exc:
         raise ConfigError(f"Phase 5 controlled release failed: {exc}") from exc
