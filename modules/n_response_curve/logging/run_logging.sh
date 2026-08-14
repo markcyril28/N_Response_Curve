@@ -45,13 +45,16 @@ nrc_log_level_rank() {
 
 nrc_colors_enabled() {
   local requested="${NRC_CONSOLE_COLOR:-}"
-  if [[ -n "${NO_COLOR+x}" || "${TERM:-}" == "dumb" ]]; then
+  if [[ -n "${NO_COLOR+x}" ]]; then
     return 1
   fi
   case "${requested,,}" in
     0|false|never) return 1 ;;
     1|true|always) return 0 ;;
   esac
+  if [[ "${TERM:-}" == "dumb" ]]; then
+    return 1
+  fi
   [[ -t 1 || -t 2 ]]
 }
 
