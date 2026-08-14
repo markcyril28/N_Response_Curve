@@ -595,7 +595,11 @@ def _nutrient_unit_controls(
     return MappingProxyType(controls)
 
 
-def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
+def _source_maps(
+    payload: Mapping[str, Any],
+    *,
+    designated_reviewers: tuple[str, ...],
+) -> Mapping[str, ReviewedSourceMap]:
     maps: dict[str, ReviewedSourceMap] = {}
     for index, record in enumerate(_records(payload, where="source maps")):
         where = f"source maps record {index}"
@@ -719,12 +723,110 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                 raise SourceDataPolicyError(
                     f"{where}.arms[{arm_index}].constants must be an object"
                 )
+            arm_id_text = _nonempty_text(
+                raw_arm.get("arm_id"),
+                where=f"{where}.arms[{arm_index}].arm_id",
+            )
+            raw_arm_representation_basis = raw_arm.get("representation_basis")
+            arm_representation_basis = (
+                _nonempty_text(
+                    raw_arm_representation_basis,
+                    where=f"{where}.arms[{arm_index}].representation_basis",
+                )
+                if raw_arm_representation_basis is not None
+                else None
+            )
+            if (
+                arm_representation_basis is not None
+                and arm_representation_basis not in KNOWN_REPRESENTATION_BASES
+            ):
+                raise SourceDataPolicyError(
+                    f"{where}.arms[{arm_index}].representation_basis is not a "
+                    "supported category"
+                )
+            arm_representation_basis_status = _nonempty_text(
+                raw_arm.get("representation_basis_status", "review_required"),
+                where=f"{where}.arms[{arm_index}].representation_basis_status",
+            )
+            if arm_representation_basis_status not in {"review_required", "reviewed"}:
+                raise SourceDataPolicyError(
+                    f"{where}.arms[{arm_index}].representation_basis_status is "
+                    "unsupported"
+                )
+            raw_arm_representation_evidence = raw_arm.get(
+                "representation_basis_evidence"
+            )
+            if raw_arm_representation_evidence is None:
+                arm_representation_review_id = None
+                arm_representation_reviewer = None
+                arm_representation_reviewed_on = None
+                arm_representation_rationale = None
+            elif not isinstance(raw_arm_representation_evidence, Mapping):
+                raise SourceDataPolicyError(
+                    f"{where}.arms[{arm_index}].representation_basis_evidence "
+                    "must be an object"
+                )
+            else:
+                arm_evidence_where = (
+                    f"{where}.arms[{arm_index}].representation_basis_evidence"
+                )
+                arm_representation_review_id = _nonempty_text(
+                    raw_arm_representation_evidence.get("review_id"),
+                    where=f"{arm_evidence_where}.review_id",
+                )
+                arm_representation_reviewer = _nonempty_text(
+                    raw_arm_representation_evidence.get("reviewer"),
+                    where=f"{arm_evidence_where}.reviewer",
+                )
+                if arm_representation_reviewer not in designated_reviewers:
+                    raise SourceDataPolicyError(
+                        f"{arm_evidence_where}.reviewer is not in the designated "
+                        "reviewer registry"
+                    )
+                arm_representation_reviewed_on = _iso_date(
+                    raw_arm_representation_evidence.get("reviewed_on"),
+                    where=f"{arm_evidence_where}.reviewed_on",
+                )
+                arm_representation_rationale = _nonempty_text(
+                    raw_arm_representation_evidence.get("rationale"),
+                    where=f"{arm_evidence_where}.rationale",
+                )
+                arm_evidence_scope_kind = _nonempty_text(
+                    raw_arm_representation_evidence.get("scope_kind"),
+                    where=f"{arm_evidence_where}.scope_kind",
+                )
+                if arm_evidence_scope_kind != "source_arm":
+                    raise SourceDataPolicyError(
+                        f"{arm_evidence_where}.scope_kind must be source_arm"
+                    )
+                arm_evidence_arm_id = _nonempty_text(
+                    raw_arm_representation_evidence.get("arm_id"),
+                    where=f"{arm_evidence_where}.arm_id",
+                )
+                if arm_evidence_arm_id != arm_id_text:
+                    raise SourceDataPolicyError(
+                        f"{arm_evidence_where}.arm_id must match the enclosing "
+                        "arm_id"
+                    )
+            if (
+                arm_representation_basis_status == "reviewed"
+                and raw_arm_representation_evidence is None
+            ):
+                raise SourceDataPolicyError(
+                    f"{where}.arms[{arm_index}].representation_basis_evidence is "
+                    "required when status is reviewed"
+                )
+            if (
+                arm_representation_basis_status == "review_required"
+                and raw_arm_representation_evidence is not None
+            ):
+                raise SourceDataPolicyError(
+                    f"{where}.arms[{arm_index}].representation_basis_evidence "
+                    "cannot be completed while status is review_required"
+                )
             arms.append(
                 SourceArmMap(
-                    arm_id=_nonempty_text(
-                        raw_arm.get("arm_id"),
-                        where=f"{where}.arms[{arm_index}].arm_id",
-                    ),
+                    arm_id=arm_id_text,
                     role=_nonempty_text(
                         raw_arm.get("role"),
                         where=f"{where}.arms[{arm_index}].role",
@@ -786,6 +888,12 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
                         if raw_arm.get("recommendation_set_review_id") is not None
                         else None
                     ),
+                    representation_basis=arm_representation_basis,
+                    representation_basis_status=arm_representation_basis_status,
+                    representation_basis_review_id=arm_representation_review_id,
+                    representation_basis_reviewer=arm_representation_reviewer,
+                    representation_basis_reviewed_on=arm_representation_reviewed_on,
+                    representation_basis_rationale=arm_representation_rationale,
                 )
             )
         source_sha256 = _nonempty_text(
@@ -842,6 +950,62 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
             raise SourceDataPolicyError(
                 f"{where}.representation_basis is not a supported category"
             )
+        representation_basis_status = _nonempty_text(
+            record.get("representation_basis_status", "review_required"),
+            where=f"{where}.representation_basis_status",
+        )
+        if representation_basis_status not in {"review_required", "reviewed"}:
+            raise SourceDataPolicyError(
+                f"{where}.representation_basis_status is unsupported"
+            )
+        raw_representation_evidence = record.get("representation_basis_evidence")
+        if raw_representation_evidence is None:
+            representation_review_id = None
+            representation_reviewer = None
+            representation_reviewed_on = None
+            representation_rationale = None
+            representation_scope_kind = None
+        elif not isinstance(raw_representation_evidence, Mapping):
+            raise SourceDataPolicyError(
+                f"{where}.representation_basis_evidence must be an object"
+            )
+        else:
+            evidence_where = f"{where}.representation_basis_evidence"
+            representation_review_id = _nonempty_text(
+                raw_representation_evidence.get("review_id"),
+                where=f"{evidence_where}.review_id",
+            )
+            representation_reviewer = _nonempty_text(
+                raw_representation_evidence.get("reviewer"),
+                where=f"{evidence_where}.reviewer",
+            )
+            if representation_reviewer not in designated_reviewers:
+                raise SourceDataPolicyError(
+                    f"{evidence_where}.reviewer is not in the designated reviewer registry"
+                )
+            representation_reviewed_on = _iso_date(
+                raw_representation_evidence.get("reviewed_on"),
+                where=f"{evidence_where}.reviewed_on",
+            )
+            representation_rationale = _nonempty_text(
+                raw_representation_evidence.get("rationale"),
+                where=f"{evidence_where}.rationale",
+            )
+            representation_scope_kind = _nonempty_text(
+                raw_representation_evidence.get("scope_kind"),
+                where=f"{evidence_where}.scope_kind",
+            )
+        if representation_basis_status == "reviewed" and raw_representation_evidence is None:
+            raise SourceDataPolicyError(
+                f"{where}.representation_basis_evidence is required when status is reviewed"
+            )
+        if (
+            representation_basis_status == "review_required"
+            and raw_representation_evidence is not None
+        ):
+            raise SourceDataPolicyError(
+                f"{where}.representation_basis_evidence cannot be completed while status is review_required"
+            )
         nutrient_unit_controls = _nutrient_unit_controls(
             record.get("nutrient_unit_controls"),
             where=f"{where}.nutrient_unit_controls",
@@ -885,11 +1049,12 @@ def _source_maps(payload: Mapping[str, Any]) -> Mapping[str, ReviewedSourceMap]:
             ),
             dispositions=tuple(dispositions),
             representation_basis=representation_basis,
-            representation_basis_status=(
-                "reviewed"
-                if raw_representation_basis is not None
-                else "review_required"
-            ),
+            representation_basis_status=representation_basis_status,
+            representation_basis_review_id=representation_review_id,
+            representation_basis_reviewer=representation_reviewer,
+            representation_basis_reviewed_on=representation_reviewed_on,
+            representation_basis_rationale=representation_rationale,
+            representation_basis_scope_kind=representation_scope_kind,
             fill_down_headers=_string_tuple(
                 record.get("fill_down_headers", []),
                 where=f"{where}.fill_down_headers",
@@ -1651,6 +1816,10 @@ def _duplicate_adjudications(
                     record.get("rationale"),
                     where=f"{where}.rationale",
                 ),
+                record_uids=_string_tuple(
+                    record.get("record_uids"),
+                    where=f"{where}.record_uids",
+                ),
             )
         )
     return tuple(adjudications)
@@ -1964,7 +2133,10 @@ def load_source_data_policy_manifest(
         secrets=secrets,
     )
     source_scope = _source_scope(artifacts["source_scope"])
-    source_maps = _source_maps(artifacts["source_maps"])
+    source_maps = _source_maps(
+        artifacts["source_maps"],
+        designated_reviewers=designated_reviewers,
+    )
     category_lookups, source_category_lookups = _category_lookups(
         artifacts["category_lookups"],
         known_source_names=source_scope,
