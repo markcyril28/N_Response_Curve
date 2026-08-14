@@ -1,7 +1,7 @@
 """Synthetic demonstration figures for `test`-mode release packages.
 
 `test` runs in this workspace resolve zero response series, so the phase 5 figure
-stage has nothing to draw and `figures/observed/` and `figures/fitted/` come out
+stage has nothing to draw and the observed, fitted, and overlay figure arms come out
 empty. A reviewer then has no way to see what the figure contract actually renders.
 This module supplies a fixed synthetic stand-in set, written to `figures/sample/`,
 that exercises the same `reporting.plots` entry points the real stage uses.
@@ -23,6 +23,7 @@ from n_response_curve.analysis.models import MODEL_ORDER, fit_candidate_model
 from n_response_curve.reporting.plots import (
     write_observed_series_figures,
     write_response_curve_figures,
+    write_source_series_overlay_figures,
 )
 
 
@@ -221,6 +222,7 @@ def _records_for(series_uid: str) -> tuple[dict[str, Any], ...]:
         {
             "record_uid": f"{series_uid}__obs{index:02d}",
             "response_series_uid": series_uid,
+            "source_name": "synthetic_demonstration",
             "n_rate_kg_ha": n_rate,
             "yield_t_ha": yield_value,
             "treatment_text_class": treatment,
@@ -296,9 +298,11 @@ def write_sample_figures(
     unsupported: list[str] = []
     observed_count = 0
     fitted_count = 0
+    records_by_series = {
+        series_uid: _records_for(series_uid) for series_uid in SAMPLE_SERIES
+    }
 
-    for series_uid in SAMPLE_SERIES:
-        records = _records_for(series_uid)
+    for series_uid, records in records_by_series.items():
         evidence_row = (
             SAMPLE_EVIDENCE_ROW
             if series_uid == SAMPLE_EVIDENCE_ROW["response_series_uid"]
@@ -363,6 +367,29 @@ def write_sample_figures(
                 )
             )
 
+    overlay_paths = write_source_series_overlay_figures(
+        tuple(
+            row
+            for series_uid in SAMPLE_SERIES
+            for row in records_by_series[series_uid]
+        ),
+        "synthetic_demonstration",
+        response_series_uids=tuple(SAMPLE_SERIES),
+        output_root=root / "overlay",
+        formats=formats,
+    )
+    written.extend(overlay_paths)
+    index_rows.append(
+        (
+            "all synthetic series",
+            "—",
+            "all-series observed overlay",
+            "n/a",
+            "n/a",
+            f"overlay/{overlay_paths[0].stem}",
+        )
+    )
+
     index_path = _write_index(
         root,
         index_rows,
@@ -373,7 +400,10 @@ def write_sample_figures(
 
     summary = {
         "status": "synthetic_demonstration_substituted",
-        "reason": "no response series resolved, so no observed or fitted figure was renderable",
+        "reason": (
+            "no response series resolved, so no run-output observed, fitted, or overlay "
+            "figure was renderable"
+        ),
         "scientific_status": "illustration_only_not_run_output_not_citable",
         "directory": SAMPLE_FIGURE_DIRECTORY,
         "index_path": f"{SAMPLE_FIGURE_DIRECTORY}/INDEX.md",
@@ -381,6 +411,7 @@ def write_sample_figures(
         "series_uids": list(SAMPLE_SERIES),
         "observed_figure_count": observed_count,
         "fitted_figure_count": fitted_count,
+        "overlay_figure_count": 1,
         "artifact_count": len(written),
         "unsupported_attempts": unsupported,
         "unreviewed_substituted_controls": list(substituted),
