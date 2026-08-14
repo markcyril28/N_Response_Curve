@@ -453,6 +453,7 @@ def _reasons_for_candidate(
     analysis_family: str,
     support_policy: Mapping[str, int | float] | None,
     first_stage_uncertainty_policy: Mapping[str, Any],
+    enforce_first_stage_uncertainty: bool = True,
 ) -> tuple[str, tuple[str, ...], int, Mapping[str, int], Mapping[str, int]]:
     if version.status != "available":
         return "skipped", tuple(version.reason_codes or ("DATASET_VERSION_UNAVAILABLE",)), 0, {}, {}
@@ -532,7 +533,10 @@ def _reasons_for_candidate(
             reasons.append("INSUFFICIENT_CLASS_EVENTS_PER_PARAMETER")
     if reasons:
         return "pruned", tuple(sorted(reasons)), independent_studies, cell_counts, cell_study_counts
-    if analysis_family in _FITTED_FEATURE_INFERENTIAL_FAMILIES:
+    if (
+        enforce_first_stage_uncertainty
+        and analysis_family in _FITTED_FEATURE_INFERENTIAL_FAMILIES
+    ):
         policy_reasons = first_stage_policy_reasons(
             rows,
             curve_outcome,
