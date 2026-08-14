@@ -2342,19 +2342,55 @@ def _figure_stage_writer(
             + ", ".join(unknown_attempt_models)
         )
 
+    eligibility_policy = config.raw["eligibility"]
+    minimum_complete = int(eligibility_policy["minimum_complete_n_yield"])
+    minimum_distinct_n = int(eligibility_policy["minimum_distinct_n_levels"])
+    observed_metrics_by_series: dict[str, tuple[int, int]] = {}
+    finite_observed_series: set[str] = set()
+    for record in phase_three.input_records:
+        response_series_uid = str(record.get("response_series_uid") or "").strip()
+        if not response_series_uid:
+            continue
+        complete_count = record.get("series_complete_observation_count")
+        distinct_n_count = record.get("series_distinct_n_level_count")
+        if (
+            isinstance(complete_count, bool)
+            or not isinstance(complete_count, int)
+            or isinstance(distinct_n_count, bool)
+            or not isinstance(distinct_n_count, int)
+        ):
+            raise ReportingError(
+                "Observed figure series lacks canonical eligibility metrics: "
+                f"{response_series_uid}"
+            )
+        metrics = (complete_count, distinct_n_count)
+        prior_metrics = observed_metrics_by_series.setdefault(response_series_uid, metrics)
+        if prior_metrics != metrics:
+            raise ReportingError(
+                "Observed figure series has inconsistent eligibility metrics: "
+                f"{response_series_uid}"
+            )
+        if record.get("n_rate_kg_ha") is not None and record.get("yield_t_ha") is not None:
+            finite_observed_series.add(response_series_uid)
+    observed_series = sorted(
+        response_series_uid
+        for response_series_uid in finite_observed_series
+        if observed_metrics_by_series[response_series_uid][0] >= minimum_complete
+        and observed_metrics_by_series[response_series_uid][1] >= minimum_distinct_n
+    )
+    sparse_series_count = len(finite_observed_series) - len(observed_series)
+    if sparse_series_count:
+        report_sections.setdefault("unsupported", []).append(
+            f"{sparse_series_count} resolved series below the governed observed-figure minimum "
+            f"({minimum_complete} complete N/yield observations and {minimum_distinct_n} "
+            "distinct N levels) remain in the QC ledgers and were not rendered as response "
+            "curves."
+        )
+
     def write_figures(stage_root: Path) -> tuple[Path, ...]:
         figures: list[Path] = []
         observed_counts_by_source: Counter[str] = Counter()
         fitted_counts_by_source_model: Counter[tuple[str, str]] = Counter()
-        observed_series = sorted(
-            {
-                str(record["response_series_uid"])
-                for record in phase_three.input_records
-                if record.get("response_series_uid")
-                and record.get("n_rate_kg_ha") is not None
-                and record.get("yield_t_ha") is not None
-            }
-        )
         for response_series_uid in observed_series:
             source_name = source_by_series.get(response_series_uid)
             if source_name is None:
