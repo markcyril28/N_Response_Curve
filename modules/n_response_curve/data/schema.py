@@ -109,6 +109,8 @@ class YieldNormalization:
     unit_status: str
     source_unit: str | None
     conversion: str | None = None
+    precedence_policy: str = "require_consistency"
+    precedence_review_id: str | None = None
     review_required: bool = False
     review_reasons: tuple[str, ...] = ()
 
@@ -273,6 +275,13 @@ def normalize_yield(
                 "consistent",
                 "both",
                 conversion="kg_ha / 1000 == t_ha",
+                precedence_policy=both_present_policy,
+                precedence_review_id=(
+                    precedence_review_id.strip()
+                    if isinstance(precedence_review_id, str)
+                    and precedence_review_id.strip()
+                    else None
+                ),
             )
         if both_present_policy == "prefer_t_ha":
             return YieldNormalization(
@@ -281,6 +290,8 @@ def normalize_yield(
                 "t_preferred_reviewed",
                 "t_ha",
                 conversion="reviewed t_ha precedence over discordant kg_ha representation",
+                precedence_policy=both_present_policy,
+                precedence_review_id=precedence_review_id.strip(),
             )
         return YieldNormalization(
             None,
@@ -288,6 +299,13 @@ def normalize_yield(
             "conflict",
             "both",
             conversion="kg_ha / 1000 compared with t_ha",
+            precedence_policy=both_present_policy,
+            precedence_review_id=(
+                precedence_review_id.strip()
+                if isinstance(precedence_review_id, str)
+                and precedence_review_id.strip()
+                else None
+            ),
             review_required=True,
             review_reasons=("YIELD_REPRESENTATION_CONFLICT",),
         )
@@ -305,15 +323,41 @@ def normalize_yield(
             "kg_converted",
             "kg_ha",
             conversion="kg_ha / 1000",
+            precedence_policy=both_present_policy,
+            precedence_review_id=(
+                precedence_review_id.strip()
+                if isinstance(precedence_review_id, str)
+                and precedence_review_id.strip()
+                else None
+            ),
         )
     if tonnes_value is not None and kilogram.status in missing_statuses:
-        return YieldNormalization(tonnes_value, "parsed", "t_provided", "t_ha")
+        return YieldNormalization(
+            tonnes_value,
+            "parsed",
+            "t_provided",
+            "t_ha",
+            precedence_policy=both_present_policy,
+            precedence_review_id=(
+                precedence_review_id.strip()
+                if isinstance(precedence_review_id, str)
+                and precedence_review_id.strip()
+                else None
+            ),
+        )
     if kilogram_value is not None or tonnes_value is not None:
         return YieldNormalization(
             None,
             "invalid_numeric",
             "conflict",
             "both",
+            precedence_policy=both_present_policy,
+            precedence_review_id=(
+                precedence_review_id.strip()
+                if isinstance(precedence_review_id, str)
+                and precedence_review_id.strip()
+                else None
+            ),
             review_required=True,
             review_reasons=("YIELD_REPRESENTATION_PARSE_CONFLICT",),
         )
@@ -322,6 +366,13 @@ def normalize_yield(
         _combined_missing_status(kilogram.status, tonnes.status),
         "missing",
         None,
+        precedence_policy=both_present_policy,
+        precedence_review_id=(
+            precedence_review_id.strip()
+            if isinstance(precedence_review_id, str)
+            and precedence_review_id.strip()
+            else None
+        ),
     )
 
 
