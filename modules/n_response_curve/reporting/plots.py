@@ -279,6 +279,96 @@ def create_observed_series_figure(
     return figure, axes
 
 
+def create_source_series_overlay_figure(
+    records: Iterable[Mapping[str, Any]],
+    source_name: str,
+    *,
+    response_series_uids: Sequence[str],
+):
+    """Overlay governed observed series without pooling or replacing their figures."""
+
+    if not isinstance(source_name, str) or not source_name.strip():
+        raise ValueError("A source-series overlay requires a nonempty source name")
+    selected_series = tuple(sorted(set(response_series_uids)))
+    if (
+        not selected_series
+        or any(not isinstance(series_uid, str) or not series_uid for series_uid in selected_series)
+        or len(selected_series) != len(tuple(response_series_uids))
+    ):
+        raise ValueError("A source-series overlay requires unique nonempty response series IDs")
+
+    observations_by_series: dict[str, list[dict[str, Any]]] = {
+        series_uid: [] for series_uid in selected_series
+    }
+    for record in records:
+        series_uid = record.get("response_series_uid")
+        if series_uid not in observations_by_series:
+            continue
+        if str(record.get("source_name") or "").strip() != source_name:
+            raise ValueError(
+                "Every selected response series row must belong to the requested overlay source"
+            )
+        n_rate = finite_number(record.get("n_rate_kg_ha"))
+        yield_value = finite_number(record.get("yield_t_ha"))
+        if n_rate is None or yield_value is None:
+            continue
+        observations_by_series[str(series_uid)].append(
+            {
+                "record_uid": str(record.get("record_uid", "")),
+                "n_rate_kg_ha": n_rate,
+                "yield_t_ha": yield_value,
+                "treatment_text_class": str(
+                    record.get("treatment_text_class", "unresolved")
+                ),
+            }
+        )
+    missing_series = [
+        series_uid
+        for series_uid, observations in observations_by_series.items()
+        if not observations
+    ]
+    if missing_series:
+        raise ValueError(
+            "A source-series overlay requires at least one finite N/yield pair for every "
+            "selected series"
+        )
+    for observations in observations_by_series.values():
+        observations.sort(
+            key=lambda row: (row["n_rate_kg_ha"], row["record_uid"])
+        )
+
+    figure, axes = plt.subplots(figsize=(10, 7), constrained_layout=True)
+    combined_observations = tuple(
+        observation
+        for series_uid in selected_series
+        for observation in observations_by_series[series_uid]
+    )
+    _plot_observations(axes, combined_observations)
+    line_label = "within-series connecting lines (visual aid; not a fit)"
+    for index, series_uid in enumerate(selected_series):
+        observations = observations_by_series[series_uid]
+        axes.plot(
+            [row["n_rate_kg_ha"] for row in observations],
+            [row["yield_t_ha"] for row in observations],
+            label=line_label if index == 0 else "_nolegend_",
+            color="grey",
+            linewidth=1,
+            alpha=0.35,
+            zorder=1,
+        )
+    n_values = [row["n_rate_kg_ha"] for row in combined_observations]
+    _finalize_axes(
+        axes,
+        (
+            f"source={source_name}",
+            "observed-series overlay (descriptive; no pooled curve or fit)",
+            f"series={len(selected_series)}; observations={len(combined_observations)}",
+            f"N range={min(n_values):g}-{max(n_values):g} kg/ha",
+        ),
+    )
+    return figure, axes
+
+
 def create_response_curve_figure(
     records: Iterable[Mapping[str, Any]],
     attempt: ModelAttempt,
@@ -481,13 +571,40 @@ def write_observed_series_figures(
     return _write_figure(figure, root=root, stem=stem, formats=normalized_formats)
 
 
+def write_source_series_overlay_figures(
+    records: Iterable[Mapping[str, Any]],
+    source_name: str,
+    *,
+    response_series_uids: Sequence[str],
+    output_root: str | Path,
+    formats: Sequence[str],
+) -> tuple[Path, ...]:
+    """Write one additive observed-series overlay per requested format."""
+
+    normalized_formats = _normalize_figure_formats(
+        formats,
+        figure_type="Source-series overlay",
+    )
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    figure, _ = create_source_series_overlay_figure(
+        records,
+        source_name,
+        response_series_uids=response_series_uids,
+    )
+    stem = sanitize_figure_directory_token(source_name, fallback="source")
+    return _write_figure(figure, root=root, stem=stem, formats=normalized_formats)
+
+
 __all__ = [
     "create_observed_series_figure",
     "create_response_curve_figure",
+    "create_source_series_overlay_figure",
     "model_attempt_display_rows",
     "prediction_rows",
     "sanitize_figure_directory_token",
     "sanitize_series_filename",
     "write_observed_series_figures",
     "write_response_curve_figures",
+    "write_source_series_overlay_figures",
 ]
