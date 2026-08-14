@@ -15,6 +15,38 @@ from n_response_curve.contracts import SUPPORTED_FIGURE_FORMATS
 
 _SAFE_FILENAME_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_SERIES_FILENAME_TOKEN_BYTES = 160
+_SAFE_DIRECTORY_TOKEN = re.compile(r"^[A-Za-z0-9_-]+$")
+_UNSAFE_DIRECTORY_TOKEN = re.compile(r"[^A-Za-z0-9_-]+")
+_MAX_DIRECTORY_TOKEN_BYTES = 80
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
+
+
+def sanitize_figure_directory_token(value: str, *, fallback: str) -> str:
+    """Return a deterministic portable directory token for figure grouping."""
+
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("Figure directory identity must be nonempty")
+    token = _UNSAFE_DIRECTORY_TOKEN.sub("_", normalized).strip("_") or fallback
+    safe_unchanged = (
+        token == normalized
+        and _SAFE_DIRECTORY_TOKEN.fullmatch(token) is not None
+        and token.upper() not in _WINDOWS_RESERVED_BASENAMES
+        and len(token.encode("utf-8")) <= _MAX_DIRECTORY_TOKEN_BYTES
+    )
+    if safe_unchanged:
+        return token
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    suffix = f"__{digest}"
+    byte_budget = _MAX_DIRECTORY_TOKEN_BYTES - len(suffix.encode("ascii"))
+    prefix = token.encode("utf-8")[:byte_budget].decode(
+        "utf-8", errors="ignore"
+    ).rstrip("_-")
+    return f"{prefix or fallback}{suffix}"
 
 
 def sanitize_series_filename(response_series_uid: str) -> str:
@@ -449,6 +481,7 @@ __all__ = [
     "create_response_curve_figure",
     "model_attempt_display_rows",
     "prediction_rows",
+    "sanitize_figure_directory_token",
     "sanitize_series_filename",
     "write_observed_series_figures",
     "write_response_curve_figures",
