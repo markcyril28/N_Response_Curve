@@ -13,6 +13,7 @@ import textwrap
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
+from PIL import Image
 
 from n_response_curve.contracts import SUPPORTED_FIGURE_FORMATS, SUPPORTED_TABLE_FORMATS
 from n_response_curve.data.provenance import sha256_file, stable_json_sha256
@@ -687,14 +688,48 @@ def _nonnegative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _verify_release_status(manifest: Mapping[str, Any]) -> None:
+    """Reject a pipeline package whose declared status was downgraded or renamed."""
+
+    status = manifest.get("status")
+    runtime_policy = manifest.get("runtime_policy")
+    run_identity = manifest.get("run_identity")
+    review_gate = manifest.get("review_gate")
+    declared_modes = {
+        str(candidate.get("mode"))
+        for candidate in (runtime_policy, run_identity, review_gate)
+        if isinstance(candidate, Mapping) and candidate.get("mode") is not None
+    }
+    pipeline_modes = declared_modes.intersection({"test", "full"})
+    expected_status = (
+        "phase_5_full_release_complete"
+        if pipeline_modes == {"full"}
+        else "phase_5_test_release_complete"
+        if pipeline_modes == {"test"}
+        else None
+    )
+    enforce_pipeline_status = status is not None or (
+        isinstance(runtime_policy, Mapping)
+        and runtime_policy.get("status") == "runtime_contract"
+    )
+    if enforce_pipeline_status and pipeline_modes and status != expected_status:
+        raise ReportingError(
+            "Release run manifest has an invalid release status for its pipeline mode"
+        )
+
+
 def _verify_manifest_artifact_inventory(
     checksums: Mapping[str, str],
     manifest: Mapping[str, Any],
 ) -> None:
-    """Reconcile the writer's pre-manifest inventory when it is advertised."""
+    """Reconcile the writer's pre-manifest inventory when it is required or advertised."""
 
     inventory = manifest.get("artifact_sha256_before_manifest")
     if inventory is None:
+        if manifest.get("status") in _PIPELINE_RELEASE_STATUSES:
+            raise ReportingError(
+                "Pipeline release is missing its required manifest artifact inventory"
+            )
         return
     expected = {
         relative: digest
@@ -713,6 +748,217 @@ def _verify_manifest_artifact_inventory(
     ):
         raise ReportingError(
             "Release run manifest artifact inventory does not reconcile with the package"
+        )
+
+
+def _verify_replacement_record(
+    target: Path,
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> None:
+    replacement = manifest.get("replacement")
+    record_relative = "replacement_record.json"
+    if replacement is None:
+        if record_relative in checksums:
+            raise ReportingError(
+                "Release replacement record is not bound by the run manifest"
+            )
+        return
+    if not isinstance(replacement, Mapping) or set(replacement) != {
+        "record_path",
+        "record_sha256",
+        "prior_manifest_sha256",
+        "preserved_prior_path",
+    }:
+        raise ReportingError("Release replacement metadata is invalid")
+    if replacement.get("record_path") != record_relative:
+        raise ReportingError("Release replacement record path is invalid")
+    record_sha256 = replacement.get("record_sha256")
+    if not isinstance(record_sha256, str) or checksums.get(record_relative) != record_sha256:
+        raise ReportingError("Release replacement record checksum is invalid")
+    record_path = target / record_relative
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReportingError("Release replacement record is unreadable") from exc
+    binding_fields = {
+        "schema_version",
+        "target_name",
+        "target_path_sha256",
+        "replacement_run_id",
+        "prior_manifest_sha256",
+        "preservation_policy",
+    }
+    if not isinstance(record, Mapping) or set(record) != binding_fields | {
+        "record_id",
+        "status",
+    }:
+        raise ReportingError("Release replacement record schema is invalid")
+    binding = {field: record.get(field) for field in binding_fields}
+    if (
+        record.get("schema_version") != "technical-release-replacement-v1"
+        or record.get("status") != "verified_prior_bound"
+        or record.get("preservation_policy") != "verify_then_preserve_prior_package"
+        or record.get("replacement_run_id") != manifest.get("run_id")
+        or record.get("prior_manifest_sha256")
+        != replacement.get("prior_manifest_sha256")
+        or record.get("record_id")
+        != f"technical-{stable_json_sha256(binding)[:24]}"
+    ):
+        raise ReportingError("Release replacement record binding is invalid")
+    target_name = record.get("target_name")
+    if (
+        not isinstance(target_name, str)
+        or not target_name
+        or Path(target_name).name != target_name
+    ):
+        raise ReportingError("Release replacement target name is invalid")
+    final_target = target.parent / target_name
+    is_stage_target = target.name.startswith(f".{target_name}.stage-")
+    if target.name != target_name and not is_stage_target:
+        raise ReportingError("Release replacement target does not match the package path")
+    if record.get("target_path_sha256") != _target_path_sha256(final_target):
+        raise ReportingError("Release replacement target identity is invalid")
+    record_id = str(record["record_id"])
+    prior_manifest_sha256 = str(record["prior_manifest_sha256"])
+    expected_preserved_path = (
+        Path(".release_history")
+        / target_name
+        / f"{prior_manifest_sha256[:16]}-{record_id}"
+        / "package"
+    )
+    if replacement.get("preserved_prior_path") != expected_preserved_path.as_posix():
+        raise ReportingError("Release replacement preservation path is invalid")
+    prior_package = final_target if is_stage_target else target.parent / expected_preserved_path
+    if prior_package.resolve() == target.resolve() or not prior_package.is_dir():
+        raise ReportingError("Release replacement prior package is missing")
+    prior_manifest = prior_package / "run_manifest.json"
+    if not prior_manifest.is_file() or sha256_file(prior_manifest) != prior_manifest_sha256:
+        raise ReportingError("Release replacement prior manifest identity is invalid")
+    try:
+        verify_release_package(prior_package)
+    except ReportingError as exc:
+        raise ReportingError("Release replacement prior package verification failed") from exc
+
+
+def _verify_table_artifacts(
+    target: Path,
+    checksums: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> None:
+    tables = manifest.get("tables")
+    checksummed_table_paths = {
+        relative for relative in checksums if relative.startswith("tables/")
+    }
+    if tables is None and not checksummed_table_paths:
+        return
+    if not isinstance(tables, Mapping):
+        raise ReportingError("Release table inventory must be an object")
+    referenced_paths: set[str] = set()
+    for table_name, metadata in tables.items():
+        if not isinstance(table_name, str) or not _SAFE_TABLE_NAME.fullmatch(table_name):
+            raise ReportingError("Release table inventory contains an unsafe table name")
+        if not isinstance(metadata, Mapping) or set(metadata) != {
+            "row_count",
+            "stable_key",
+            "column_names",
+            "artifact_paths",
+            "readback_row_counts",
+        }:
+            raise ReportingError(f"Release table {table_name!r} metadata is invalid")
+        row_count = metadata.get("row_count")
+        column_names = metadata.get("column_names")
+        stable_key = metadata.get("stable_key")
+        artifact_paths = metadata.get("artifact_paths")
+        readback_row_counts = metadata.get("readback_row_counts")
+        if not _nonnegative_integer(row_count):
+            raise ReportingError(f"Release table {table_name!r} row count is invalid")
+        if (
+            not isinstance(column_names, list)
+            or any(not isinstance(column, str) or not column for column in column_names)
+            or len(column_names) != len(set(column_names))
+        ):
+            raise ReportingError(f"Release table {table_name!r} column inventory is invalid")
+        if stable_key is not None and (
+            not isinstance(stable_key, str)
+            or not stable_key
+            or bool(column_names)
+            and stable_key not in column_names
+        ):
+            raise ReportingError(f"Release table {table_name!r} stable key is invalid")
+        if (
+            not isinstance(artifact_paths, list)
+            or not artifact_paths
+            or any(not isinstance(relative, str) for relative in artifact_paths)
+            or len(artifact_paths) != len(set(artifact_paths))
+            or not isinstance(readback_row_counts, Mapping)
+        ):
+            raise ReportingError(f"Release table {table_name!r} artifact inventory is invalid")
+        observed_formats: set[str] = set()
+        for relative in artifact_paths:
+            path = Path(relative)
+            output_format = path.suffix.casefold().lstrip(".")
+            if (
+                len(path.parts) not in {2, 3}
+                or path.parts[0] != "tables"
+                or path.stem != table_name
+                or output_format not in SUPPORTED_TABLE_FORMATS
+                or relative not in checksums
+                or relative in referenced_paths
+            ):
+                raise ReportingError(
+                    f"Release table {table_name!r} artifact path is invalid"
+                )
+            referenced_paths.add(relative)
+            observed_formats.add(output_format)
+            artifact_path = target / relative
+            try:
+                if output_format == "csv":
+                    try:
+                        readback = pd.read_csv(artifact_path)
+                    except pd.errors.EmptyDataError:
+                        if row_count == 0 and column_names == []:
+                            readback = pd.DataFrame()
+                        else:
+                            raise
+                elif output_format == "parquet":
+                    readback = pd.read_parquet(artifact_path)
+                else:
+                    readback = pd.read_excel(artifact_path)
+            except (
+                ImportError,
+                OSError,
+                TypeError,
+                UnicodeError,
+                ValueError,
+                pd.errors.ParserError,
+                pd.errors.EmptyDataError,
+            ) as exc:
+                raise ReportingError(
+                    f"Release table {table_name!r} {output_format} artifact failed read-back"
+                ) from exc
+            if len(readback) != row_count or list(map(str, readback.columns)) != column_names:
+                raise ReportingError(
+                    f"Release table {table_name!r} {output_format} read-back does not match its declared schema"
+                )
+            if stable_key is not None and stable_key in readback:
+                stable_values = readback[stable_key]
+                if bool(stable_values.isna().any()) or bool(
+                    stable_values.astype(str).duplicated().any()
+                ):
+                    raise ReportingError(
+                        f"Release table {table_name!r} {output_format} read-back stable key is invalid"
+                    )
+        if set(readback_row_counts) != observed_formats or any(
+            not _nonnegative_integer(value) or value != row_count
+            for value in readback_row_counts.values()
+        ):
+            raise ReportingError(
+                f"Release table {table_name!r} read-back counts do not reconcile"
+            )
+    if referenced_paths != checksummed_table_paths:
+        raise ReportingError(
+            "Release table inventory does not account for every checksummed table artifact"
         )
 
 
@@ -1014,7 +1260,29 @@ def _integer_count_map(value: Any, *, where: str) -> dict[str, int]:
     return dict(value)
 
 
+def _verify_raster_figure(path: Path, *, output_format: str) -> None:
+    expected_format = {"jpeg": "JPEG", "png": "PNG"}.get(output_format)
+    if expected_format is None:
+        raise ReportingError("Release figure artifact format is unsupported")
+    try:
+        with Image.open(path) as image:
+            detected_format = image.format
+            image.verify()
+        with Image.open(path) as image:
+            image.load()
+            dimensions = image.size
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise ReportingError(
+            f"Release figure failed image read-back validation: {path.name}"
+        ) from exc
+    if detected_format != expected_format or any(dimension < 1 for dimension in dimensions):
+        raise ReportingError(
+            f"Release figure failed image read-back validation: {path.name}"
+        )
+
+
 def _verify_run_figure_inventory(
+    target: Path,
     checksums: Mapping[str, str],
     manifest: Mapping[str, Any],
     figures: Mapping[str, Any],
@@ -1061,6 +1329,7 @@ def _verify_run_figure_inventory(
         output_format = relative_path.suffix.casefold().lstrip(".")
         if output_format not in formats:
             raise ReportingError("Release figure hierarchy contains an undeclared artifact format")
+        _verify_raster_figure(target / relative, output_format=output_format)
         parts = relative_path.parts
         if len(parts) == 4 and parts[:2] == ("figures", "observed"):
             source_name = source_by_token.get(parts[2])
@@ -1147,6 +1416,7 @@ def _verify_run_figure_inventory(
 
 
 def _verify_sample_figure_inventory(
+    target: Path,
     checksums: Mapping[str, str],
     manifest: Mapping[str, Any],
     figures: Mapping[str, Any],
@@ -1180,6 +1450,7 @@ def _verify_sample_figure_inventory(
             or not path.stem
         ):
             raise ReportingError("Synthetic sample figure artifact inventory is invalid")
+        _verify_raster_figure(target / relative, output_format=output_format)
         logical_path = path.with_suffix("").as_posix()
         if logical_path not in logical_formats:
             if parts[2] == "observed":
@@ -1204,6 +1475,7 @@ def _verify_sample_figure_inventory(
 
 
 def _verify_figure_inventory(
+    target: Path,
     checksums: Mapping[str, str],
     manifest: Mapping[str, Any],
 ) -> None:
@@ -1219,9 +1491,9 @@ def _verify_figure_inventory(
         raise ReportingError("Release run manifest figure inventory must be an object")
     status = figures.get("status")
     if status in {"run_output", "no_renderable_series"}:
-        _verify_run_figure_inventory(checksums, manifest, figures)
+        _verify_run_figure_inventory(target, checksums, manifest, figures)
     elif status == "synthetic_demonstration_substituted":
-        _verify_sample_figure_inventory(checksums, manifest, figures)
+        _verify_sample_figure_inventory(target, checksums, manifest, figures)
     else:
         raise ReportingError("Release run manifest figure inventory has an invalid status")
 
@@ -1301,10 +1573,13 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
             or expected.get(relative_path) != digest
         ):
             raise ReportingError("Release run manifest report-document metadata is invalid")
+    _verify_release_status(payload)
     _verify_manifest_artifact_inventory(expected, payload)
+    _verify_replacement_record(target, expected, payload)
     _verify_full_release_governance(target, expected, payload)
     _verify_review_issue_ledger(target, expected, payload)
-    _verify_figure_inventory(expected, payload)
+    _verify_figure_inventory(target, expected, payload)
+    _verify_table_artifacts(target, expected, payload)
     try:
         report_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
