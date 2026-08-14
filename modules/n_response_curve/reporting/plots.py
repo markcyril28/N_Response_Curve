@@ -105,10 +105,15 @@ def _plot_observations(axes: Any, observations: Sequence[Mapping[str, Any]]) -> 
     categories = sorted({str(row["treatment_text_class"]) for row in observations})
     for category in categories:
         category_rows = [row for row in observations if row["treatment_text_class"] == category]
+        observation_label = (
+            "observed (treatment class unresolved)"
+            if category.casefold() == "unresolved"
+            else f"observed {category}"
+        )
         axes.scatter(
             [row["n_rate_kg_ha"] for row in category_rows],
             [row["yield_t_ha"] for row in category_rows],
-            label=f"observed {category}",
+            label=observation_label,
             zorder=3,
         )
 
