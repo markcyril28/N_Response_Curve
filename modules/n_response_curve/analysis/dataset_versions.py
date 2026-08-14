@@ -29,6 +29,9 @@ DATASET_MEMBERSHIP_RULE_IDS = {
     version_id: f"dataset-membership:{version_id}:v1"
     for version_id in KNOWN_DATASET_VERSIONS
 }
+DATASET_MEMBERSHIP_RULE_IDS["D07_high_n_full_range"] = (
+    "dataset-membership:D07_high_n_full_range:v2"
+)
 
 
 @dataclass(frozen=True)
@@ -196,13 +199,47 @@ def _series_groups(
     return eligible
 
 
-def _complete_n_levels(rows: Sequence[Mapping[str, Any]]) -> set[float]:
-    return {
+def _complete_n_levels(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    tolerance: float = 0.0,
+) -> tuple[float, ...]:
+    values = sorted(
         n_rate
         for row in rows
         if (n_rate := finite_number(row.get("n_rate_kg_ha"))) is not None
         and finite_number(row.get("yield_t_ha")) is not None
-    }
+    )
+    levels: list[float] = []
+    for value in values:
+        if not levels or abs(value - levels[-1]) > tolerance:
+            levels.append(value)
+    return tuple(levels)
+
+
+def _supports_response_curve(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    minimum_complete_n_yield: int,
+    minimum_distinct_n_levels: int,
+    n_level_tolerance_kg_ha: float,
+) -> bool:
+    complete_count = sum(
+        1
+        for row in rows
+        if finite_number(row.get("n_rate_kg_ha")) is not None
+        and finite_number(row.get("yield_t_ha")) is not None
+    )
+    return (
+        complete_count >= minimum_complete_n_yield
+        and len(
+            _complete_n_levels(
+                rows,
+                tolerance=n_level_tolerance_kg_ha,
+            )
+        )
+        >= minimum_distinct_n_levels
+    )
 
 
 def _uids(groups: Iterable[Sequence[Mapping[str, Any]]]) -> tuple[str, ...]:
@@ -366,6 +403,9 @@ def _available_membership(
     records: Sequence[Mapping[str, Any]],
     *,
     recommendation_set_policy: Mapping[str, Any] | None,
+    minimum_complete_n_yield: int,
+    minimum_distinct_n_levels: int,
+    n_level_tolerance_kg_ha: float,
 ) -> DatasetVersion:
     all_uids = [_record_uid(record) for record in records]
     primary = _series_groups(records, allowed_tiers=frozenset({"A"}))
@@ -419,7 +459,19 @@ def _available_membership(
             ),
         )
     if version_id == "D07_high_n_full_range":
-        return _version(version_id, _uids(eligible.values()))
+        return _version(
+            version_id,
+            _uids(
+                rows
+                for rows in eligible.values()
+                if _supports_response_curve(
+                    rows,
+                    minimum_complete_n_yield=minimum_complete_n_yield,
+                    minimum_distinct_n_levels=minimum_distinct_n_levels,
+                    n_level_tolerance_kg_ha=n_level_tolerance_kg_ha,
+                )
+            ),
+        )
     if version_id == "D08_high_n_trimmed_sensitivity":
         trimmed_groups = []
         for rows in eligible.values():
@@ -491,6 +543,9 @@ def build_dataset_versions(
     *,
     version_names: Sequence[str],
     recommendation_set_policy: Mapping[str, Any] | None = None,
+    minimum_complete_n_yield: int = 3,
+    minimum_distinct_n_levels: int = 3,
+    n_level_tolerance_kg_ha: float = 1.0e-6,
     configuration_sha256: str | None = None,
     input_dataset_sha256: str | None = None,
 ) -> tuple[DatasetVersion, ...]:
@@ -502,6 +557,20 @@ def build_dataset_versions(
         raise ValueError(f"Unknown dataset version(s): {', '.join(sorted(unknown))}")
     if len(requested) != len(set(requested)):
         raise ValueError("Dataset version names must be unique")
+    for label, value in (
+        ("minimum_complete_n_yield", minimum_complete_n_yield),
+        ("minimum_distinct_n_levels", minimum_distinct_n_levels),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Dataset-version {label} must be a positive integer")
+    if (
+        isinstance(n_level_tolerance_kg_ha, bool)
+        or not isinstance(n_level_tolerance_kg_ha, (int, float))
+        or float(n_level_tolerance_kg_ha) < 0.0
+    ):
+        raise ValueError(
+            "Dataset-version n_level_tolerance_kg_ha must be a nonnegative number"
+        )
     if (configuration_sha256 is None) != (input_dataset_sha256 is None):
         raise ValueError(
             "Dataset-version identity requires both configuration and input-dataset SHA-256 values"
@@ -527,6 +596,9 @@ def build_dataset_versions(
             version_id,
             rows,
             recommendation_set_policy=recommendation_set_policy,
+            minimum_complete_n_yield=minimum_complete_n_yield,
+            minimum_distinct_n_levels=minimum_distinct_n_levels,
+            n_level_tolerance_kg_ha=float(n_level_tolerance_kg_ha),
         )
         for version_id in requested
     )
