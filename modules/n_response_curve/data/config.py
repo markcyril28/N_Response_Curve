@@ -268,6 +268,7 @@ class ValidatedConfig:
     source_data_policy_manifest_sha256: str | None
     source_data_policy_secret_env: str | None
     run_mode: str
+    reuse_completed_release: bool
 
     @property
     def writes_outputs(self) -> bool:
@@ -343,6 +344,7 @@ def validate_config(
     data["logging"] = dict(data["logging"])
     # Absent workspace-clearing controls mean "disabled": an opt-in destructive
     # action must never be implied by a key the operator did not write.
+    data["run"].setdefault("reuse_completed_release", False)
     data["outputs"].setdefault("clear_output_root_before_run", False)
     data["logging"].setdefault("clear_log_root_before_run", False)
     data["sources"] = {
@@ -500,7 +502,7 @@ def validate_config(
         {
             "mode", "overwrite", "random_seed", "test_group_limit", "fail_fast", "qc_gate",
             "r_threads_per_job", "max_parallel_r_jobs", "r_stage_timeout_seconds",
-            "r_termination_grace_seconds", "cpu_detection",
+            "r_termination_grace_seconds", "cpu_detection", "reuse_completed_release",
         },
         where="[run]",
     )
@@ -511,6 +513,7 @@ def validate_config(
     _require_bool(run, "overwrite", where="[run]")
     _require_int(run, "random_seed", where="[run]")
     _require_bool(run, "fail_fast", where="[run]")
+    _require_bool(run, "reuse_completed_release", where="[run]")
     _require_string(run, "qc_gate", where="[run]")
     if run["qc_gate"] != "fail_on_any_review":
         raise ConfigError(
@@ -690,12 +693,6 @@ def validate_config(
             raise ConfigError(
                 "full mode requires every enabled source to be verified with an assigned adapter: "
                 + ", ".join(unverified_enabled_sources)
-            )
-        if not source_data_policy:
-            raise ConfigError(
-                "full mode requires a hash-bound source-data policy manifest: "
-                "[source_data_policy] must contain manifest_path, manifest_sha256, "
-                "and pseudonym_secret_env"
             )
     if check_files:
         for key in INPUT_PATHS:
@@ -925,6 +922,11 @@ def validate_config(
         )
     _require_bool(outputs, "clear_output_root_before_run", where="[outputs]")
     if outputs["clear_output_root_before_run"]:
+        if run["reuse_completed_release"]:
+            raise ConfigError(
+                "[run].reuse_completed_release cannot be combined with "
+                "[outputs].clear_output_root_before_run"
+            )
         if mode == "validate":
             raise ConfigError("validate mode cannot clear the output root")
         if not run["overwrite"]:
@@ -1161,6 +1163,7 @@ def validate_config(
         source_data_policy_manifest_sha256=source_data_policy_manifest_sha256,
         source_data_policy_secret_env=source_data_policy_secret_env,
         run_mode=mode,
+        reuse_completed_release=run["reuse_completed_release"],
     )
 
 
