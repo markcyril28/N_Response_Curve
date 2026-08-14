@@ -1050,12 +1050,16 @@ def build_analysis_registry(
                     if family not in expansion_families or not any(len(names) > 1 for names in factor_sets):
                         materialized_factor_sets = factor_sets
                     else:
-                        single_factor_sets = tuple(names for names in factor_sets if len(names) == 1)
-                        single_candidates: list[AnalysisCandidate] = []
+                        configured_single_factor_sets = tuple(
+                            names for names in factor_sets if len(names) == 1
+                        )
                         supported_factors: set[str] = set()
-                        for factor_names in single_factor_sets:
-                            entries = tuple(known_factors[name] for name in factor_names)
-                            concrete = _candidate(
+                        # Higher-order publication gates are independent of the
+                        # singleton probes needed to establish factor support. Probe
+                        # every factor without emitting an order-1 candidate or
+                        # applying final first-stage inference checks.
+                        for factor_name, entry in known_factors.items():
+                            probe_status, _, _, _, _ = _reasons_for_candidate(
                                 version=version,
                                 combination=combination,
                                 outcome=outcome,
@@ -1063,18 +1067,28 @@ def build_analysis_registry(
                                 factor_entries=entries,
                                 engine=engine_assignments[family],
                                 rows=applicable_rows,
+                                factor_entries=(entry,),
+                                factor_representations={},
+                                curve_outcome=outcome,
+                                analysis_family=family,
                                 support_policy=policy,
+                                first_stage_uncertainty_policy={},
+                                enforce_first_stage_uncertainty=False,
                             )
-                            single_candidates.append(concrete)
-                            if concrete.status == "run":
-                                supported_factors.update(factor_names)
-                        candidates.extend(single_candidates)
-                        materialized_factor_sets = tuple(
-                            names
-                            for names in factor_sets
-                            if len(names) > 1 and set(names).issubset(supported_factors)
+                            if probe_status == "run":
+                                supported_factors.add(factor_name)
+                        materialized_factor_sets = (
+                            configured_single_factor_sets
+                            + tuple(
+                                names
+                                for names in factor_sets
+                                if len(names) > 1
+                                and set(names).issubset(supported_factors)
+                            )
                         )
-                        compressed_prune_count += len(factor_sets) - len(single_factor_sets) - len(materialized_factor_sets)
+                        compressed_prune_count += (
+                            len(factor_sets) - len(materialized_factor_sets)
+                        )
                     for factor_names in materialized_factor_sets:
                         entries = tuple(known_factors[name] for name in factor_names)
                         candidates.append(
