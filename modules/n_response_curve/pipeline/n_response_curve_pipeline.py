@@ -539,47 +539,97 @@ def run_phase_two(
         dict(source_data_policy.resolution_kwargs)
         if source_data_policy is not None
         else {
-            "duplicate_rules": tuple(
-                DuplicateRuleSet(
-                    version=f"runtime-source-policy-2026-08-13-{source_name}",
-                    review_id="user-source-policy-decisions-2026-08-13",
-                    exact_key_fields=(
-                        "source_name",
-                        "study_id",
-                        "trial_id",
-                        "treatment",
-                        "planting_year",
-                        "season",
-                        "location",
-                        "n_rate_kg_ha",
-                        "yield_t_ha",
-                    ),
-                    probable_key_fields=(
-                        "source_name",
-                        "study_id",
-                        "trial_id",
-                        "treatment",
-                        "planting_year",
-                        "season",
-                        "location",
-                        "n_rate_kg_ha",
-                        "yield_t_ha",
-                    ),
-                    probable_numeric_tolerances=MappingProxyType(
-                        {"n_rate_kg_ha": 0.01, "yield_t_ha": 0.001}
-                    ),
-                    casefold_fields=(
-                        "source_name",
-                        "study_id",
-                        "trial_id",
-                        "treatment",
-                        "season",
-                        "location",
-                    ),
-                    source_names=(source_name,),
-                    probable_cross_source_only=False,
-                )
-                for source_name in getattr(config, "enabled_sources", ())
+            "duplicate_rules": (
+                *tuple(
+                    DuplicateRuleSet(
+                        version=f"runtime-source-policy-2026-08-13-{source_name}",
+                        review_id="user-source-policy-decisions-2026-08-13",
+                        exact_key_fields=(
+                            "source_name",
+                            "study_id",
+                            "trial_id",
+                            "treatment",
+                            "planting_year",
+                            "season",
+                            "location",
+                            "n_rate_kg_ha",
+                            "yield_t_ha",
+                        ),
+                        probable_key_fields=(
+                            "source_name",
+                            "study_id",
+                            "trial_id",
+                            "treatment",
+                            "planting_year",
+                            "season",
+                            "location",
+                            "n_rate_kg_ha",
+                            "yield_t_ha",
+                        ),
+                        probable_numeric_tolerances=MappingProxyType(
+                            {"n_rate_kg_ha": 0.01, "yield_t_ha": 0.001}
+                        ),
+                        casefold_fields=(
+                            "source_name",
+                            "study_id",
+                            "trial_id",
+                            "treatment",
+                            "season",
+                            "location",
+                        ),
+                        source_names=(source_name,),
+                        probable_cross_source_only=False,
+                    )
+                    for source_name in getattr(config, "enabled_sources", ())
+                ),
+                *(
+                    (
+                        DuplicateRuleSet(
+                            version="runtime-cross-source-policy-2026-08-13-v1",
+                            review_id="user-source-policy-decisions-2026-08-13",
+                            exact_key_fields=(
+                                "study_id",
+                                "trial_id",
+                                "treatment",
+                                "planting_year",
+                                "season",
+                                "location",
+                                "n_rate_kg_ha",
+                                "yield_t_ha",
+                            ),
+                            probable_key_fields=(
+                                "study_id",
+                                "trial_id",
+                                "treatment",
+                                "planting_year",
+                                "season",
+                                "location",
+                                "n_rate_kg_ha",
+                                "yield_t_ha",
+                            ),
+                            probable_numeric_tolerances=MappingProxyType(
+                                {
+                                    "n_rate_kg_ha": 0.01,
+                                    "yield_t_ha": 0.001,
+                                }
+                            ),
+                            casefold_fields=(
+                                "study_id",
+                                "trial_id",
+                                "treatment",
+                                "season",
+                                "location",
+                            ),
+                            source_names=tuple(
+                                getattr(config, "enabled_sources", ())
+                            ),
+                            probable_cross_source_only=True,
+                            scope_kind="cross_source",
+                        ),
+                    )
+                    if len(tuple(getattr(config, "enabled_sources", ()))) >= 2
+                    else ()
+                ),
             ),
         }
     )
