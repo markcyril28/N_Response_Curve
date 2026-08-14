@@ -802,7 +802,8 @@ def _qc_gate_failure_message(
 
     if review_gate_policy is None:
         lines.append(
-            f"No review-gate policy is loaded; 0 of {len(review_rows)} review rows are permitted."
+            "No review-gate policy is loaded; validate mode blocks all "
+            f"{len(review_rows)} review rows."
         )
     else:
         permitted = sum(
@@ -811,8 +812,9 @@ def _qc_gate_failure_message(
             if review_gate_policy.permits(phase_two_review_disposition(row))
         )
         lines.append(
-            f"Review-gate policy {review_gate_policy.policy_id} permits {permitted} of "
-            f"{len(review_rows)} review rows; analysis-ledger rows block regardless."
+            f"Review-gate policy {review_gate_policy.policy_id} classifies {permitted} of "
+            f"{len(review_rows)} review rows as permitted for writing-mode ledgering; "
+            "validate mode blocks all review rows."
         )
 
     uids = sorted(str(row.get("record_uid", "unresolved")) for row in blocking_rows)
