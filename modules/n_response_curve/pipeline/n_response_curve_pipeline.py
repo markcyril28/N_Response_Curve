@@ -842,22 +842,10 @@ def _enforce_phase_two_qc_gate(
     review_rows = tuple(phase_two.qc.review_rows)
     if not review_rows:
         return
-    if review_gate_policy is None:
-        blocking_rows = review_rows
-    else:
-        analysis_uids = {
-            str(row.get("record_uid"))
-            for row in phase_two.analysis_eligibility.ledger
-            if row.get("record_uid")
-        }
-        blocking_rows = tuple(
-            row
-            for row in review_rows
-            if not review_gate_policy.permits(phase_two_review_disposition(row))
-            or str(row.get("record_uid") or "") in analysis_uids
-        )
-    if not blocking_rows:
-        return
+    # Validation is the strict diagnostic mode: a disposition policy may classify
+    # findings for writing-mode ledgers, but it never exempts a review-bearing row
+    # from this gate.
+    blocking_rows = review_rows
     raise ConfigError(
         _qc_gate_failure_message(
             phase_two,
