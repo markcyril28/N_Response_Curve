@@ -248,6 +248,8 @@ def effective_analysis_hypotheses(
 
 def _semantic_policy(
     review_gate_policy: ReviewGatePolicy | None = None,
+    *,
+    table_formats: tuple[str, ...],
 ) -> dict[str, Any]:
     policy = {
         "test_subset": {
@@ -268,7 +270,7 @@ def _semantic_policy(
             "failure_timing": "after_complete_phase_2_review_before_later_phases",
         },
         "tables": {
-            "required_formats": ["csv", "parquet"],
+            "required_formats": list(table_formats),
         },
         "figures": {
             "required_any_of": ["png", "jpeg"],
@@ -336,7 +338,10 @@ def _policy_content(
         "schema_version": _POLICY_SNAPSHOT_SCHEMA_VERSION,
         "mode": config.run_mode,
         "config_sha256": sha256_file(config.config_path),
-        "semantic_policy": _semantic_policy(review_gate_policy),
+        "semantic_policy": _semantic_policy(
+            review_gate_policy,
+            table_formats=config.output_formats,
+        ),
         "effective_enablement": enablement,
         "effective_enablement_sha256": stable_json_sha256(enablement),
     }
@@ -952,9 +957,6 @@ def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
         raise ConfigError(
             "The effective figure-format profile requires at least one PNG or JPEG raster format"
         )
-    if config.run_mode == "full":
-        if set(config.output_formats) != {"csv", "parquet"}:
-            raise ConfigError("Authoritative mode requires the approved CSV-and-Parquet table profile")
     if config.writes_outputs:
         if str(config.raw["logging"]["level"]).upper() != "INFO":
             raise ConfigError("Writing modes require INFO operational logging")
