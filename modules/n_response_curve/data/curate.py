@@ -1257,6 +1257,10 @@ def _finalize_canonical_record(
             "yield_unit_status": yield_normalization.unit_status,
             "yield_source_unit": yield_normalization.source_unit,
             "yield_unit_conversion": yield_normalization.conversion,
+            "yield_precedence_policy": yield_normalization.precedence_policy,
+            "yield_precedence_review_id": (
+                yield_normalization.precedence_review_id
+            ),
             "yield_configured_unit": configured_yield_unit,
             "yield_canonical_unit": CANONICAL_YIELD_UNIT,
             "yield_basis_raw": basis_raw or None,
