@@ -1061,11 +1061,6 @@ def build_analysis_registry(
                         for factor_name, entry in known_factors.items():
                             probe_status, _, _, _, _ = _reasons_for_candidate(
                                 version=version,
-                                combination=combination,
-                                outcome=outcome,
-                                analysis_family=family,
-                                factor_entries=entries,
-                                engine=engine_assignments[family],
                                 rows=applicable_rows,
                                 factor_entries=(entry,),
                                 factor_representations={},
