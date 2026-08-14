@@ -49,6 +49,7 @@ from n_response_curve.reporting.plots import (
     sanitize_figure_directory_token,
     write_observed_series_figures,
     write_response_curve_figures,
+    write_source_series_overlay_figures,
 )
 from n_response_curve.reporting.sample_figures import (
     SAMPLE_FIGURE_DIRECTORY,
@@ -692,6 +693,15 @@ def run_phase_four(
         version_names=config.dataset_versions,
         recommendation_set_policy=effective_model_policy.get(
             "recommendation_set_policy"
+        ),
+        minimum_complete_n_yield=int(
+            config.raw["eligibility"]["minimum_complete_n_yield"]
+        ),
+        minimum_distinct_n_levels=int(
+            config.raw["eligibility"]["minimum_distinct_n_levels"]
+        ),
+        n_level_tolerance_kg_ha=float(
+            config.raw["eligibility"]["n_level_tolerance_kg_ha"]
         ),
         configuration_sha256=sha256_file(config.config_path),
         input_dataset_sha256=stable_json_sha256(
@@ -2390,6 +2400,8 @@ def _figure_stage_writer(
     def write_figures(stage_root: Path) -> tuple[Path, ...]:
         figures: list[Path] = []
         observed_counts_by_source: Counter[str] = Counter()
+        overlay_counts_by_source: Counter[str] = Counter()
+        overlay_artifact_count = 0
         fitted_counts_by_source_model: Counter[tuple[str, str]] = Counter()
         for response_series_uid in observed_series:
             source_name = source_by_series.get(response_series_uid)
@@ -2409,6 +2421,24 @@ def _figure_stage_writer(
                 )
             )
             observed_counts_by_source[source_name] += 1
+        for source_name in sorted(enabled_sources):
+            source_series = tuple(
+                response_series_uid
+                for response_series_uid in observed_series
+                if source_by_series[response_series_uid] == source_name
+            )
+            if not source_series:
+                continue
+            overlay_paths = write_source_series_overlay_figures(
+                phase_three.input_records,
+                source_name,
+                response_series_uids=source_series,
+                output_root=stage_root / "figures" / "overlay",
+                formats=config.figure_formats,
+            )
+            figures.extend(overlay_paths)
+            overlay_counts_by_source[source_name] = 1
+            overlay_artifact_count += len(overlay_paths)
         for attempt in fitted_attempts:
             if attempt.response_series_uid not in reportable_curve_series:
                 continue
@@ -2449,7 +2479,7 @@ def _figure_stage_writer(
                 "fitted_figure_count": sum(fitted_counts_by_source_model.values()),
                 "artifact_count": len(figures),
                 "formats": list(config.figure_formats),
-                "layout_version": "figures-by-source-and-model-v1",
+                "layout_version": "figures-by-source-model-and-overlay-v2",
                 "observed_path_template": "figures/observed/<source>/<series>.<format>",
                 "fitted_path_template": (
                     "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
@@ -2477,6 +2507,21 @@ def _figure_stage_writer(
                     }
                     for source_name in sorted(enabled_sources)
                 },
+                "overlay": {
+                    "scope": "same_governed_series_as_observed_figures",
+                    "path_template": "figures/overlay/<source>.<format>",
+                    "figure_count": sum(overlay_counts_by_source.values()),
+                    "artifact_count": overlay_artifact_count,
+                    "series_count": len(observed_series),
+                    "figure_count_by_source": {
+                        source_name: overlay_counts_by_source[source_name]
+                        for source_name in sorted(enabled_sources)
+                    },
+                    "series_count_by_source": {
+                        source_name: observed_counts_by_source[source_name]
+                        for source_name in sorted(enabled_sources)
+                    },
+                },
             }
             return tuple(figures)
         # No series resolved, so the figure contract rendered nothing and a reviewer
@@ -2489,7 +2534,7 @@ def _figure_stage_writer(
             "fitted_figure_count": 0,
             "artifact_count": 0,
             "formats": list(config.figure_formats),
-            "layout_version": "figures-by-source-and-model-v1",
+            "layout_version": "figures-by-source-model-and-overlay-v2",
             "observed_path_template": "figures/observed/<source>/<series>.<format>",
             "fitted_path_template": (
                 "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
@@ -2507,6 +2552,19 @@ def _figure_stage_writer(
                     model_name: 0 for model_name in sorted(model_tokens)
                 }
                 for source_name in sorted(enabled_sources)
+            },
+            "overlay": {
+                "scope": "same_governed_series_as_observed_figures",
+                "path_template": "figures/overlay/<source>.<format>",
+                "figure_count": 0,
+                "artifact_count": 0,
+                "series_count": 0,
+                "figure_count_by_source": {
+                    source_name: 0 for source_name in sorted(enabled_sources)
+                },
+                "series_count_by_source": {
+                    source_name: 0 for source_name in sorted(enabled_sources)
+                },
             },
         }
         if config.run_mode != "test":
@@ -5030,6 +5088,9 @@ def release_phases_three_to_five(
         "critical_record_restricted_omitted_count": critical_omitted_count,
         "qc_summary": {
             "gate_policy": config.raw["run"]["qc_gate"],
+            "gate_scope": "validate_only",
+            "writing_mode_disposition": "preserve_complete_findings",
+            "authority_status": "technical_run_not_scientific_approval",
             "reconciles": phase_two.qc.reconciles,
             "inventory_row_count": phase_two.qc.inventory_rows,
             "row_ledger_count": len(phase_two.eligibility.ledger),
