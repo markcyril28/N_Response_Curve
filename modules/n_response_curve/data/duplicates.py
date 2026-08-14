@@ -78,6 +78,7 @@ class DuplicateAdjudication:
     reviewer: str
     reviewed_on: str
     rationale: str
+    record_uids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -312,16 +313,16 @@ def _shared_duplicate_group_uids(
     *,
     relationship: str,
 ) -> set[str]:
-    memberships: list[set[str]] = []
+    uid_counts: dict[str, int] = {}
     for record in records:
-        memberships.append(
-            {
-                str(group["duplicate_group_uid"])
-                for group in record.get("duplicate_groups", ())
-                if group.get("relationship") == relationship
-            }
-        )
-    return set.intersection(*memberships) if memberships else set()
+        record_uids = {
+            str(group["duplicate_group_uid"])
+            for group in record.get("duplicate_groups", ())
+            if group.get("relationship") == relationship
+        }
+        for uid in record_uids:
+            uid_counts[uid] = uid_counts.get(uid, 0) + 1
+    return {uid for uid, count in uid_counts.items() if count >= 2}
 
 
 def _mark_unresolved(record: dict[str, Any], reason: str) -> None:
@@ -531,6 +532,19 @@ def _validated_adjudications(
         _review_date(adjudication.reviewed_on, label="Duplicate adjudication date")
         _nonempty(adjudication.rationale, label="Duplicate adjudication rationale")
         if (
+            not isinstance(adjudication.record_uids, tuple)
+            or len(adjudication.record_uids) < 2
+            or len(adjudication.record_uids) != len(set(adjudication.record_uids))
+            or any(
+                not isinstance(record_uid, str) or not record_uid.strip()
+                for record_uid in adjudication.record_uids
+            )
+        ):
+            raise ValueError(
+                "Duplicate adjudication record_uids must contain at least two "
+                "unique nonempty record UIDs"
+            )
+        if (
             adjudication.disposition == "same_trial"
             and not adjudication.canonical_record_uid
         ):
@@ -542,6 +556,19 @@ def _validated_adjudications(
             raise ValueError("Distinct-trial adjudication cannot select a canonical record")
         indexed[adjudication.duplicate_group_uid] = adjudication
     return indexed
+
+
+def _validate_adjudication_membership(
+    adjudication: DuplicateAdjudication,
+    current_record_uids: Iterable[str],
+) -> None:
+    if tuple(sorted(adjudication.record_uids)) != tuple(
+        sorted(str(record_uid) for record_uid in current_record_uids)
+    ):
+        raise ValueError(
+            "Duplicate adjudication record_uids do not match current duplicate "
+            "group membership"
+        )
 
 
 def _initialize_duplicate_statuses(
@@ -607,7 +634,11 @@ def _initialize_duplicate_statuses(
             ("exact", rules.version, *signature),
         )
         adjudication = reviewed.get(group_uid)
-        ordered_uids = {str(record["record_uid"]) for record in ordered}
+        ordered_uids = tuple(
+            sorted(str(record["record_uid"]) for record in ordered)
+        )
+        if adjudication is not None:
+            _validate_adjudication_membership(adjudication, ordered_uids)
         if adjudication is not None and adjudication.disposition == "distinct_trials":
             for record in ordered:
                 _add_duplicate_relationship(record, "exact_duplicate_distinct")
@@ -625,7 +656,7 @@ def _initialize_duplicate_statuses(
                 )
             continue
         if adjudication is not None:
-            if adjudication.canonical_record_uid not in ordered_uids:
+            if adjudication.canonical_record_uid not in set(ordered_uids):
                 raise ValueError(
                     "Exact duplicate adjudication canonical record is outside its group"
                 )
@@ -641,7 +672,7 @@ def _initialize_duplicate_statuses(
             ):
                 raise ValueError(
                     "Cross-source exact duplicate adjudication canonical record conflicts "
-                    "with a prior source-local duplicate canonical assignment"
+                    "with prior source-local exact duplicate canonical assignment"
                 )
             canonical = next(
                 record
@@ -720,6 +751,7 @@ def _initialize_duplicate_statuses(
         canonical_uid: str | None = None
         review_status = "review_required"
         if adjudication is not None:
+            _validate_adjudication_membership(adjudication, ordered_uids)
             if adjudication.canonical_record_uid not in set(ordered_uids) and (
                 adjudication.canonical_record_uid is not None
             ):
@@ -921,6 +953,124 @@ def _validated_repeat_adjudications(
                 raise ValueError("Management split assignments must define at least two series")
         indexed[record_uids] = adjudication
     return indexed
+
+
+def _apply_reviewed_source_multiplicity_adjudications(
+    records: list[dict[str, Any]],
+    *,
+    reviewed_repeats: Mapping[tuple[str, ...], RepeatAdjudication],
+) -> set[tuple[str, ...]]:
+    """Consume exact reviewed decisions for detected source-row multiplicity.
+
+    Source curation exposes opaque group IDs and exact canonical member UIDs but
+    does not interpret their scientific meaning. Only a reviewed exchangeable-
+    replicate decision may clear the source-level hold and enter ordinary
+    same-N resolution. Other classifications remain held with a precise next
+    action rather than being silently pooled or dropped.
+    """
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        if "LTCCE_UNRESOLVED_ROW_MULTIPLICITY" not in set(
+            record.get("source_row_multiplicity_reason_codes", ())
+        ):
+            record.setdefault(
+                "source_row_multiplicity_adjudication_status",
+                "not_applicable",
+            )
+            continue
+        group_uid = _nonempty(
+            str(record.get("source_row_multiplicity_group_uid") or ""),
+            label="Source-row multiplicity group UID",
+        )
+        groups.setdefault(group_uid, []).append(record)
+
+    used: set[tuple[str, ...]] = set()
+    held_statuses = {
+        "duplicate": (
+            "reviewed_duplicate_requires_canonical_link",
+            "REPEAT_DUPLICATE_REQUIRES_CANONICAL_LINK",
+            "repeat_classified_duplicate",
+        ),
+        "management_variant": (
+            "reviewed_management_variant_requires_series_split",
+            "MANAGEMENT_VARIANT_REQUIRES_SERIES_SPLIT",
+            "different_management_same_n",
+        ),
+        "unequal_experimental_units": (
+            "reviewed_unequal_experimental_units_not_aggregated",
+            "UNEQUAL_EXPERIMENTAL_UNITS_NOT_AGGREGATED",
+            "unequal_experimental_units",
+        ),
+    }
+    for group_uid, group_records in groups.items():
+        actual_uids = tuple(
+            sorted(str(record["record_uid"]) for record in group_records)
+        )
+        if len(actual_uids) < 2 or len(actual_uids) != len(set(actual_uids)):
+            raise ValueError(
+                "Source-row multiplicity group must contain at least two unique records"
+            )
+        for record in group_records:
+            declared_uids = tuple(
+                sorted(
+                    str(value)
+                    for value in record.get(
+                        "source_row_multiplicity_group_record_uids",
+                        (),
+                    )
+                )
+            )
+            if declared_uids != actual_uids:
+                raise ValueError(
+                    "Source-row multiplicity member metadata does not match the actual group"
+                )
+            if record.get("source_row_multiplicity_group_size") != len(actual_uids):
+                raise ValueError(
+                    "Source-row multiplicity group size does not match its member set"
+                )
+        adjudication = reviewed_repeats.get(actual_uids)
+        source_repeat_uid = _stable_identifier(
+            "source-repeat",
+            (group_uid, *actual_uids),
+        )
+        if adjudication is None:
+            for record in group_records:
+                record["source_row_multiplicity_repeat_group_uid"] = source_repeat_uid
+                record["source_row_multiplicity_adjudication_status"] = (
+                    "review_required"
+                )
+            continue
+
+        used.add(actual_uids)
+        for record in group_records:
+            record["source_row_multiplicity_repeat_group_uid"] = source_repeat_uid
+            record["source_row_multiplicity_review_id"] = adjudication.review_id
+            record["source_row_multiplicity_reviewer"] = adjudication.reviewer
+            record["source_row_multiplicity_reviewed_on"] = adjudication.reviewed_on
+            record["repeat_review_id"] = adjudication.review_id
+            record["repeat_reviewer"] = adjudication.reviewer
+            record["repeat_reviewed_on"] = adjudication.reviewed_on
+        if adjudication.classification == "exchangeable_replicates":
+            for record in group_records:
+                record["source_row_multiplicity_status"] = (
+                    "reviewed_exchangeable_replicates"
+                )
+                record["source_row_multiplicity_reason_codes"] = ()
+                record["source_row_multiplicity_adjudication_status"] = (
+                    "reviewed_exchangeable_replicates"
+                )
+                record["analytical_record_status"] = "included"
+            continue
+
+        status, reason, same_n_status = held_statuses[adjudication.classification]
+        for record in group_records:
+            record["source_row_multiplicity_status"] = status
+            record["source_row_multiplicity_reason_codes"] = (reason,)
+            record["source_row_multiplicity_adjudication_status"] = status
+            record["same_n_status"] = same_n_status
+            record["analytical_record_status"] = "review"
+    return used
 
 
 def _apply_reviewed_management_splits(
@@ -1138,14 +1288,26 @@ def resolve_response_series(
         repeat_adjudications,
         designated_reviewers=designated_reviewers,
     )
+    used_source_multiplicity_adjudications = (
+        _apply_reviewed_source_multiplicity_adjudications(
+            ledger,
+            reviewed_repeats=reviewed_repeats,
+        )
+    )
 
     candidate_groups: dict[tuple[object, ...], list[dict[str, Any]]] = {}
     comparison_keys: dict[tuple[object, ...], tuple[object, ...]] = {}
     for record in ledger:
-        if "LTCCE_UNRESOLVED_ROW_MULTIPLICITY" in set(
-            record.get("source_row_multiplicity_reason_codes", ())
-        ):
-            _mark_unresolved(record, "LTCCE_UNRESOLVED_ROW_MULTIPLICITY")
+        if record.get("source_row_multiplicity_status") not in {
+            None,
+            "not_detected",
+            "reviewed_exchangeable_replicates",
+        }:
+            source_multiplicity_reasons = tuple(
+                record.get("source_row_multiplicity_reason_codes", ())
+            ) or ("LTCCE_UNRESOLVED_ROW_MULTIPLICITY",)
+            for reason in source_multiplicity_reasons:
+                _mark_unresolved(record, str(reason))
             continue
         if duplicate_rules is None:
             _mark_unresolved(record, "DUPLICATE_RULES_NOT_SUPPLIED")
@@ -1213,6 +1375,7 @@ def resolve_response_series(
             reviewed_repeats,
         )
     )
+    used_repeat_adjudications.update(used_source_multiplicity_adjudications)
 
     comparison_set_contexts: dict[str, set[tuple[object, ...]]] = {}
     for key, group in candidate_groups.items():
