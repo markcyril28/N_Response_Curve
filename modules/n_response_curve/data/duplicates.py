@@ -632,13 +632,16 @@ def _initialize_duplicate_statuses(
             if adjudication.disposition == "same_trial" and any(
                 str(record["record_uid"])
                 == adjudication.canonical_record_uid
-                and "exact_duplicate_noncanonical"
-                in record.get("duplicate_relationships", ())
+                and (
+                    record.get("duplicate_of_record_uid") is not None
+                    or record.get("analytical_record_status")
+                    == "duplicate_noncanonical"
+                )
                 for record in ordered
             ):
                 raise ValueError(
                     "Cross-source exact duplicate adjudication canonical record conflicts "
-                    "with prior source-local exact duplicate canonical assignment"
+                    "with a prior source-local duplicate canonical assignment"
                 )
             canonical = next(
                 record
@@ -648,7 +651,33 @@ def _initialize_duplicate_statuses(
             )
             review_status = "adjudicated"
         else:
-            canonical = ordered[0]
+            prior_exact_relationships = {
+                relationship
+                for record in ordered
+                for relationship in record.get("duplicate_relationships", ())
+                if relationship.startswith("exact_duplicate_")
+            }
+            if rules.scope_kind == "cross_source" and prior_exact_relationships:
+                prior_canonicals = [
+                    record
+                    for record in ordered
+                    if "exact_duplicate_canonical"
+                    in record.get("duplicate_relationships", ())
+                    and record.get("duplicate_of_record_uid") is None
+                    and record.get("analytical_record_status")
+                    != "duplicate_noncanonical"
+                ]
+                if (
+                    "exact_duplicate_distinct" in prior_exact_relationships
+                    or len(prior_canonicals) != 1
+                ):
+                    raise ValueError(
+                        "Cross-source exact duplicate group conflicts with prior "
+                        "source-local decisions and requires adjudication"
+                    )
+                canonical = prior_canonicals[0]
+            else:
+                canonical = ordered[0]
             review_status = "auto_classified"
         noncanonical = [record for record in ordered if record is not canonical]
         _add_duplicate_relationship(canonical, "exact_duplicate_canonical")
