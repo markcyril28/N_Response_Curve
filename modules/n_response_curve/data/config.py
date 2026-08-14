@@ -691,6 +691,12 @@ def validate_config(
                 "full mode requires every enabled source to be verified with an assigned adapter: "
                 + ", ".join(unverified_enabled_sources)
             )
+        if not source_data_policy:
+            raise ConfigError(
+                "full mode requires a hash-bound source-data policy manifest: "
+                "[source_data_policy] must contain manifest_path, manifest_sha256, "
+                "and pseudonym_secret_env"
+            )
     if check_files:
         for key in INPUT_PATHS:
             _require_file(paths[key], f"[paths].{key}")
