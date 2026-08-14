@@ -261,16 +261,19 @@ def _semantic_policy(
             "seed_source": "run.random_seed",
         },
         "review_gate": {
-            "modes": ["validate", "full"],
+            "failure_modes": ["validate"],
+            "ledger_modes": ["test", "full"],
             "failure_states": ["warning", "unresolved", "excluded_series"],
-            "failure_timing": "before_authoritative_promotion",
+            "writing_mode_disposition": "complete_processing_with_findings_ledgered",
+            "failure_timing": "after_complete_phase_2_review_before_later_phases",
         },
         "tables": {
             "required_formats": ["csv", "parquet"],
         },
         "figures": {
-            "required_formats": ["png"],
-            "optional_formats": ["jpeg"],
+            "required_any_of": ["png", "jpeg"],
+            "minimum_required_format_count": 1,
+            "media_type": "raster",
             "forbidden_formats": ["svg"],
         },
         "reports": {
@@ -294,7 +297,8 @@ def _semantic_policy(
     }
     if review_gate_policy is not None:
         policy["review_gate"] = {
-            "modes": ["validate", "full"],
+            "failure_modes": ["validate"],
+            "ledger_modes": ["test", "full"],
             **review_gate_policy.semantic_payload(),
         }
     return policy
@@ -939,14 +943,18 @@ def _validate_approved_snapshot(
 def validate_runtime_policy(config: ValidatedConfig) -> RuntimePolicySnapshot:
     """Validate the effective runtime contract without organizational approvals."""
 
-    forbidden_figures = set(config.figure_formats) - {"png", "jpeg"}
+    allowed_raster_figures = {"png", "jpeg"}
+    configured_figures = set(config.figure_formats)
+    forbidden_figures = configured_figures - allowed_raster_figures
     if forbidden_figures:
         raise ConfigError("The effective figure-format profile contains a prohibited format")
+    if not configured_figures.intersection(allowed_raster_figures):
+        raise ConfigError(
+            "The effective figure-format profile requires at least one PNG or JPEG raster format"
+        )
     if config.run_mode == "full":
         if set(config.output_formats) != {"csv", "parquet"}:
             raise ConfigError("Authoritative mode requires the approved CSV-and-Parquet table profile")
-        if "png" not in config.figure_formats:
-            raise ConfigError("Authoritative mode requires PNG figures")
     if config.writes_outputs:
         if str(config.raw["logging"]["level"]).upper() != "INFO":
             raise ConfigError("Writing modes require INFO operational logging")
