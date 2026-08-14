@@ -485,7 +485,9 @@ def _ltcce_source_map(source: IngestedSource) -> ReviewedSourceMap:
         expected_headers=_expected_headers(source),
         dispositions=dispositions,
         representation_basis="observation_level",
-        representation_basis_status="reviewed",
+        # The runtime fallback can identify the physical observation grain but
+        # cannot supply reviewer/date/rationale evidence. Keep it fail-closed.
+        representation_basis_status="review_required",
         arms=(
             SourceArmMap(
                 arm_id="mineral_n_rate",
