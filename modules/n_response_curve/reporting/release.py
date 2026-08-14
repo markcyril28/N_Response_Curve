@@ -78,6 +78,12 @@ _REVIEW_ISSUE_STATES = frozenset(
 )
 _REVIEW_ISSUE_STAGES = frozenset({"phase_2", "phase_3", "phase_4", "runtime"})
 _FIGURE_LAYOUT_VERSION = "figures-by-source-and-model-v1"
+_FIGURE_LAYOUT_VERSION_V2 = "figures-by-source-model-and-overlay-v2"
+_KNOWN_FIGURE_LAYOUT_VERSIONS = frozenset(
+    {_FIGURE_LAYOUT_VERSION, _FIGURE_LAYOUT_VERSION_V2}
+)
+_FIGURE_OVERLAY_PATH_TEMPLATE = "figures/overlay/<source>.<format>"
+_FIGURE_OVERLAY_SCOPE = "same_governed_series_as_observed_figures"
 _SAFE_FIGURE_DIRECTORY_TOKEN = re.compile(r"^[A-Za-z0-9_-]+$")
 _WINDOWS_RESERVED_BASENAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
@@ -718,6 +724,40 @@ def _verify_release_status(manifest: Mapping[str, Any]) -> None:
         )
 
 
+_QC_SUMMARY_SCOPE_FIELDS = {
+    "gate_scope": "validate_only",
+    "writing_mode_disposition": "preserve_complete_findings",
+    "authority_status": "technical_run_not_scientific_approval",
+}
+
+
+def _verify_qc_summary_scope(manifest: Mapping[str, Any]) -> None:
+    """Bind the QC gate's validate-only enforcement scope for pipeline packages.
+
+    ``_enforce_phase_two_qc_gate`` only blocks in validate mode; a test/full
+    package preserves review-bearing rows instead. These fields make that
+    boundary machine-verifiable so a tampered manifest cannot imply
+    scientific approval or organizational sign-off for a technical run.
+    """
+
+    if manifest.get("status") not in _PIPELINE_RELEASE_STATUSES:
+        return
+    qc_summary = manifest.get("qc_summary")
+    if not isinstance(qc_summary, Mapping):
+        raise ReportingError(
+            "Pipeline release run manifest qc_summary is missing or invalid"
+        )
+    if qc_summary.get("gate_policy") != "fail_on_any_review":
+        raise ReportingError(
+            "Pipeline release run manifest qc_summary gate_policy is missing or altered"
+        )
+    for field, expected_value in _QC_SUMMARY_SCOPE_FIELDS.items():
+        if qc_summary.get(field) != expected_value:
+            raise ReportingError(
+                f"Pipeline release run manifest qc_summary {field!r} is missing or altered"
+            )
+
+
 def _verify_manifest_artifact_inventory(
     checksums: Mapping[str, str],
     manifest: Mapping[str, Any],
@@ -1296,14 +1336,29 @@ def _verify_run_figure_inventory(
         figures.get("model_directory_tokens"),
         name="model",
     )
+    layout_version = figures.get("layout_version")
+    if layout_version not in _KNOWN_FIGURE_LAYOUT_VERSIONS:
+        raise ReportingError("Release figure layout version is unrecognized")
     if (
-        figures.get("layout_version") != _FIGURE_LAYOUT_VERSION
-        or figures.get("observed_path_template")
+        figures.get("observed_path_template")
         != "figures/observed/<source>/<series>.<format>"
         or figures.get("fitted_path_template")
         != "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
     ):
         raise ReportingError("Release figure hierarchy metadata is invalid")
+    is_v2_layout = layout_version == _FIGURE_LAYOUT_VERSION_V2
+    overlay_declaration = figures.get("overlay")
+    if is_v2_layout:
+        if (
+            not isinstance(overlay_declaration, Mapping)
+            or overlay_declaration.get("scope") != _FIGURE_OVERLAY_SCOPE
+            or overlay_declaration.get("path_template") != _FIGURE_OVERLAY_PATH_TEMPLATE
+        ):
+            raise ReportingError("Release figure overlay hierarchy metadata is invalid")
+    elif overlay_declaration is not None:
+        raise ReportingError(
+            "Legacy figure layout must not declare a source overlay"
+        )
 
     runtime_policy = manifest.get("runtime_policy")
     effective_enablement = (
@@ -1339,6 +1394,10 @@ def _verify_run_figure_inventory(
             source_name = source_by_token.get(parts[2])
             model_name = model_by_token.get(parts[3])
             kind = "fitted"
+        elif is_v2_layout and len(parts) == 3 and parts[:2] == ("figures", "overlay"):
+            source_name = source_by_token.get(relative_path.stem)
+            model_name = None
+            kind = "overlay"
         else:
             raise ReportingError("Release figure artifact is outside the declared hierarchy")
         if source_name is None or (kind == "fitted" and model_name is None) or not relative_path.stem:
@@ -1354,12 +1413,17 @@ def _verify_run_figure_inventory(
 
     observed_by_source: Counter[str] = Counter()
     fitted_by_source_model: Counter[tuple[str, str]] = Counter()
-    for kind, source_name, model_name in logical_metadata.values():
+    overlay_sources: set[str] = set()
+    overlay_artifact_count = 0
+    for logical_path, (kind, source_name, model_name) in logical_metadata.items():
         if kind == "observed":
             observed_by_source[source_name] += 1
-        else:
+        elif kind == "fitted":
             assert model_name is not None
             fitted_by_source_model[(source_name, model_name)] += 1
+        else:
+            overlay_sources.add(source_name)
+            overlay_artifact_count += len(logical_formats[logical_path])
     observed_count = sum(observed_by_source.values())
     fitted_count = sum(fitted_by_source_model.values())
     expected_observed_by_source = {
@@ -1408,6 +1472,43 @@ def _verify_run_figure_inventory(
         or fitted_matrix != expected_fitted_matrix
     ):
         raise ReportingError("Release figure counts do not reconcile with the artifact hierarchy")
+
+    if is_v2_layout:
+        expected_overlay_figure_count_by_source = {
+            source: 1 if expected_observed_by_source[source] > 0 else 0
+            for source in sorted(source_tokens)
+        }
+        expected_overlay_sources = {
+            source
+            for source, count in expected_overlay_figure_count_by_source.items()
+            if count == 1
+        }
+        if overlay_sources != expected_overlay_sources:
+            raise ReportingError(
+                "Release figure source overlay is missing or unexpected for an observed source"
+            )
+        overlay_counts_by_source = _integer_count_map(
+            overlay_declaration.get("figure_count_by_source"),
+            where="overlay-by-source",
+        )
+        overlay_series_counts_by_source = _integer_count_map(
+            overlay_declaration.get("series_count_by_source"),
+            where="overlay-series-by-source",
+        )
+        if (
+            not _nonnegative_integer(overlay_declaration.get("figure_count"))
+            or overlay_declaration.get("figure_count") != len(overlay_sources)
+            or not _nonnegative_integer(overlay_declaration.get("artifact_count"))
+            or overlay_declaration.get("artifact_count") != overlay_artifact_count
+            or not _nonnegative_integer(overlay_declaration.get("series_count"))
+            or overlay_declaration.get("series_count") != observed_count
+            or overlay_counts_by_source != expected_overlay_figure_count_by_source
+            or overlay_series_counts_by_source != expected_observed_by_source
+            or any(value not in (0, 1) for value in overlay_counts_by_source.values())
+        ):
+            raise ReportingError(
+                "Release figure overlay counts do not reconcile with the artifact hierarchy"
+            )
     status = figures.get("status")
     if status == "run_output" and not figure_paths:
         raise ReportingError("Release run-output figure inventory is empty")
@@ -1436,6 +1537,7 @@ def _verify_sample_figure_inventory(
     logical_formats: dict[str, list[str]] = {}
     observed_count = 0
     fitted_count = 0
+    overlay_count = 0
     for relative in figure_paths:
         if relative == "figures/sample/INDEX.md":
             continue
@@ -1445,7 +1547,7 @@ def _verify_sample_figure_inventory(
         if (
             len(parts) != 4
             or parts[:2] != ("figures", "sample")
-            or parts[2] not in {"observed", "fitted"}
+            or parts[2] not in {"observed", "fitted", "overlay"}
             or output_format not in formats
             or not path.stem
         ):
@@ -1455,8 +1557,10 @@ def _verify_sample_figure_inventory(
         if logical_path not in logical_formats:
             if parts[2] == "observed":
                 observed_count += 1
-            else:
+            elif parts[2] == "fitted":
                 fitted_count += 1
+            else:
+                overlay_count += 1
         logical_formats.setdefault(logical_path, []).append(output_format)
     if any(
         len(observed) != len(formats) or set(formats) != set(observed)
@@ -1472,6 +1576,17 @@ def _verify_sample_figure_inventory(
         or figures.get("artifact_count") != len(figure_paths)
     ):
         raise ReportingError("Synthetic sample figure counts do not reconcile")
+    declared_overlay_count = figures.get("overlay_figure_count")
+    if declared_overlay_count is None:
+        if overlay_count != 0:
+            raise ReportingError(
+                "Synthetic sample figure overlay inventory is undeclared"
+            )
+    elif (
+        not _nonnegative_integer(declared_overlay_count)
+        or declared_overlay_count != overlay_count
+    ):
+        raise ReportingError("Synthetic sample figure overlay counts do not reconcile")
 
 
 def _verify_figure_inventory(
@@ -1574,6 +1689,7 @@ def verify_release_package(target_path: str | Path) -> ReleasePackage:
         ):
             raise ReportingError("Release run manifest report-document metadata is invalid")
     _verify_release_status(payload)
+    _verify_qc_summary_scope(payload)
     _verify_manifest_artifact_inventory(expected, payload)
     _verify_replacement_record(target, expected, payload)
     _verify_full_release_governance(target, expected, payload)
