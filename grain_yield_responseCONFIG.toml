@@ -1,0 +1,88 @@
+# Goal: quantify the descriptive grain-yield relationship with inorganic N for the
+# authoritative curated dataset, show why a single pooled response line is wide,
+# and characterize the factors beyond N rate that structure yield and the response
+# series — operator-declared factors (water regime, season, region/province,
+# variety, planting year, organic/biofertilizer, P and K rates) plus derived
+# series-level covariates (zero-N check yield, N-ladder geometry, era, P/K
+# recording state). Screens are run three ways: against the pooled N-only line,
+# against a series-identity baseline, and at series level against fitted slopes;
+# redundancy and evidence audits flag aliased or metadata-driven factors. All of
+# it is descriptive: N rate is the only within-series treatment in this
+# population, so no causal claim, fertilizer recommendation, agronomic optimum,
+# or N-by-factor interaction is produced.
+#
+# Architecture: this is a standalone, hash-bound companion recipe. scriptCONFIG.toml
+# remains the repository configuration authority; output is written outside the
+# immutable N-response release package and is never appended to that package.
+# The bundle groups its artifacts by theme — tables/{population,pooled,
+# heterogeneity,factors} and figures/{pooled,heterogeneity,factors} — with
+# run_manifest.json + CHECKSUMS.sha256 binding every member.
+
+[run]
+mode = "full" # validate | test | full
+overwrite = true # replace only after the existing companion bundle verifies
+random_seed = 20260816 # seeds the cluster-bootstrap resampling of pooled uncertainty
+fail_fast = true
+include_raw_sensitivity = true
+run_mixed_model = true
+mixed_model_required = true
+# Current package members remain checksum-verified. If the stricter historical
+# replacement-lineage verifier fails, record that failure in this internal bundle;
+# change to "required" after the parent release lineage is repaired.
+release_verification_policy = "record_failure"
+
+[population]
+source_name = "core_trial_data"
+analysis_population = "governed_overlay"
+required_release_status = "phase_5_full_release_complete"
+minimum_observations = 3
+minimum_distinct_n_levels = 3
+n_level_tolerance_kg_ha = 0.01
+zero_n_tolerance_kg_ha = 0.00000001
+
+[diagnostics]
+fit_pooled_linear = true
+fit_pooled_quadratic = true
+fit_within_series = true
+fit_zero_n_delta = true
+fit_series_linear = true
+leave_one_series_out = true
+
+[grouping]
+series_key = "response_series_uid"
+study_key = "study_uid"
+trial_key = "trial_uid"
+
+[factors]
+# Operator-declared ledger columns screened as candidate predictors. In the
+# current population every one of these is constant within each response series,
+# so they describe between-series structure only. Known aliases the redundancy
+# audit documents: region = province = organic_fertilizer_present, and the two
+# recorded P/K rates move in lockstep. Series-level derived covariates
+# (zero-N check yield, N span, era, P/K recording state) are computed by the
+# recipe itself and are not configured here.
+categorical = ["water_regime_normalized", "season_normalized", "region_normalized", "province_normalized", "rice_variety_normalized", "planting_year", "organic_fertilizer_present", "biofertilizer_present"]
+numeric = ["p_rate_kg_p2o5_ha", "k_rate_kg_k2o_ha"]
+minimum_level_observations = 3
+minimum_modifier_series = 4
+
+[outputs]
+table_formats = ["csv"]
+figure_formats = ["jpeg"]
+figure_dpi = 220
+figure_width_inches = 10.0
+figure_height_inches = 6.4
+
+[expected_inputs]
+base_config_sha256 = "ecdc077cef97b2826e7add4f0cd0bba7f9093a82f9fc4d8ffaf2d34569ef3b3a"
+source_sha256 = "88e492add192621382d9e198af7558882de4d666b6934ceefc1cd688e076d5de"
+release_manifest_sha256 = "468c02cd5da5932f1e481a983d42200843c969e0a5da46dbba755106d5c6ab3a"
+release_ledger_sha256 = "96865dd4bde6ea034e8ca6a5832de795fb9195f905da0333a32bd572efcd62e9"
+release_checksums_sha256 = "a1239ee59e1b0fef25d5432e18fe3abc804ad47b8fa5d9daacddb58ff10d04d1"
+
+[paths]
+base_config = "scriptCONFIG.toml"
+release_package = "WF/06_Reports/n_response_full"
+output_root = "WF/06_Reports/grain_yield_response_diagnostics"
+test_output_root = "WF/06_Reports/grain_yield_response_diagnostics_test"
+r_stage = "modules/n_response_curve/analysis/stages/grain_yield_response_mixed_models.R"
