@@ -1,38 +1,46 @@
-# Frequently adjusted operator controls
-# Toggle a list member by commenting/uncommenting its individual line. Keep
-# routine run, selection, and analysis controls above the reference registries.
+# Operator controls first; source, schema, and path registries follow. Comment
+# or uncomment list members to disable/enable them; dependency-bound lists say
+# when all members must move together.
 [run]
+# Phases 2-5 form one dependency chain; keep all four for a normal run. Comment
+# all four to reuse a verified completed release instead. Partial lists are
+# rejected.
+phases = [
+  "phase_2",  # ingest, curate, resolve series, clean, eligibility, QC (no writes)
+  "phase_3",  # observed curves + policy-authorized model attempts
+  "phase_4",  # dataset views, factor catalog, analysis candidates, R dispatch
+  "phase_5",  # stage, validate, checksum, promote release package
+]
+
 # Mode choices:
-#   "validate" checks configuration, sources, ingestion, canonicalization,
-#              response-series resolution, eligibility, and QC; it does not
-#              run modeling or write pipeline outputs.
-#   "test"     runs the complete pipeline on at most test_group_limit resolved
-#              series and writes under paths.test_output_root.
-#   "full"     runs all resolved series and writes under paths.reports_root;
-#              every enabled source must be verified with an assigned adapter.
-# Full mode processes every enabled source and writes the complete output package.
-# It does not require organizational authority, sign-off, or approval artifacts.
+#   "validate" checks config/sources/ingest/eligibility/QC; no modeling, no writes.
+#   "test"     full pipeline on <= test_group_limit series -> test_output_root.
+#   "full"     all resolved series -> reports_root; every source needs a
+#              verified adapter. No [source_data_policy] manifest required;
+#              missing source evidence is held/ledgered, never inferred.
 mode = "full"
+# Allow atomic replacement of the stable release target (kept under
+# .release_history). Never bypasses package gates.
 overwrite = true
+# Empty phases list: reuse only if config/code/policy/source bytes still
+# checksum-match. With phases 2-5 listed, they always execute. Default: false.
+reuse_completed_release = true
 random_seed = 20260720
 test_group_limit = 12
 fail_fast = true
-# Validation fails on every review-bearing row. Writing modes complete all
-# technically processable data and preserve findings in their review ledgers.
+# validate fails on any review-bearing row; test/full process eligible data
+# and ledger the findings instead.
 qc_gate = "fail_on_any_review"
-# R CPU budget: max_parallel_r_jobs * r_threads_per_job must stay at or below the
-# affinity-visible CPU count (12 on this workstation). max_parallel_r_jobs is the
-# real dispatch width; r_threads_per_job pins BLAS/OpenMP inside each R process.
-# Prefer width over per-job threads: 12 single-threaded jobs saturate all 12 cores
-# while keeping every fit bit-reproducible, whereas multi-threaded BLAS reorders
-# floating-point reductions and can move results run to run.
+# max_parallel_r_jobs * r_threads_per_job <= affinity CPU count. 12-job
+# dispatch, 1 thread/job: reproducible independent fits over multithreaded
+# reductions within one fit.
 r_threads_per_job = 1
 max_parallel_r_jobs = 12
 r_stage_timeout_seconds = 1800
 r_termination_grace_seconds = 15
 cpu_detection = "affinity"
 [selection]
-# Comment one member to disable it; uncomment it to restore it. The parsed list is authoritative.
+# Parsed memberships are authoritative; comment a row to disable it.
 scope_countries = ["PH"]
 series_identity_dimensions = [
   "water_regime",
@@ -114,10 +122,8 @@ yield_min_t_ha = 0.0
 yield_max_t_ha = 30.0
 high_n_review_threshold_kg_ha = 200.0
 
-# Named critical codes remain useful severity metadata. Independently,
-# fail_on_any_review makes every warning, unresolved state, or exclusion found
-# by complete Phase 2 review fail validation. Test/full preserve those findings
-# in their complete review ledgers while processing technically eligible data.
+# Severity metadata only; qc_gate=fail_on_any_review independently fails
+# validation on any Phase 2 warning/unresolved/exclusion.
 critical_error_codes = [
   "YIELD_UNIT_CONFLICT",
 ]
@@ -144,7 +150,8 @@ candidate_models = [
 parameter_bounds = { n_rate_min_kg_ha = 0.0, n_rate_max_kg_ha = 400.0 }
 allow_uncertainty = false
 uncertainty_method = "deferred_until_evidence_gate"
-allow_baseline_response_metrics = false # ELG-10 C stays inactive until reviewed class and model-policy artifacts are configured.
+# ELG-10 C: inactive until reviewed treatment-class/model-policy evidence exists.
+allow_baseline_response_metrics = false
 
 # Output and logging controls
 [outputs]
@@ -152,22 +159,19 @@ atomic_writes = true
 allow_source_targets = false
 row_level_qc = true
 collision_policy = "replace_only_with_overwrite"
-# Clear the mode-specific release root (test -> paths.test_output_root,
-# full -> paths.reports_root) before the run writes anything. Every run writes a
-# new package directory, so leaving this false accumulates one per run; true
-# removes ALL prior packages under that root, not just the current run's target.
-# Requires [run].overwrite = true, and must stay false in validate mode.
-# Do not enable this while another run is in flight: it also removes that run's
-# staging directory (.<package_name>.stage-*) under the same root.
+# Wipes the mode's whole release root (test_output_root/reports_root): every
+# package, .release_history entry, staging dir. Normal replacement is already
+# atomic without this. Requires [run].overwrite=true, conflicts with release
+# reuse, forbidden in validate mode, never enable during a concurrent run.
 clear_output_root_before_run = false
 
 [logging]
 level = "INFO"
-# Must stay false in validate mode. The launcher's own logs under N_RESPONSE_LOG_ROOT
-# are written by nrc_setup_logging in every mode and are not governed by this key.
+# Must stay false in validate mode. Launcher logs under N_RESPONSE_LOG_ROOT are
+# written every mode regardless, unaffected by this key.
 write_logs_in_validate = false
-# Clear the launcher's log subdirectories (log_files, jsonl_logs,
-# error_warn_logs) before logging starts. Must stay false in validate mode.
+# Clears log_files/jsonl_logs/error_warn_logs before logging starts. Must
+# stay false in validate mode.
 clear_log_root_before_run = false
 
 # Runtime and engine controls
@@ -198,7 +202,7 @@ marginal_contrasts = "r"
 
 # Analysis candidate controls
 [analysis_hypotheses]
-# Empty means no bounded confirmatory hypothesis set has been authorized.
+# Empty: no bounded confirmatory hypothesis set authorized.
 specifications = []
 
 [analysis_matrix]
@@ -210,13 +214,13 @@ dataset_versions = [
   "D04_primary_5plus_n_levels",
   "D05_pk_varying_sensitivity",
   "D06_organic_bio_sensitivity",
-  "D07_high_n_full_range",
-  # "D08_high_n_trimmed_sensitivity", # Deferred under ELG-07 D until a reviewed diagnostic rule exists.
-  # "D09_complete_recommendation_set", # ELG-11 A stays inactive until reviewed membership evidence is configured.
+  "D07_high_n_full_range", # Runtime evidence gates decide availability.
+  # "D08_high_n_trimmed_sensitivity", # ELG-07 D: deferred until a reviewed diagnostic rule exists.
+  # "D09_complete_recommendation_set", # ELG-11 A: inactive until reviewed membership evidence exists.
   "D10_factor_specific_complete_case",
-  # "D11_balanced_interaction_cells", # Deferred with interaction families under ANA-06 Option C.
+  # "D11_balanced_interaction_cells", # Deferred with interaction families (ANA-06 Option C).
   # "D12_climate_enriched_future",
-  "D13_untrimmed_final_cleaning_sensitivity", # ELG-12 D: approved full-range sensitivity against final source-specific cleaning.
+  "D13_untrimmed_final_cleaning_sensitivity", # ELG-12 D: full-range sensitivity vs final source-specific cleaning.
 ]
 
 source_combination_modes = [
@@ -232,7 +236,7 @@ curve_outcomes = [
   "curve_shape_class",
   "optimum_status",
   "agronomic_optimum_n_kg_ha",
-  # "economic_optimum_n_kg_ha", # MOD-06 A: enable only with an approved, versioned scenario table.
+  # "economic_optimum_n_kg_ha", # MOD-06 A: needs a reviewed, versioned scenario table.
   "plateau_onset_n_kg_ha",
   "predicted_observed_domain_peak_yield_t_ha",
   "finite_maximum_yield_t_ha",
@@ -244,7 +248,7 @@ curve_outcomes = [
   "observed_max_gap_to_finite_maximum_t_ha",
   "observed_max_gap_to_supported_maximum_t_ha",
   "observed_max_attainment_fraction",
-  # "yield_at_zero_n_t_ha", # ELG-10 C: disabled until reviewed zero-N class evidence is configured.
+  # "yield_at_zero_n_t_ha", # ELG-10 C: disabled until reviewed zero-N class evidence exists.
   # "yield_response_above_zero_n_t_ha", # Disabled with the class-specific baseline estimands.
   "recommendation_yield_gap_t_ha",
   "target_yield_status",
@@ -258,14 +262,14 @@ explanatory_factors = [
   "region",
   "province",
   "variety",
-  "recommendation_scope", # Field-specific vs uniform recommendation; requires explicit source metadata.
+  "recommendation_scope", # Field-specific vs uniform; needs explicit source metadata.
 ]
 
 analysis_families = [
   "coverage_and_missingness",
   "one_factor_descriptive",
   # "all_supported_interactions",          # ANA-06 Option C: deferred pending an exact bounded list.
-  # "multivariable_mixed_effects",          # Deferred; current inferential profile is main effects only.
+  # "multivariable_mixed_effects",          # Deferred; inferential profile is main-effects only.
   # "observation_level_curve_modification", # Deferred with interaction/curve-modification terms.
   # "penalized_predictive_models", # Disabled by ANA-11.
   # "curve_feature_clustering", # Disabled by ANA-11.
@@ -284,7 +288,7 @@ deferred_analysis_families = [
 interaction_orders = [
   1,
   # 2, # ANA-06 Option C: disabled.
-  #3, # Selected; remains inert while all interaction analysis families are deferred.
+  #3, # Selected but inert while interaction analysis families are deferred.
 ]
 
 deferred_interaction_orders = [
@@ -298,12 +302,52 @@ run_supported_only = true
 group_cross_validation_by = "study_uid"
 multiple_testing_method = "benjamini_hochberg"
 
-# ANA-05 A is decided, but its exact versioned [analysis_matrix.support_policy] table is absent.
-# Inferential, predictive, and higher-order families therefore remain disabled.
+# ANA-05 A decided, but the versioned [analysis_matrix.support_policy] table
+# is absent, so inferential/predictive/higher-order families stay disabled.
 
-# Registered source and schema contract. Change this block only when a source
-# is added or its source evidence changes; source-specific path bindings stay
-# with their provenance metadata.
+# Configured descriptive overlay figures generated inside Phase 5 release
+# staging (no-op in validate). Declared by the v3 manifest and covered by the
+# main release ledger, with nested manifests/checksums for focused verification.
+[custom_overlays]
+enabled = true
+# One transactional release promotion owns this diagnostic set. Unknown extras,
+# malformed ledgers, tampered inputs, and post-release mutation fail closed.
+replace_existing = true
+# Adds the two zero-N yield-stratum figures plus signed diagnostic metadata.
+generate_zero_n_strata = true
+# Governed v3 overlay membership plus the release-safe ledger are the inputs.
+source_name = "core_trial_data"
+# Diagnostic thresholds only; do not affect governed model eligibility.
+zero_n_yield_threshold_t_ha = 5.0
+yield_threshold_t_ha = 7.8
+high_n_threshold_kg_ha = 200.0
+# Stable full-mode package path; must equal the active release target. The
+# random seed remains in the run identity, not in the output-folder name.
+package_path = "WF/06_Reports/n_response_full"
+
+# Source-wide and strict-yield-selection overlays: a separately signed extension
+# inside the full report container, outside its governed manifest and checksum
+# inventory. Outputs are organized under figures/overlay/<source_name>/, and the
+# whole container remains restricted/not for release.
+[source_dataset_overlays]
+# Disabled by the selected SRC-09 Option C storage boundary. Re-enable only after
+# a replacement A/B storage policy and its filesystem controls are approved.
+enabled = false
+# Replace only this generator's separately signed diagnostic bundle.
+replace_existing = true
+# Explicitly permits only the isolated diagnostic extension subtree below.
+placement = "restricted_package_extension"
+# Source membership is retained as configuration memory while materialization is disabled.
+source_names = ["core_trial_data", "ltcce", "ph_combined_nopt_rcm"]
+# Strict observed-yield selection; qualifying whole trajectories/linked rows
+# retain all their finite observations. This is descriptive, not a fitted gate.
+yield_threshold_t_ha = 7.8
+# Host package bytes remain unchanged and are bound by the extension manifest.
+package_path = "WF/06_Reports/n_response_full"
+output_root = "WF/06_Reports/n_response_full/restricted_diagnostics/source_dataset_overlays"
+
+# Registered source/schema contract. Edit only when a source is added or its
+# evidence changes; path bindings stay with provenance metadata.
 [sources.core_trial_data]
 source_type = "literature"
 country_code = "PH"
