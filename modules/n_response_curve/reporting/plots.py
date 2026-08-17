@@ -140,8 +140,8 @@ def _wrapped_plot_text(lines: Iterable[str], *, width: int = 84) -> str:
 
 
 def _finalize_axes(axes: Any, title_lines: Iterable[str]) -> None:
-    axes.set_xlabel("kg N/ha")
-    axes.set_ylabel("t/ha")
+    axes.set_xlabel("Applied N (kg N/ha)")
+    axes.set_ylabel("Grain yield (t/ha)")
     axes.set_title(_wrapped_plot_text(title_lines))
     axes.legend(loc="best", fontsize=8)
 
@@ -285,7 +285,7 @@ def create_source_series_overlay_figure(
     *,
     response_series_uids: Sequence[str],
 ):
-    """Overlay governed observed series without pooling or replacing their figures."""
+    """Overlay governed observed series without pooling or cross-series inference."""
 
     if not isinstance(source_name, str) or not source_name.strip():
         raise ValueError("A source-series overlay requires a nonempty source name")
