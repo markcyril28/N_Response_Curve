@@ -130,6 +130,14 @@ def _snapshot_paths(paths: tuple[Path, ...], root: Path) -> dict[str, str]:
     }
 
 
+def _snapshot_tree(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def _input_snapshot(config: GrainYieldResponseConfig, base_config: Any) -> dict[str, str]:
     source_path = Path(base_config.paths["core_source_csv"]).resolve()
     paths = (
@@ -142,6 +150,68 @@ def _input_snapshot(config: GrainYieldResponseConfig, base_config: Any) -> dict[
         *_implementation_paths(config),
     )
     return _snapshot_paths(tuple(paths), config.project_root)
+
+
+def _recover_interrupted_diagnostic_publication(
+    target: Path,
+    *,
+    verifier: Callable[[Path], Any] | None = None,
+) -> None:
+    """Recover a verified host stage/backup left by an interrupted promotion."""
+    if verifier is None:
+        from ..reporting.grain_yield_response import (
+            verify_replaceable_diagnostic_container,
+        )
+
+        verifier = verify_replaceable_diagnostic_container
+
+    prefixes = (f".{target.name}.staging.", f".{target.name}.backup.")
+    residues: list[Path] = []
+    if target.parent.is_dir():
+        for child in target.parent.iterdir():
+            if not child.name.startswith(prefixes):
+                continue
+            if child.is_symlink() or not child.is_dir():
+                raise RecipeConfigError(f"Unsafe diagnostic publication residue: {child}")
+            residues.append(child)
+    residues.sort(key=lambda path: path.name)
+
+    if target.exists():
+        verifier(target)
+        for residue in residues:
+            shutil.rmtree(residue)
+        return
+    if not residues:
+        return
+
+    valid_stages: list[Path] = []
+    valid_backups: list[Path] = []
+    for candidate in residues:
+        try:
+            verifier(candidate)
+        except Exception:
+            continue
+        if candidate.name.startswith(f".{target.name}.staging."):
+            valid_stages.append(candidate)
+        else:
+            valid_backups.append(candidate)
+
+    if len(valid_stages) > 1 or (not valid_stages and len(valid_backups) > 1):
+        raise RecipeConfigError(
+            f"Ambiguous interrupted diagnostic publication residues for {target}"
+        )
+    selected = valid_stages[0] if valid_stages else (
+        valid_backups[0] if valid_backups else None
+    )
+    if selected is None:
+        raise RecipeConfigError(
+            f"No valid diagnostic container can be recovered for {target}"
+        )
+    selected.replace(target)
+    verifier(target)
+    for residue in residues:
+        if residue.exists():
+            shutil.rmtree(residue)
 
 
 def _promote_stage(
@@ -158,29 +228,49 @@ def _promote_stage(
             raise RecipeConfigError(
                 f"Diagnostic output already exists and overwrite=false: {target}"
             )
+        from ..reporting.grain_yield_response import exchange_directories
+
+        try:
+            if exchange_directories(stage, target):
+                shutil.rmtree(stage)
+                return
+        except OSError as exc:
+            raise RecipeConfigError(
+                f"Failed to atomically exchange diagnostic output: {target}"
+            ) from exc
         backup = target.with_name(f".{target.name}.backup.{uuid.uuid4().hex}")
         target.replace(backup)
     try:
         stage.replace(target)
-    except Exception:
-        if backup is not None and backup.exists() and not target.exists():
-            backup.replace(target)
+    except BaseException:
+        try:
+            if backup is not None and backup.exists() and not target.exists():
+                backup.replace(target)
+        except OSError as restore_exc:
+            raise RecipeConfigError(
+                f"Failed to restore prior diagnostic output: {target}"
+            ) from restore_exc
         raise
     if backup is not None:
         shutil.rmtree(backup)
 
 
-def run_grain_yield_response(
+def _run_grain_yield_response_unlocked(
     config_path: str | Path,
     *,
     project_root: str | Path | None = None,
     base_config_loader: Callable[..., Any] = load_config,
+    expected_output_root: Path | None = None,
 ) -> GrainYieldResponsePipelineResult:
     """Validate or execute the governed grain-yield response diagnostics."""
 
     path = Path(config_path).expanduser().resolve()
     root = Path(project_root or path.parent).expanduser().resolve()
     config = load_recipe_config(path, project_root=root, check_files=True)
+    if expected_output_root is not None and config.output_root != expected_output_root:
+        raise RecipeConfigError(
+            "Diagnostic output root changed while acquiring its publication lock"
+        )
     base_config, population, raw_population = _load_inputs(
         config,
         base_config_loader=base_config_loader,
@@ -199,6 +289,8 @@ def run_grain_yield_response(
         )
 
     target = config.output_root
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_diagnostic_publication(target)
     if target.is_symlink():
         raise RecipeConfigError(f"Diagnostic output root is a symlink: {target}")
     if target.exists() and not config.overwrite:
@@ -292,12 +384,21 @@ def run_grain_yield_response(
     # Importing pyplot is intentionally deferred until writing mode so validate
     # remains free of Matplotlib cache or font-manager side effects.
     from ..reporting.grain_yield_response import (
+        PRIORITIZED_RESPONSE_MODIFIER_ROOT,
+        verify_completed_diagnostic_container,
         verify_diagnostic_bundle,
+        verify_replaceable_diagnostic_container,
         write_diagnostic_bundle,
     )
 
+    prioritized_extension: Path | None = None
+    prioritized_extension_snapshot: dict[str, str] = {}
     if target.exists():
-        verify_diagnostic_bundle(target)
+        verify_replaceable_diagnostic_container(target)
+        candidate = target / PRIORITIZED_RESPONSE_MODIFIER_ROOT
+        if candidate.is_dir():
+            prioritized_extension = candidate
+            prioritized_extension_snapshot = _snapshot_tree(candidate)
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = target.with_name(f".{target.name}.staging.{uuid.uuid4().hex}")
     try:
@@ -318,13 +419,26 @@ def run_grain_yield_response(
             implementation_sha256=implementation_sha256,
         )
         verify_diagnostic_bundle(stage)
+        if prioritized_extension is not None:
+            staged_extension = stage / PRIORITIZED_RESPONSE_MODIFIER_ROOT
+            staged_extension.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(prioritized_extension, staged_extension)
+            if _snapshot_tree(prioritized_extension) != prioritized_extension_snapshot:
+                raise RecipeConfigError(
+                    "Prioritized response-modifier bundle changed during the diagnostic run"
+                )
+            if _snapshot_tree(staged_extension) != prioritized_extension_snapshot:
+                raise RecipeConfigError(
+                    "Prioritized response-modifier bundle was not copied exactly"
+                )
+            verify_completed_diagnostic_container(stage)
         input_snapshot_after = _input_snapshot(config, base_config)
         if input_snapshot_after != input_snapshot_before:
             raise RecipeConfigError(
                 "An input or implementation file changed during the diagnostic run"
             )
         _promote_stage(stage, target, overwrite=config.overwrite)
-        verified = verify_diagnostic_bundle(target)
+        verified = verify_completed_diagnostic_container(target)
     finally:
         if stage.exists():
             shutil.rmtree(stage)
@@ -340,6 +454,36 @@ def run_grain_yield_response(
             population.source_release_verification_status
         ),
     )
+
+
+def run_grain_yield_response(
+    config_path: str | Path,
+    *,
+    project_root: str | Path | None = None,
+    base_config_loader: Callable[..., Any] = load_config,
+) -> GrainYieldResponsePipelineResult:
+    """Validate directly or execute under the shared container writer lock."""
+    path = Path(config_path).expanduser().resolve()
+    root = Path(project_root or path.parent).expanduser().resolve()
+    config = load_recipe_config(path, project_root=root, check_files=True)
+    if config.mode == "validate":
+        return _run_grain_yield_response_unlocked(
+            path,
+            project_root=root,
+            base_config_loader=base_config_loader,
+        )
+
+    from ..reporting.grain_yield_response import (
+        diagnostic_container_publication_lock,
+    )
+
+    with diagnostic_container_publication_lock(config.output_root):
+        return _run_grain_yield_response_unlocked(
+            path,
+            project_root=root,
+            base_config_loader=base_config_loader,
+            expected_output_root=config.output_root,
+        )
 
 
 def main(
