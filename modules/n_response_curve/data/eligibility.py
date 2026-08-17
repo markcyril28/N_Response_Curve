@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
+
+from .ingest import CURVE_CAPABLE_REPRESENTATION_BASES
 
 
 _TIER_RANK = {"A": 0, "B": 1, "C": 2, "D": 3}
@@ -20,9 +23,14 @@ class EligibilityResult:
 
 def _parsed_number(record: Mapping[str, Any], value_key: str, status_key: str) -> float | None:
     value = record.get(value_key)
-    if record.get(status_key) != "parsed" or not isinstance(value, (int, float)):
+    if (
+        record.get(status_key) != "parsed"
+        or isinstance(value, bool)
+        or not isinstance(value, (int, float))
+    ):
         return None
-    return float(value)
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
 
 
 def _constant(values: list[float], tolerance: float) -> bool | None:
@@ -39,6 +47,40 @@ def _distinct_n_levels(values: list[float], tolerance: float) -> tuple[float, ..
     return tuple(levels)
 
 
+def _complete_rows(rows: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Return rows with a canonically parsed, unit-consistent N/yield pair."""
+
+    return [
+        row
+        for row in rows
+        if _parsed_number(row, "n_rate_kg_ha", "n_rate_parse_status") is not None
+        and _parsed_number(row, "yield_t_ha", "yield_parse_status") is not None
+        and row.get("yield_unit_status") != "conflict"
+    ]
+
+
+def series_observation_support(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    n_level_tolerance_kg_ha: float,
+) -> tuple[int, int]:
+    """Return (complete_observation_count, distinct_n_level_count) for one series.
+
+    Reuses the same tolerance-aware parse/unit semantics as row-level eligibility
+    tiering so callers (e.g. release figure renderability) never fork a second,
+    possibly-stale definition of "complete" or "distinct".
+    """
+
+    complete = _complete_rows(rows)
+    n_rates = [
+        value
+        for row in complete
+        if (value := _parsed_number(row, "n_rate_kg_ha", "n_rate_parse_status")) is not None
+    ]
+    n_levels = _distinct_n_levels(n_rates, n_level_tolerance_kg_ha)
+    return len(complete), len(n_levels)
+
+
 def _series_metrics(records: Iterable[Mapping[str, Any]], policy: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     nutrient_tolerance = float(policy["constant_nutrient_tolerance"])
     n_level_tolerance = float(policy["n_level_tolerance_kg_ha"])
@@ -51,13 +93,7 @@ def _series_metrics(records: Iterable[Mapping[str, Any]], policy: Mapping[str, A
 
     metrics: dict[str, dict[str, Any]] = {}
     for series_uid, rows in grouped.items():
-        complete = [
-            row
-            for row in rows
-            if _parsed_number(row, "n_rate_kg_ha", "n_rate_parse_status") is not None
-            and _parsed_number(row, "yield_t_ha", "yield_parse_status") is not None
-            and row.get("yield_unit_status") != "conflict"
-        ]
+        complete = _complete_rows(rows)
         n_rates = [
             value
             for row in complete
@@ -107,7 +143,6 @@ def _reason_for_parse_status(prefix: str, status: object) -> str:
 def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
     unresolved: list[str] = []
     exact_controls = {
-        "representation_basis_status": {"reviewed"},
         "representation_review_status": {"resolved"},
         "schema_mapping_status": {"reviewed"},
         "cleaning_review_status": {
@@ -124,6 +159,21 @@ def _unresolved_review_controls(record: Mapping[str, Any]) -> tuple[str, ...]:
     for field, allowed in exact_controls.items():
         if field in record and str(record.get(field) or "") not in allowed:
             unresolved.append(f"UNRESOLVED_REVIEW_CONTROL:{field}")
+    if "representation_basis_status" in record:
+        if str(record.get("representation_basis_status") or "") != "reviewed":
+            unresolved.append("UNRESOLVED_REVIEW_CONTROL:representation_basis_status")
+        elif record.get("representation_basis") not in CURVE_CAPABLE_REPRESENTATION_BASES:
+            # The review itself is complete (status == "reviewed"); the basis it
+            # resolved to just cannot support a curve fit. That is a structural
+            # fact, not a pending/unresolved review, so it gets its own reason
+            # code instead of being conflated with UNRESOLVED_REVIEW_CONTROL.
+            unresolved.append("REPRESENTATION_BASIS_NOT_CURVE_CAPABLE")
+    elif "representation_basis" in record:
+        # A basis was recorded but never carried a review status at all. That is
+        # not the same as "reviewed and rejected" above — it means the review
+        # control itself is missing, so fail closed the same way a present but
+        # non-"reviewed" status would.
+        unresolved.append("UNRESOLVED_REVIEW_CONTROL:representation_basis_status")
     # Category uncertainty is local to analyses that use that category.  It is
     # preserved in QC and the affected factor/fit gate, but it must not turn an
     # otherwise complete N/yield record into Tier D for every analysis.  This
@@ -382,4 +432,4 @@ def assign_eligibility(
     )
 
 
-__all__ = ["EligibilityResult", "assign_eligibility"]
+__all__ = ["EligibilityResult", "assign_eligibility", "series_observation_support"]
