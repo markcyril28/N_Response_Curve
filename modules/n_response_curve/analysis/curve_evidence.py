@@ -30,7 +30,30 @@ from .values import finite_number
 
 
 _ALL_CREDIBLE_POLICY = "all_credible_no_selection"
-_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"ceiling_level", "response_range"})
+# PRF-005 Option C: the model-derived series-level point estimates that a
+# credible set of more than one candidate may not publish. Observed quantities
+# (`observed_max_*`, `series_observed_n_*`) are deliberately absent -- they are
+# facts about the data, not conclusions drawn from any candidate.
+_MULTI_CANDIDATE_SUPPRESSED_NUMERIC_FIELDS = (
+    "agronomic_optimum_n_kg_ha",
+    "plateau_onset_n_kg_ha",
+    "predicted_max_yield_t_ha",
+    "predicted_observed_domain_peak_yield_t_ha",
+    "finite_maximum_yield_t_ha",
+    "fitted_asymptote_yield_t_ha",
+    "supported_max_yield_t_ha",
+)
+_MULTI_CANDIDATE_SUPPRESSION_STATUS = (
+    "suppressed_credible_set_publishes_no_common_single_point"
+)
+# STAT-002/PRF-011 Option A: `response_range` is the sole accepted reference
+# quantity for both the MOD-08 attainment gate and MOD-07 reporting. The retired
+# `ceiling_level` reading already stands at `(C - A) / C` before any nitrogen is
+# applied, so on a high-baseline site it largely measures baseline fertility and
+# passes a strict gate on a weakly approached ceiling. Both surfaces narrow
+# together: a reported rate must never be solved against a reference quantity no
+# support gate ever evaluated.
+_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"response_range"})
 # The MOD-08 ceiling gate may only rest on an interval method that stays valid
 # where the likelihood is a ridge in `(C, A)`. Neither is implemented yet, so a
 # policy naming one is still refused at execution time rather than silently
@@ -246,14 +269,17 @@ def _partial_factor_productivity_rows(
             "unit": "kg_grain_per_kg_n",
         }
         if n_rate == 0.0:
+            # EFF-02 Option A: the row is retained because the observation is
+            # real, but yield/N has no value at zero applied N -- the quotient is
+            # undefined, not withheld pending a representation decision. This
+            # stays a class of its own: a defined quotient that fails numerically
+            # is a different finding and keeps its own status below.
             rows.append(
                 {
                     **common,
                     "partial_factor_productivity_kg_grain_per_kg_n": None,
-                    "status": "withheld_zero_n_representation_unapproved",
-                    "reason_codes": (
-                        "EFF02_ZERO_N_REPRESENTATION_UNAPPROVED",
-                    ),
+                    "status": "undefined_at_zero_n",
+                    "reason_codes": ("EFF02_UNDEFINED_AT_ZERO_N",),
                 }
             )
             continue
@@ -865,24 +891,19 @@ def _in_domain_attainment(
     observed_peak: float | None,
     reference_quantity: str,
 ) -> float | None:
-    """Return how far the observed domain climbed toward the fitted ceiling.
+    """Return how far the observed domain climbed through the fitted response range.
 
-    The two readings answer different questions and are not interchangeable
-    (PRF-011). Against the **ceiling level** the statistic is `mu(N_max) / C`,
-    which already stands at `(C - A) / C` before any nitrogen is applied, so on a
-    high-baseline site it largely measures baseline fertility: with a 5-of-6 t/ha
-    baseline a 0.9 gate passes once only 40% of the response range has been
-    traversed. Against the **response range** it is
+    PRF-011 is decided (Option A). The statistic is
     `(mu(N_max) - mu(0)) / A = 1 - exp(-r * N_max)`, which starts at zero
-    whatever the baseline and measures exactly what the gate exists to check.
+    whatever the baseline and measures exactly what the gate exists to check. The
+    retired ceiling reading `mu(N_max) / C` is refused rather than computed: with
+    a 5-of-6 t/ha baseline it passes a 0.9 gate once only 40% of the response
+    range has been traversed. `observed_peak` is retained because it remains the
+    caller's own record of the attempt it evaluated.
     """
 
-    if asymptote in {None, 0.0}:
+    if asymptote in {None, 0.0} or reference_quantity != "response_range":
         return None
-    if reference_quantity == "ceiling_level":
-        if observed_peak is None:
-            return None
-        return observed_peak / asymptote
     rate = finite_number(attempt.parameters.get("rate"))
     observed_max = finite_number(attempt.observed_n_max_kg_ha)
     if rate is None or rate <= 0.0 or observed_max is None or observed_max < 0.0:
@@ -1104,7 +1125,7 @@ def _approved_asymptote_reporting_policy(
         or not str(raw["policy_id"]).strip()
         or fraction is None
         or not 0.0 < fraction < 1.0
-        or raw.get("reference_quantity") not in {"ceiling_level", "response_range"}
+        or raw.get("reference_quantity") not in _ASYMPTOTE_REFERENCE_QUANTITIES
         or raw.get("rate_label") != "N at q% of asymptote"
         or not isinstance(raw.get("uncertainty_method"), str)
         or not str(raw["uncertainty_method"]).strip()
@@ -1162,25 +1183,23 @@ def _asymptote_reporting_rows(
         ):
             reasons.add("ASYMPTOTE_FRACTION_RATE_UNIDENTIFIABLE")
         else:
-            # `ceiling_level` solves mu(N) = q * (l + A); `response_range` solves
-            # A * (1 - exp(-rN)) = q * A, which reduces to the scale-free
-            # -ln(1 - q) / r and cannot degenerate.
-            ratio = (
-                asymptote * (1.0 - fraction) / amplitude
-                if reference_quantity == "ceiling_level"
-                else 1.0 - fraction
-            )
+            # STAT-002/PRF-011 Option A: only `response_range` reaches here, and
+            # it solves A * (1 - exp(-rN)) = q * A, which reduces to the
+            # scale-free -ln(1 - q) / r and cannot degenerate.
+            ratio = 1.0 - fraction
             if ratio <= 0.0:
                 reasons.add("ASYMPTOTE_FRACTION_RATE_UNIDENTIFIABLE")
             else:
                 solved_rate = -math.log(ratio) / rate
-                # Both domain edges refuse. Clamping the lower edge up to
-                # observed_min would publish the domain floor as though the
-                # criterion had been solved there, paired with the standard
-                # error of the unclamped solution -- an interval that does not
-                # cover the quantity actually reported.
+                # STAT-003 Option A: both domain edges refuse, and the lower edge
+                # is never clamped up to observed_min. Clamping would publish the
+                # domain floor as though the criterion had been solved there,
+                # paired with the standard error of the unclamped solution -- an
+                # interval that does not cover the quantity actually reported.
+                # The observed floor stays an observed quantity; the withheld
+                # rate stays model-implied and absent.
                 if solved_rate < observed_min:
-                    reasons.add("ASYMPTOTE_FRACTION_ALREADY_ATTAINED_AT_DOMAIN_FLOOR")
+                    reasons.add("below_observed_domain")
                 elif solved_rate > observed_max:
                     reasons.add("ASYMPTOTE_FRACTION_NOT_REACHED_IN_DOMAIN")
                 else:
@@ -1716,9 +1735,14 @@ def _disagreement_summary(
     )
     if materially_different is False:
         status = "stable_credible_conclusions"
+        # `exact_numeric_consensus` checks three numeric fields and no status, so
+        # candidates can share those numbers and still disagree about what the
+        # optimum is. Requiring the status itself to be unanimous keeps the first
+        # enumerated candidate's verdict from standing in for the set's.
         optimum_status = (
             credible[0].optimum_status
             if exact_numeric_consensus
+            and len({attempt.optimum_status for attempt in credible}) == 1
             else "CREDIBLE_MODEL_RANGE_REPORTED"
         )
         maximum_reference_basis = (
@@ -2496,14 +2520,15 @@ def _all_credible_curve_row(
             "supported_max_yield_range_t_ha": summary.ranges[
                 "supported_max_yield_t_ha"
             ],
-            # PRF-005: `MOD-02` and `MOD-05` fully specify the disagreement
-            # branch and say nothing about the agreement branch, which is the
-            # one that reaches a reader. Publishing one candidate's value after
-            # conditioning on agreement drops model uncertainty and selects on
-            # the agreement event, narrowing the interval twice over. Until the
-            # reviewed model policy records the estimator of the common value
-            # and its uncertainty rule, the spread across the agreeing
-            # candidates travels with every single value.
+            # PRF-005 Option C: `MOD-02` and `MOD-05` fully specify the
+            # disagreement branch and said nothing about the agreement branch,
+            # which is the one that reaches a reader. Publishing one candidate's
+            # value after conditioning on agreement drops model uncertainty and
+            # selects on the agreement event, narrowing the interval twice over.
+            # The decided rule is that a credible set with more than one
+            # candidate publishes no common model-derived point at all; these
+            # ranges, the candidate rows, and each candidate's own uncertainty
+            # are the reportable evidence in its place.
             "finite_maximum_yield_range_t_ha": summary.ranges[
                 "finite_maximum_yield_t_ha"
             ],
@@ -2522,7 +2547,7 @@ def _all_credible_curve_row(
                 expected_count=len(credible),
             ),
             "credible_set_common_value_rule": (
-                "unrecorded_spread_reported_alongside_single_value"
+                "credible_set_range_and_candidate_uncertainty_no_single_point"
             ),
             "sole_credible_model_attempt_uid": (
                 credible[0].model_attempt_uid if len(credible) == 1 else None
@@ -2553,60 +2578,45 @@ def _all_credible_curve_row(
                 "observed_domain_boundary_yield_t_ha": None,
             }
         )
-    else:
-        # The two goal-facing derived quantities are computed from a single
-        # representative attempt, so on the agreement branch their value would
-        # otherwise be whichever candidate the enumeration reached first — the
-        # one thing Plan Section 10.2 forbids while the common-value rule is
-        # unrecorded. Publish them only where every credible candidate produces
-        # the same number; where they differ, the spread emitted above is the
-        # reportable evidence and the single value is withheld with its reason.
-        for value_field, basis_field, status_field, values in (
+    if len(credible) > 1:
+        # PRF-005 Option C. Everything below is computed from `credible[0]`, the
+        # first attempt the enumeration reached, or from `_common_numeric_value`,
+        # which returns a number precisely when the candidates happen to agree
+        # exactly. Both publish a single model-derived point for a multi-candidate
+        # set, and agreement is the branch that most needs the guard: exact
+        # agreement is the only way one candidate's number can leave this
+        # function looking like a common estimate. Ranges, candidate rows, and
+        # candidate-specific uncertainty are set above and survive; the observed
+        # maximum and its rates are facts about the data and are never touched
+        # here; a shape class every candidate shares stays qualitative evidence.
+        for value_field, basis_field, status_field in (
             (
                 "attainable_yield_t_ha",
                 "attainable_yield_basis",
                 "attainable_yield_status",
-                tuple(_attainable_yield(attempt)[0] for attempt in credible),
             ),
             (
                 "maximum_associated_n_kg_ha",
                 "maximum_associated_n_basis",
                 "maximum_associated_n_status",
-                tuple(_maximum_associated_rate(attempt)[0] for attempt in credible),
             ),
         ):
-            if len(credible) > 1 and len(set(values)) > 1:
-                row.update(
-                    {
-                        value_field: None,
-                        basis_field: "none",
-                        status_field: (
-                            "suppressed_pending_recorded_common_value_rule"
-                        ),
-                    }
-                )
-                row["reason_codes"] = tuple(
-                    sorted(
-                        set(row["reason_codes"])
-                        | {"CREDIBLE_SET_COMMON_VALUE_RULE_UNRECORDED"}
-                    )
-                )
-        boundary_statuses = {
-            attempt.observed_domain_boundary_status for attempt in credible
-        }
-        boundary_rates = _numeric_range(credible, "observed_domain_boundary_n_kg_ha")
-        if len(boundary_statuses) != 1 or (
-            boundary_rates is not None and boundary_rates[0] != boundary_rates[1]
-        ):
-            row.update(
-                {
-                    "observed_domain_boundary_status": (
-                        "CREDIBLE_MODEL_RANGE_REPORTED"
-                    ),
-                    "observed_domain_boundary_n_kg_ha": None,
-                    "observed_domain_boundary_yield_t_ha": None,
-                }
+            if not str(row[status_field]).startswith("suppressed"):
+                row[status_field] = _MULTI_CANDIDATE_SUPPRESSION_STATUS
+            row[value_field] = None
+            row[basis_field] = "none"
+        for numeric_field in _MULTI_CANDIDATE_SUPPRESSED_NUMERIC_FIELDS:
+            row[numeric_field] = None
+        if not str(row["observed_domain_boundary_status"]).startswith("suppressed"):
+            row["observed_domain_boundary_status"] = "CREDIBLE_MODEL_RANGE_REPORTED"
+        row["observed_domain_boundary_n_kg_ha"] = None
+        row["observed_domain_boundary_yield_t_ha"] = None
+        row["reason_codes"] = tuple(
+            sorted(
+                set(row["reason_codes"])
+                | {"CREDIBLE_SET_PUBLISHES_NO_COMMON_SINGLE_POINT"}
             )
+        )
     observed_max = float(row["observed_max_yield_t_ha"])
     supported_max = row["supported_max_yield_t_ha"]
     finite_maximum = row["finite_maximum_yield_t_ha"]
