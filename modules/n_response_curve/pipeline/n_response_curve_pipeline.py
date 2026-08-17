@@ -32,6 +32,7 @@ from n_response_curve.data.ingest import (
     SourceAdapterSpec,
     WorkbookCsvReconciliation,
     ingest_configured_sources,
+    verify_configured_source_integrity,
 )
 from n_response_curve.data.policy_artifacts import (
     SourceDataPolicyBundle,
@@ -63,9 +64,12 @@ from n_response_curve.logging.run_logging import (
 from n_response_curve.pipeline.policy_governance import (
     ReviewGatePolicy,
     phase_two_review_disposition,
+    release_config_sha256,
     validate_runtime_policy,
 )
 from n_response_curve.pipeline.workflow import (
+    _code_fingerprint,
+    _find_reusable_completed_release,
     _release_run_id,
     build_effective_model_policy,
     release_phases_three_to_five,
@@ -75,6 +79,12 @@ from n_response_curve.pipeline.workflow import (
 from n_response_curve.pipeline.workspace_reset import (
     clear_log_workspace,
     clear_output_workspace,
+)
+from n_response_curve.reporting.release import verify_completed_release_package
+from n_response_curve.reporting.workspace_outputs import (
+    WorkspaceOutputs,
+    materialize_workspace_views,
+    workspace_view_display_paths,
 )
 
 
@@ -165,9 +175,7 @@ def _build_runtime_source_scope_snapshot(
                 if match is not None:
                     nonblank_data_row_count = int(match.group(1))
             availability_observation = (
-                "observed_empty"
-                if nonblank_data_row_count == 0
-                else "present_artifact"
+                "observed_empty" if nonblank_data_row_count == 0 else "present_artifact"
             )
         sources.append(
             {
@@ -215,8 +223,7 @@ def _build_runtime_source_scope_snapshot(
             for source in sources
         ),
         "observed_empty_source_count": sum(
-            source["availability_observation"] == "observed_empty"
-            for source in sources
+            source["availability_observation"] == "observed_empty" for source in sources
         ),
         "present_source_count": sum(
             source["availability_observation"] == "present_artifact"
@@ -325,7 +332,9 @@ def _load_source_data_policy(
         raise ConfigError("Source-data policy manifest hash is unavailable")
     secret_env = config.source_data_policy_secret_env
     if secret_env is None:
-        raise ConfigError("Source-data policy pseudonym-secret reference is unavailable")
+        raise ConfigError(
+            "Source-data policy pseudonym-secret reference is unavailable"
+        )
     secret = os.environ.get(secret_env)
     if secret is None:
         raise ConfigError(
@@ -436,6 +445,67 @@ def _reviewed_source_adapter_specs(
     return specs
 
 
+_GENERIC_SOURCE_LOCAL_KEY_FIELDS = (
+    "source_name",
+    "study_id",
+    "trial_id",
+    "treatment",
+    "planting_year",
+    "season",
+    "location",
+    "n_rate_kg_ha",
+    "yield_t_ha",
+)
+_GENERIC_SOURCE_LOCAL_CASEFOLD_FIELDS = (
+    "source_name",
+    "study_id",
+    "trial_id",
+    "treatment",
+    "season",
+    "location",
+)
+
+
+def _runtime_source_local_duplicate_rule(source_name: str) -> DuplicateRuleSet:
+    """No-source-policy fallback exact/probable duplicate rule for one source.
+
+    LTCCE's generic contextual key omits ``experimental_design``,
+    ``rice_variety``, ``source_variety_code``, and ``replicate``, so distinct
+    LTCCE trials that share treatment/season/location/N-rate/yield collide as
+    exact duplicates. LTCCE therefore binds its exact key to the complete
+    preserved physical row (``source_name`` + ``raw_cells``) and widens its
+    probable key with the omitted contextual fields; every other source keeps
+    the unchanged generic rule.
+    """
+    if source_name != "ltcce":
+        return DuplicateRuleSet(
+            version=f"runtime-source-policy-2026-08-13-{source_name}",
+            review_id="user-source-policy-decisions-2026-08-13",
+            exact_key_fields=_GENERIC_SOURCE_LOCAL_KEY_FIELDS,
+            probable_key_fields=_GENERIC_SOURCE_LOCAL_KEY_FIELDS,
+            probable_numeric_tolerances=MappingProxyType(
+                {"n_rate_kg_ha": 0.01, "yield_t_ha": 0.001}
+            ),
+            casefold_fields=_GENERIC_SOURCE_LOCAL_CASEFOLD_FIELDS,
+            source_names=(source_name,),
+            probable_cross_source_only=False,
+        )
+    return DuplicateRuleSet(
+        version="runtime-source-policy-2026-08-14-ltcce-v2",
+        review_id="user-source-policy-decisions-2026-08-13",
+        exact_key_fields=("source_name", "raw_cells"),
+        probable_key_fields=_GENERIC_SOURCE_LOCAL_KEY_FIELDS
+        + ("experimental_design", "rice_variety", "source_variety_code", "replicate"),
+        probable_numeric_tolerances=MappingProxyType(
+            {"n_rate_kg_ha": 0.01, "yield_t_ha": 0.001}
+        ),
+        casefold_fields=_GENERIC_SOURCE_LOCAL_CASEFOLD_FIELDS
+        + ("experimental_design", "rice_variety", "source_variety_code"),
+        source_names=("ltcce",),
+        probable_cross_source_only=False,
+    )
+
+
 def run_phase_two(
     config: ValidatedConfig,
     *,
@@ -509,7 +579,9 @@ def run_phase_two(
     source_scope_snapshot = None
     if isinstance(source_data_policy, SourceDataPolicyBundle):
         if ingestion.integrity_report is None:
-            raise ConfigError("Source-scope snapshot requires source-integrity evidence")
+            raise ConfigError(
+                "Source-scope snapshot requires source-integrity evidence"
+            )
         source_scope_snapshot = _build_runtime_source_scope_snapshot(
             config,
             source_data_policy,
@@ -541,45 +613,7 @@ def run_phase_two(
         else {
             "duplicate_rules": (
                 *tuple(
-                    DuplicateRuleSet(
-                        version=f"runtime-source-policy-2026-08-13-{source_name}",
-                        review_id="user-source-policy-decisions-2026-08-13",
-                        exact_key_fields=(
-                            "source_name",
-                            "study_id",
-                            "trial_id",
-                            "treatment",
-                            "planting_year",
-                            "season",
-                            "location",
-                            "n_rate_kg_ha",
-                            "yield_t_ha",
-                        ),
-                        probable_key_fields=(
-                            "source_name",
-                            "study_id",
-                            "trial_id",
-                            "treatment",
-                            "planting_year",
-                            "season",
-                            "location",
-                            "n_rate_kg_ha",
-                            "yield_t_ha",
-                        ),
-                        probable_numeric_tolerances=MappingProxyType(
-                            {"n_rate_kg_ha": 0.01, "yield_t_ha": 0.001}
-                        ),
-                        casefold_fields=(
-                            "source_name",
-                            "study_id",
-                            "trial_id",
-                            "treatment",
-                            "season",
-                            "location",
-                        ),
-                        source_names=(source_name,),
-                        probable_cross_source_only=False,
-                    )
+                    _runtime_source_local_duplicate_rule(source_name)
                     for source_name in getattr(config, "enabled_sources", ())
                 ),
                 *(
@@ -620,9 +654,7 @@ def run_phase_two(
                                 "season",
                                 "location",
                             ),
-                            source_names=tuple(
-                                getattr(config, "enabled_sources", ())
-                            ),
+                            source_names=tuple(getattr(config, "enabled_sources", ())),
                             probable_cross_source_only=True,
                             scope_kind="cross_source",
                         ),
@@ -636,7 +668,9 @@ def run_phase_two(
     untrimmed_resolution = resolve_response_series(
         curation.records,
         series_identity_dimensions=config.series_identity_dimensions,
-        n_level_tolerance_kg_ha=float(config.raw["eligibility"]["n_level_tolerance_kg_ha"]),
+        n_level_tolerance_kg_ha=float(
+            config.raw["eligibility"]["n_level_tolerance_kg_ha"]
+        ),
         **resolution_kwargs,
     )
     untrimmed_analysis_eligibility: EligibilityResult | None = None
@@ -656,8 +690,7 @@ def run_phase_two(
             source_data_policy.final_cleaning_policies,
         )
         cleaned_by_uid = {
-            str(record["record_uid"]): record
-            for record in final_cleaning.records
+            str(record["record_uid"]): record for record in final_cleaning.records
         }
         primary_record_uids = set(final_cleaning.primary_record_uids)
         primary_resolution = resolve_response_series(
@@ -673,8 +706,7 @@ def run_phase_two(
             **resolution_kwargs,
         )
         primary_by_uid = {
-            str(record["record_uid"]): record
-            for record in primary_resolution.records
+            str(record["record_uid"]): record for record in primary_resolution.records
         }
         resolution = SeriesResolution(
             records=tuple(
@@ -717,7 +749,9 @@ def run_phase_two(
         inventory_record_uids=(record["record_uid"] for record in curation.records),
     )
     if not qc.reconciles:
-        raise ConfigError("Phase 2 source-to-tier QC flow does not reconcile to the master inventory")
+        raise ConfigError(
+            "Phase 2 source-to-tier QC flow does not reconcile to the master inventory"
+        )
     return PhaseTwoResult(
         ingestion=ingestion,
         curation=curation,
@@ -763,7 +797,9 @@ def _qc_gate_blockers(
             count,
             len(control_fields) if label == f"{_REVIEW_CONTROL_PREFIX}*" else 0,
         )
-        for label, count in sorted(row_counts.items(), key=lambda item: (-item[1], item[0]))
+        for label, count in sorted(
+            row_counts.items(), key=lambda item: (-item[1], item[0])
+        )
     )
     return ranked[:_QC_GATE_REASON_LIMIT], max(len(ranked) - _QC_GATE_REASON_LIMIT, 0)
 
@@ -885,27 +921,38 @@ def _display_path(path: Path, root: Path) -> str:
 def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -> None:
     report = phase_two.ingestion.integrity_report
     if report is None:
-        raise ConfigError("Phase 2 ingestion completed without a source-integrity report")
+        raise ConfigError(
+            "Phase 2 ingestion completed without a source-integrity report"
+        )
     tier_counts = phase_two.qc.tier_counts
     resolved_series_count = len(
         {
             record["response_series_uid"]
             for record in phase_two.resolution.records
-            if record.get("series_status") == "resolved" and record.get("response_series_uid")
+            if record.get("series_status") == "resolved"
+            and record.get("response_series_uid")
         }
     )
     print(f"mode={config.run_mode}")
     print(f"writes_outputs={'true' if config.writes_outputs else 'false'}")
     print(f"source_count={len(config.enabled_sources)}")
     for source_name in config.enabled_sources:
-        source_path = config.paths["core_source_csv"] if source_name == "core_trial_data" else Path(config.sources[source_name]["data_path"])
+        source_path = (
+            config.paths["core_source_csv"]
+            if source_name == "core_trial_data"
+            else Path(config.sources[source_name]["data_path"])
+        )
         if source_name != "core_trial_data":
             source_path = config.project_root / source_path
-        print(f"source={source_name} path={_relative(source_path, config.project_root)}")
+        print(
+            f"source={source_name} path={_relative(source_path, config.project_root)}"
+        )
     print(f"enabled_models={','.join(config.enabled_models) or 'observed_only'}")
     print(f"scope_countries={','.join(config.scope_countries)}")
     print(f"series_identity_dimensions={','.join(config.series_identity_dimensions)}")
-    print(f"n_level_tolerance_kg_ha={config.raw['eligibility']['n_level_tolerance_kg_ha']}")
+    print(
+        f"n_level_tolerance_kg_ha={config.raw['eligibility']['n_level_tolerance_kg_ha']}"
+    )
     print(f"comparison_dimensions={','.join(config.comparison_dimensions) or 'none'}")
     print(f"analysis_families={','.join(config.analysis_families)}")
     print(f"source_integrity=pass checked_files={report.checked_files}")
@@ -925,7 +972,9 @@ def _print_validation_plan(config: ValidatedConfig, phase_two: PhaseTwoResult) -
         "literature_verification_status="
         + (verification.status if verification is not None else "not_configured")
     )
-    print("stages=config_validation,source_integrity,position_safe_ingestion,canonical_curation,response_series_resolution,eligibility_qc")
+    print(
+        "stages=config_validation,source_integrity,position_safe_ingestion,canonical_curation,response_series_resolution,eligibility_qc"
+    )
 
 
 def _preflight_runtime(
@@ -933,7 +982,9 @@ def _preflight_runtime(
     *,
     project_root: str | Path,
 ) -> tuple[ValidatedConfig, Any, Any, Any, Any]:
-    config = load_config(config_path, project_root=project_root, check_files=True, preflight_engines=True)
+    config = load_config(
+        config_path, project_root=project_root, check_files=True, preflight_engines=True
+    )
     analysis_policy = _load_analysis_policy(config)
     source_data_policy = _load_source_data_policy(config)
     model_policy = build_effective_model_policy(config, analysis_policy)
@@ -945,6 +996,167 @@ def _preflight_runtime(
         model_policy,
         policy_snapshot,
     )
+
+
+def _reuse_completed_release(
+    config: ValidatedConfig,
+    *,
+    analysis_policy: AnalysisPolicyBundle | None,
+    source_data_policy: SourceDataPolicyBundle | None,
+    model_policy: Mapping[str, Any],
+    policy_snapshot: Any,
+) -> Any | None:
+    """Reuse only a complete package bound to the current code and inputs."""
+
+    if not config.reuse_completed_release or not config.writes_outputs:
+        return None
+    output_root = (
+        config.paths["test_output_root"]
+        if config.run_mode == "test"
+        else config.paths["reports_root"]
+    )
+    if not output_root.is_dir():
+        return None
+
+    integrity = verify_configured_source_integrity(
+        config,
+        checksum_revision_approvals=(
+            source_data_policy.checksum_revision_approvals
+            if source_data_policy is not None
+            else None
+        ),
+        designated_reviewers=(
+            source_data_policy.designated_reviewers
+            if source_data_policy is not None
+            else ()
+        ),
+    )
+    source_scope_snapshot = (
+        _build_runtime_source_scope_snapshot(
+            config,
+            source_data_policy,
+            integrity,
+        )
+        if source_data_policy is not None
+        else None
+    )
+    if source_scope_snapshot is not None:
+        snapshot_artifacts = source_scope_snapshot.get("manifest_artifact_sha256")
+        if not isinstance(snapshot_artifacts, Mapping):
+            raise ConfigError(
+                "Source-scope snapshot is missing its artifact checksum mapping"
+            )
+        source_artifact_sha256 = {
+            str(path): str(digest)
+            for path, digest in sorted(snapshot_artifacts.items())
+        }
+    else:
+        source_artifact_sha256 = dict(sorted(integrity.artifact_sha256.items()))
+    analysis_policy_evidence = (
+        {
+            "status": "validated",
+            "manifest_sha256": config.analysis_policy_manifest_sha256,
+            "artifact_sha256": dict(analysis_policy.artifact_sha256),
+        }
+        if analysis_policy is not None
+        else {"status": "not_configured"}
+    )
+    source_policy_evidence = (
+        {
+            "status": "validated",
+            "manifest_sha256": source_data_policy.manifest_authority.sha256,
+            "artifact_sha256": dict(source_data_policy.artifact_sha256),
+            "source_scope_snapshot_sha256": source_scope_snapshot["snapshot_sha256"],
+        }
+        if source_data_policy is not None and source_scope_snapshot is not None
+        else {"status": "not_configured"}
+    )
+    expected_identity = {
+        "config_sha256": release_config_sha256(config),
+        "code_sha256": _code_fingerprint(),
+        "policy_content_sha256": policy_snapshot.policy_content_sha256,
+        "effective_enablement_sha256": (policy_snapshot.effective_enablement_sha256),
+        "mode": config.run_mode,
+        "random_seed": config.raw["run"]["random_seed"],
+        "scope_countries": list(config.scope_countries),
+        "series_identity_dimensions": list(config.series_identity_dimensions),
+        "source_artifact_sha256": source_artifact_sha256,
+        "source_data_policy": source_policy_evidence,
+        "analysis_policy": analysis_policy_evidence,
+        "effective_curve_model_policy_sha256": stable_json_sha256(model_policy),
+    }
+    return _find_reusable_completed_release(
+        config,
+        expected_identity=expected_identity,
+        policy_content_sha256=policy_snapshot.policy_content_sha256,
+    )
+
+
+def _materialize_workspace_views(
+    config: ValidatedConfig,
+    package: Any,
+    *,
+    run_log: Any | None = None,
+) -> WorkspaceOutputs | None:
+    """Project the verified release package into the WF/02-WF/05 roots.
+
+    Full mode only: ``test`` writes its package under the test output root and
+    ``validate`` writes nothing at all, so neither one may touch these roots.
+    The package itself is read-only here and stays the authoritative deliverable.
+    """
+
+    if config.run_mode != "full":
+        return None
+    return materialize_workspace_views(
+        config,
+        package,
+        view_name=_release_run_id(config),
+        run_log=run_log,
+    )
+
+
+def _print_workspace_views(
+    config: ValidatedConfig, outputs: WorkspaceOutputs | None
+) -> None:
+    """Append the view paths to the existing key=value console contract."""
+
+    if outputs is None:
+        return
+    print(f"workspace_views_reused={'true' if outputs.reused else 'false'}")
+    for category, display in workspace_view_display_paths(outputs, config.project_root):
+        print(f"workspace_view_{category}={display}")
+
+
+def _refresh_workspace_outputs(
+    config_path: str | Path,
+    *,
+    project_root: str | Path,
+) -> int:
+    """Re-project the completed full-mode package without rerunning Phases 2-5.
+
+    Loads and validates the configuration exactly as a run does, verifies the
+    already-promoted package, and calls the same production function the run
+    path uses. It never writes to the release package.
+    """
+
+    config, _, _, _, _ = _preflight_runtime(config_path, project_root=project_root)
+    if config.run_mode != "full":
+        raise ConfigError(
+            "--refresh-workspace-outputs requires full mode; "
+            f"the configuration selects {config.run_mode!r}"
+        )
+    target = config.paths["reports_root"] / _release_run_id(config)
+    package = verify_completed_release_package(target)
+    outputs = _materialize_workspace_views(config, package)
+    print(f"mode={config.run_mode}")
+    print("workspace_refresh=true")
+    print(f"release_package={_relative(package.target_path, config.project_root)}")
+    print(f"release_artifacts={len(package.artifact_sha256)}")
+    _print_workspace_views(config, outputs)
+    if outputs is not None:
+        print(f"workspace_view_artifacts={outputs.artifact_count}")
+        print(f"workspace_view_bytes={outputs.total_bytes}")
+    return 0
 
 
 def _prepare_run_workspace(
@@ -1007,6 +1219,43 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
             manifest_sha256=source_data_policy.manifest_authority.sha256,
             component_sha256=dict(source_data_policy.artifact_sha256),
         )
+    reusable_package = None
+    if not config.phases:
+        reusable_package = _reuse_completed_release(
+            config,
+            analysis_policy=analysis_policy,
+            source_data_policy=source_data_policy,
+            model_policy=model_policy,
+            policy_snapshot=policy_snapshot,
+        )
+        if reusable_package is None:
+            raise ConfigError(
+                "No reusable completed release matches the current inputs, "
+                "configuration, code, and policies; restore the complete "
+                "[run].phases list to run Phases 2-5"
+            )
+    if reusable_package is not None:
+        run_log.info(
+            "completed_release_reused",
+            release_package=reusable_package.target_path,
+            skipped_phases="phase_2,phase_3,phase_4,phase_5",
+        )
+        workspace_outputs = _materialize_workspace_views(
+            config, reusable_package, run_log=run_log
+        )
+        run_log.info("resource_snapshot", **_resource_snapshot(config, phase="end"))
+        print(f"mode={config.run_mode}")
+        print("writes_outputs=true")
+        print(f"status=phase_5_{config.run_mode}_release_complete")
+        print("release_reused=true")
+        print("phases_executed=none")
+        print("phases_skipped=phase_2,phase_3,phase_4,phase_5")
+        print(
+            "release_package="
+            + _relative(reusable_package.target_path, config.project_root)
+        )
+        _print_workspace_views(config, workspace_outputs)
+        return 0
     with run_log.stage("phase_2"):
         phase_two = run_phase_two(
             config,
@@ -1079,6 +1328,9 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
             policy_snapshot=policy_snapshot,
             analysis_policy=analysis_policy,
         )
+    workspace_outputs = _materialize_workspace_views(
+        config, phase_five.package, run_log=run_log
+    )
     run_log.info(
         "run_completed",
         release_package=phase_five.package.target_path,
@@ -1088,7 +1340,9 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     print("writes_outputs=true")
     print(f"status=phase_5_{config.run_mode}_release_complete")
     print(f"release_reused={'true' if phase_five.reused_existing_package else 'false'}")
-    print(f"release_package={_relative(phase_five.package.target_path, config.project_root)}")
+    print(
+        f"release_package={_relative(phase_five.package.target_path, config.project_root)}"
+    )
     print(f"canonical_rows={len(phase_two.curation.records)}")
     print(f"eligibility_rows={len(phase_two.eligibility.ledger)}")
     print(f"analysis_eligibility_rows={len(phase_two.analysis_eligibility.ledger)}")
@@ -1096,11 +1350,14 @@ def run(config_path: str | Path, *, project_root: str | Path) -> int:
     print(f"curve_feature_rows={len(phase_three.evidence.curve_rows)}")
     print(f"series_evidence_rows={len(phase_three.evidence.series_evidence_rows)}")
     print(f"analysis_candidates={phase_four.registry.theoretical_candidate_count}")
+    _print_workspace_views(config, workspace_outputs)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate and orchestrate the N-response workflow.")
+    parser = argparse.ArgumentParser(
+        description="Validate and orchestrate the N-response workflow."
+    )
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument(
         "--governance-preflight",
@@ -1109,6 +1366,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--prepare-run-workspace",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--refresh-workspace-outputs",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -1132,12 +1394,16 @@ def main(argv: list[str] | None = None) -> int:
                 project_root=project_root,
                 log_root=args.log_root,
             )
+        if args.refresh_workspace_outputs:
+            return _refresh_workspace_outputs(args.config, project_root=project_root)
         return run(args.config, project_root=project_root)
     except ConfigError as exc:
         if not exception_was_logged(exc):
             print(
                 format_console_exception(
-                    timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    timestamp=datetime.now(timezone.utc)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z"),
                     event="configuration_error",
                     exc=exc,
                     project_root=project_root,
@@ -1150,7 +1416,9 @@ def main(argv: list[str] | None = None) -> int:
         if not exception_was_logged(exc):
             print(
                 format_console_exception(
-                    timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    timestamp=datetime.now(timezone.utc)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z"),
                     event="runtime_error",
                     exc=exc,
                     project_root=project_root,
@@ -1163,7 +1431,9 @@ def main(argv: list[str] | None = None) -> int:
         if not exception_was_logged(exc):
             print(
                 format_console_exception(
-                    timestamp=datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                    timestamp=datetime.now(timezone.utc)
+                    .isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z"),
                     event="runtime_error",
                     exc=exc,
                     project_root=project_root,
