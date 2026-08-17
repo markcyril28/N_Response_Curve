@@ -37,7 +37,7 @@ from __future__ import annotations
 import collections
 import csv
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -71,6 +71,12 @@ LTCCE_CONTEXT_HEADERS = (
     "Rep",
 )
 
+# Carried alongside the context but deliberately *not* in the tuple above: the
+# tuple is the `_trajectory_id` hash basis and must stay byte-identical to
+# `source_dataset_overlays._LTCCE_CONTEXT_HEADERS`. Adding a header here would
+# change every id and silently break the join onto the overlay.
+LTCCE_VARIETY_CODE_HEADER = "VarCode"
+
 # A stratum is only clustered when it can support a stable partition. Below this
 # it is reported descriptively with the other irregular ladders.
 MIN_STRATUM_SIZE = 100
@@ -100,6 +106,11 @@ class TrajectoryContext:
     season: str
     variety: str
     replicate: str
+    # LTCCE `VarCode` (V1..V6): the varietal *slot* in the experimental layout,
+    # not a genotype identifier — one code carries many varieties across years
+    # and one variety moves between codes. Empty when the source records no
+    # code, or when one trajectory key resolves to more than one code.
+    variety_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -185,12 +196,18 @@ def read_ltcce_contexts(
     """
 
     contexts: dict[str, TrajectoryContext] = {}
+    # `VarCode` is not in the id hash, so it has to be reconciled across every
+    # row of a trajectory rather than taken from whichever row arrived first.
+    codes_seen: dict[str, set[str]] = collections.defaultdict(set)
     with Path(csv_path).open(encoding=encoding, newline="") as handle:
         for row in csv.DictReader(handle):
             parts = tuple(
                 str(row.get(header, "")).strip() for header in LTCCE_CONTEXT_HEADERS
             )
             trajectory_id = _trajectory_id(LTCCE_SOURCE_NAME, *parts)
+            code = str(row.get(LTCCE_VARIETY_CODE_HEADER, "")).strip()
+            if code:
+                codes_seen[trajectory_id].add(code)
             if trajectory_id in contexts:
                 continue
             year = finite_number(parts[3])
@@ -202,6 +219,15 @@ def read_ltcce_contexts(
                 season=parts[4],
                 variety=parts[7],
                 replicate=parts[8],
+            )
+
+    # A trajectory key that spans several codes has no single slot to report, so
+    # it keeps an empty one instead of an arbitrary pick. In this source that is
+    # only the MV-028 rows, which are held out of clustering anyway.
+    for trajectory_id, codes in codes_seen.items():
+        if len(codes) == 1:
+            contexts[trajectory_id] = replace(
+                contexts[trajectory_id], variety_code=next(iter(codes))
             )
     return contexts
 
@@ -695,6 +721,7 @@ __all__ = [
     "EXCLUSION_NO_ZERO_N_ANCHOR",
     "LTCCE_CONTEXT_HEADERS",
     "LTCCE_SOURCE_NAME",
+    "LTCCE_VARIETY_CODE_HEADER",
     "MIN_STRATUM_SIZE",
     "RESPONSE_TYPE_FEATURES",
     "WEAK_SEPARATION_SILHOUETTE",
