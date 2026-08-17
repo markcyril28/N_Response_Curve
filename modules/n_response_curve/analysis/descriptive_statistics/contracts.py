@@ -16,7 +16,7 @@ from typing import Mapping, Sequence
 import pandas as pd
 
 
-SCHEMA_VERSION = "dataset-descriptive-statistics-v1"
+SCHEMA_VERSION = "dataset-descriptive-statistics-v2"
 BUNDLE_STATUS = "diagnostic_internal_not_release"
 MANIFEST_NAME = "run_manifest.json"
 CHECKSUMS_NAME = "CHECKSUMS.sha256"
@@ -48,7 +48,7 @@ class TableSpec:
 
     @property
     def relative_path(self) -> str:
-        return f"tables/{self.group}/{self.name}.csv"
+        return f"{self.group}/{self.name}.csv"
 
 
 @dataclass(frozen=True)
@@ -72,14 +72,15 @@ class FigureSpec:
     #
     # It also files the figure: a single-dataset panel is written to a directory
     # named for its dataset, and the figures that draw every dataset stay at the
-    # root of their group. Filing on the same field that carries the
+    # root of their semantic group beside that group's tables. Filing on the same
+    # field that carries the
     # classification means a dataset directory cannot end up holding a figure
     # classified on some other dataset.
     source_name: str | None = None
 
     def relative_path(self, extension: str) -> str:
         directory = f"{self.source_name}/" if self.source_name else ""
-        return f"figures/{self.group}/{directory}{self.name}.{extension}"
+        return f"{self.group}/{directory}{self.name}.{extension}"
 
 
 # --------------------------------------------------------------------------
