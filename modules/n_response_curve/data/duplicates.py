@@ -7,7 +7,7 @@ import json
 import math
 import re
 import statistics
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 
 _CONTEXT_FIELD_ALIASES = {
@@ -39,10 +39,11 @@ _DUPLICATE_STATUS_PRIORITY = {
     "probable_duplicate_noncanonical": 1,
     "probable_duplicate_review": 2,
     "exact_duplicate_canonical": 3,
-    "probable_duplicate_canonical": 4,
-    "exact_duplicate_distinct": 5,
-    "unique": 6,
-    "not_assessed": 7,
+    "exact_duplicate_reviewed_replicate": 4,
+    "probable_duplicate_canonical": 5,
+    "exact_duplicate_distinct": 6,
+    "unique": 7,
+    "not_assessed": 8,
 }
 _REPEAT_CLASSIFICATIONS = {
     "exchangeable_replicates",
@@ -289,6 +290,49 @@ def _reviewed_comparison_set_uid(record: Mapping[str, Any]) -> str:
     ):
         return comparison_set_uid
     return ""
+
+
+def _source_multiplicity_effective_context(
+    record: Mapping[str, Any],
+    *,
+    configured_dimensions: tuple[str, ...],
+    intrinsic_dimensions_by_context: Mapping[tuple[object, ...], tuple[str, ...]],
+    provisional_context_key: Callable[[Mapping[str, Any]], tuple[object, ...]],
+) -> tuple[object, ...] | None:
+    """Independently derive the series context a multiplicity member would join.
+
+    Mirrors the comparison-key/arm-discriminator computation in
+    ``resolve_response_series`` so a reviewed exchangeable-replicate decision
+    can be checked, before the source-row hold is cleared, against the same
+    context rules ordinary rows are held to. Returns ``None`` on any missing
+    or mixed dimension so an incompatible or unresolved member can never
+    silently compare equal to another.
+    """
+
+    study_id = str(record.get("study_id", "")).strip()
+    trial_id = str(record.get("trial_id", "")).strip()
+    if not study_id or not trial_id:
+        return None
+    record_dimensions = (
+        *configured_dimensions,
+        *intrinsic_dimensions_by_context.get(provisional_context_key(record), ()),
+    )
+    context_values: list[str] = []
+    for dimension in record_dimensions:
+        if _has_mixed_context(record, dimension):
+            return None
+        value = _context_value(record, dimension)
+        if value is None:
+            return None
+        context_values.append(value)
+    comparison_key = (
+        str(record.get("source_uid", "")),
+        study_id,
+        trial_id,
+        str(record.get("scope_country_code") or "unresolved"),
+        *context_values,
+    )
+    return (*comparison_key, *_reviewed_series_arm_discriminator(record))
 
 
 def _add_sorted_unique(record: dict[str, Any], field: str, value: str) -> tuple[str, ...]:
@@ -653,6 +697,7 @@ def _initialize_duplicate_statuses(
                     review_status="adjudicated",
                     canonical_record_uid=None,
                     rules_version=rules.version,
+                    adjudication=adjudication,
                 )
             continue
         if adjudication is not None:
@@ -721,6 +766,7 @@ def _initialize_duplicate_statuses(
             review_status=review_status,
             canonical_record_uid=str(canonical["record_uid"]),
             rules_version=rules.version,
+            adjudication=adjudication,
         )
         for duplicate in noncanonical:
             _add_duplicate_relationship(duplicate, "exact_duplicate_noncanonical")
@@ -737,6 +783,7 @@ def _initialize_duplicate_statuses(
                 review_status=review_status,
                 canonical_record_uid=str(canonical["record_uid"]),
                 rules_version=rules.version,
+                adjudication=adjudication,
             )
 
     for candidates in _connected_components(records, rules):
@@ -955,10 +1002,118 @@ def _validated_repeat_adjudications(
     return indexed
 
 
+def _reconcile_exact_duplicates_within_reviewed_group(
+    records: list[dict[str, Any]],
+    group_records: list[dict[str, Any]],
+    member_uids: set[str],
+) -> None:
+    """Undo auto-classified exact-duplicate suppression inside a reviewed group.
+
+    A reviewed exchangeable-replicate decision already confirms these rows are
+    legitimate repeat observations of the same measurement. When their exact
+    key also collides (e.g. identical raw cell content), the automatic
+    exact-duplicate pass would otherwise mark one row canonical/included and
+    the other noncanonical/held, silently dropping a reviewed replicate before
+    it reaches aggregation. Only reconcile a group whose full exact-duplicate
+    membership sits inside this reviewed group and whose classification was
+    machine-assigned; an explicit human adjudication on those same records is
+    a separate decision and is never overridden.
+
+    The automatic exact-match evidence is not erased: canonical/noncanonical
+    group entries are transformed in place into a terminal
+    ``exact_duplicate_reviewed_replicate`` relationship, retaining the group
+    UID, evidence codes, and rules version, so the collision stays auditable
+    even though both records are now equally eligible for exact-member
+    aggregation.
+    """
+
+    exact_relationships = {"exact_duplicate_canonical", "exact_duplicate_noncanonical"}
+    reconcilable_group_uids: set[str] = set()
+    for record in group_records:
+        for group in record.get("duplicate_groups", ()):
+            if group["relationship"] not in exact_relationships:
+                continue
+            duplicate_group_uid = str(group["duplicate_group_uid"])
+            if duplicate_group_uid in reconcilable_group_uids:
+                continue
+            full_members = {
+                str(other["record_uid"])
+                for other in records
+                for other_group in other.get("duplicate_groups", ())
+                if str(other_group["duplicate_group_uid"]) == duplicate_group_uid
+                and other_group["relationship"] in exact_relationships
+            }
+            review_statuses = {
+                str(other_group["review_status"])
+                for other in records
+                for other_group in other.get("duplicate_groups", ())
+                if str(other_group["duplicate_group_uid"]) == duplicate_group_uid
+                and other_group["relationship"] in exact_relationships
+            }
+            if not full_members <= member_uids:
+                # Crosses outside the reviewed group; leave ordinary duplicate
+                # handling in place for those records.
+                continue
+            if review_statuses != {"auto_classified"}:
+                raise ValueError(
+                    "Reviewed exchangeable-replicate group conflicts with an "
+                    "explicit or nonautomatic exact-duplicate decision for the same records"
+                )
+            reconcilable_group_uids.add(duplicate_group_uid)
+
+    if not reconcilable_group_uids:
+        return
+
+    noncanonical_relationships = {
+        "exact_duplicate_noncanonical",
+        "probable_duplicate_noncanonical",
+    }
+    for record in group_records:
+        transformed_groups = []
+        for group in record.get("duplicate_groups", ()):
+            if (
+                str(group["duplicate_group_uid"]) in reconcilable_group_uids
+                and group["relationship"] in exact_relationships
+            ):
+                transformed = dict(group)
+                transformed["relationship"] = "exact_duplicate_reviewed_replicate"
+                transformed["review_status"] = "superseded_by_reviewed_replicates"
+                transformed["canonical_record_uid"] = None
+                transformed_groups.append(transformed)
+            else:
+                transformed_groups.append(group)
+        record["duplicate_groups"] = tuple(transformed_groups)
+        record["duplicate_relationships"] = tuple(
+            sorted({group["relationship"] for group in record["duplicate_groups"]})
+        )
+        record["duplicate_status"] = (
+            min(
+                record["duplicate_relationships"],
+                key=lambda item: _DUPLICATE_STATUS_PRIORITY[item],
+            )
+            if record["duplicate_relationships"]
+            else "unique"
+        )
+        remaining_noncanonical = [
+            group
+            for group in record["duplicate_groups"]
+            if group["relationship"] in noncanonical_relationships
+        ]
+        record["duplicate_of_record_uid"] = (
+            remaining_noncanonical[0]["canonical_record_uid"]
+            if remaining_noncanonical
+            else None
+        )
+
+
 def _apply_reviewed_source_multiplicity_adjudications(
     records: list[dict[str, Any]],
     *,
     reviewed_repeats: Mapping[tuple[str, ...], RepeatAdjudication],
+    n_level_tolerance_kg_ha: float,
+    configured_dimensions: tuple[str, ...],
+    intrinsic_dimensions_by_context: Mapping[tuple[object, ...], tuple[str, ...]],
+    provisional_context_key: Callable[[Mapping[str, Any]], tuple[object, ...]],
 ) -> set[tuple[str, ...]]:
     """Consume exact reviewed decisions for detected source-row multiplicity.
 
@@ -967,6 +1122,14 @@ def _apply_reviewed_source_multiplicity_adjudications(
     replicate decision may clear the source-level hold and enter ordinary
     same-N resolution. Other classifications remain held with a precise next
     action rather than being silently pooled or dropped.
+
+    Clearing the hold is never taken on the source multiplicity metadata's
+    say-so alone: before any member is marked included or any exact-duplicate
+    evidence is transformed, this independently re-derives each member's
+    numeric N rate and effective series context (source/study/trial/country,
+    configured plus intrinsic identity dimensions, and the reviewed arm
+    discriminator) and requires exact member closure, finite equal-within-
+    tolerance N rates, and one shared context across the whole group.
     """
 
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -1052,6 +1215,42 @@ def _apply_reviewed_source_multiplicity_adjudications(
             record["repeat_reviewer"] = adjudication.reviewer
             record["repeat_reviewed_on"] = adjudication.reviewed_on
         if adjudication.classification == "exchangeable_replicates":
+            n_rates: list[float] = []
+            for record in group_records:
+                n_rate = record.get("n_rate_kg_ha")
+                if (
+                    record.get("n_rate_parse_status") != "parsed"
+                    or isinstance(n_rate, bool)
+                    or not isinstance(n_rate, (int, float))
+                    or not math.isfinite(float(n_rate))
+                ):
+                    raise ValueError(
+                        "Reviewed exchangeable-replicate source-row group requires a "
+                        "finite numeric N rate for every member"
+                    )
+                n_rates.append(float(n_rate))
+            if max(n_rates) - min(n_rates) > n_level_tolerance_kg_ha:
+                raise ValueError(
+                    "Reviewed exchangeable-replicate source-row group spans N rates "
+                    "outside the same-N tolerance"
+                )
+            context_keys = {
+                _source_multiplicity_effective_context(
+                    record,
+                    configured_dimensions=configured_dimensions,
+                    intrinsic_dimensions_by_context=intrinsic_dimensions_by_context,
+                    provisional_context_key=provisional_context_key,
+                )
+                for record in group_records
+            }
+            if None in context_keys or len(context_keys) != 1:
+                raise ValueError(
+                    "Reviewed exchangeable-replicate source-row group spans "
+                    "incompatible effective series context"
+                )
+            _reconcile_exact_duplicates_within_reviewed_group(
+                records, group_records, set(actual_uids)
+            )
             for record in group_records:
                 record["source_row_multiplicity_status"] = (
                     "reviewed_exchangeable_replicates"
@@ -1292,6 +1491,10 @@ def resolve_response_series(
         _apply_reviewed_source_multiplicity_adjudications(
             ledger,
             reviewed_repeats=reviewed_repeats,
+            n_level_tolerance_kg_ha=n_level_tolerance_kg_ha,
+            configured_dimensions=configured_dimensions,
+            intrinsic_dimensions_by_context=intrinsic_dimensions_by_context,
+            provisional_context_key=provisional_context_key,
         )
     )
 
@@ -1495,9 +1698,20 @@ def resolve_response_series(
                     raise ValueError(
                         "Exchangeable replicate adjudication spans different management"
                     )
-                status = "confirmed_exchangeable_replicate"
-                reason = ""
-                approved_repeat_groups.append((same_n_records, adjudication))
+                yields_ready = all(
+                    record.get("yield_parse_status") == "parsed"
+                    and isinstance(record.get("yield_t_ha"), (int, float))
+                    and not isinstance(record.get("yield_t_ha"), bool)
+                    and math.isfinite(float(record.get("yield_t_ha")))
+                    for record in same_n_records
+                )
+                if yields_ready:
+                    status = "confirmed_exchangeable_replicate"
+                    reason = ""
+                    approved_repeat_groups.append((same_n_records, adjudication))
+                else:
+                    status = "exchangeable_replicate_yield_unparsed"
+                    reason = "EXCHANGEABLE_REPLICATE_YIELD_UNPARSED"
                 used_repeat_adjudications.add(ordered_uids)
             elif adjudication.classification == "management_variant":
                 status = "different_management_same_n"
@@ -1549,6 +1763,33 @@ def resolve_response_series(
     if unknown_repeat_adjudications:
         raise ValueError(
             "Repeat adjudication references records that do not form one same-N group"
+        )
+    aggregate_memberships = {
+        tuple(sorted(str(uid) for uid in record.get("source_record_uids", ())))
+        for record in aggregates
+    }
+    ledger_by_uid = {str(record["record_uid"]): record for record in ledger}
+    leaked_analytical_statuses = {"included", "replaced_by_repeat_aggregate"}
+    # A reviewed exchangeable-replicate source-row group that did not produce
+    # its exact-member aggregate is only a defect if its members remain
+    # analytically live (included/replaced) without that aggregate — an
+    # ordinary held/review state (yield unparsed, mixed context, and so on)
+    # is a correct outcome and must return the ledger rather than raise.
+    leaked_source_repeats = {
+        member_uids
+        for member_uids in used_source_multiplicity_adjudications
+        if reviewed_repeats[member_uids].classification == "exchangeable_replicates"
+        and member_uids not in aggregate_memberships
+        and any(
+            ledger_by_uid[member_uid].get("analytical_record_status")
+            in leaked_analytical_statuses
+            for member_uid in member_uids
+        )
+    }
+    if leaked_source_repeats:
+        raise ValueError(
+            "Reviewed exchangeable-replicate source-row adjudication did not "
+            "produce one exact-member aggregate"
         )
     aggregate_uids = [str(record["record_uid"]) for record in aggregates]
     if len(aggregate_uids) != len(set(aggregate_uids)):
