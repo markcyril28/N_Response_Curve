@@ -30,6 +30,7 @@ import shutil
 import sys
 import tomllib
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -60,13 +61,12 @@ from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
-# Sits beside the four LTCCE source-dataset overlays, in the subdirectory
-# generate_raw_dataset_overlays.py:_PRESERVED_SUBDIRECTORY carries across its own
-# snapshot replacement. Writing these flat into the parent would trip that
-# generator's unmanaged-entry guard.
+# Lives under the cluster container that generate_raw_dataset_overlays.py carries
+# across its own snapshot replacement.  Keeping trajectory and variety products
+# in parallel subdirectories makes ownership and regeneration unambiguous.
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/n_response_full/figures/overlay/source_dataset/ltcce/clusters"
+    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset/ltcce/clusters/by_trajectory"
 )
 SOURCE_NAME = "ltcce"
 
@@ -78,6 +78,12 @@ _DISCLAIMER = (
 # Percentage-point excess of one season in a cluster, over that season's share of
 # the parent stratum, at which the split is disclosed as season-confounded.
 _SEASON_CONCENTRATION_MARGIN = 0.15
+
+# Every view in this directory is a subset of one parent overlay, so a per-figure
+# autoscale makes a low-yielding cluster look as tall as a high-yielding one, and a
+# short N ladder as wide as a long one. Both axes are therefore pinned once, from
+# the parent, and shared by all views.
+_AXIS_PAD_FRACTION = 0.04
 
 
 def _load_source_spec(config_path: Path) -> tuple[Path, str]:
@@ -173,16 +179,63 @@ def _save_figure(figure: Any, destination: Path) -> None:
             temporary.unlink()
 
 
+@dataclass(frozen=True)
+class _SharedAxisLimits:
+    """One padded x/y frame, shared by every figure this generator writes."""
+
+    x: tuple[float, float] | None
+    y: tuple[float, float] | None
+
+    def apply(self, axes: Any) -> None:
+        if self.x is not None:
+            axes.set_xlim(*self.x)
+        if self.y is not None:
+            axes.set_ylim(*self.y)
+
+
+def _padded_limits(
+    value_range: tuple[float, float] | None,
+) -> tuple[float, float] | None:
+    if value_range is None:
+        return None
+    low, high = value_range
+    if not (math.isfinite(low) and math.isfinite(high)):
+        return None
+    span = high - low
+    pad = span * _AXIS_PAD_FRACTION if span > 0 else max(abs(high), 1.0) * 0.05
+    return low - pad, high + pad
+
+
+def _shared_axis_limits(overlay: SourceDatasetOverlay) -> _SharedAxisLimits:
+    """Pin one frame, padded, from the parent overlay every view subsets.
+
+    Taken before any subsetting, so it bounds every figure this generator writes
+    and the clusters stay comparable to one another and to the parent stratum.
+    Both floors are the padded data minimum rather than zero: these are
+    descriptive overlays, not a magnitude comparison against an absolute origin.
+    The shared x frame spans every applied-N ladder in the source, so a
+    four-level stratum reading 0-135 now occupies only the part of the axis it
+    actually covers instead of being stretched to the full width.
+    """
+
+    return _SharedAxisLimits(
+        x=_padded_limits(overlay.summary.n_rate_range_kg_ha),
+        y=_padded_limits(overlay.summary.yield_range_t_ha),
+    )
+
+
 def _titled_figure(
     overlay: SourceDatasetOverlay,
     destination: Path,
     title_lines: Sequence[str],
+    limits: _SharedAxisLimits,
 ) -> None:
     from matplotlib import pyplot as plt
 
     figure, axes = create_source_dataset_overlay_figure(overlay)
     try:
         axes.set_title("\n".join(title_lines), fontsize=9)
+        limits.apply(axes)
         _save_figure(figure, destination)
     finally:
         plt.close(figure)
@@ -192,6 +245,7 @@ def _scatter_only_figure(
     overlay: SourceDatasetOverlay,
     destination: Path,
     title_lines: Sequence[str],
+    limits: _SharedAxisLimits,
 ) -> None:
     """Render points with no connecting lines.
 
@@ -222,6 +276,7 @@ def _scatter_only_figure(
         axes.set_ylabel("Grain yield (t/ha)")
         axes.set_title("\n".join(title_lines), fontsize=9)
         axes.legend(loc="best", fontsize=8)
+        limits.apply(axes)
         _save_figure(figure, destination)
     finally:
         plt.close(figure)
@@ -231,6 +286,7 @@ def _write_stratum_views(
     result: ClusteringResult,
     overlay: SourceDatasetOverlay,
     staging: Path,
+    limits: _SharedAxisLimits,
 ) -> list[str]:
     written: list[str] = []
     for ladder in result.major_ladders:
@@ -241,10 +297,10 @@ def _write_stratum_views(
         year_text = f"{years[0]}-{years[1]}" if years else "years unknown"
         token = _ladder_token(ladder)
 
-        name = f"stratum_{token}.jpeg"
+        relative = Path(f"{token}_overview.jpeg")
         _titled_figure(
             subset_overlay(overlay, ids),
-            staging / name,
+            staging / relative,
             (
                 f"source={SOURCE_NAME} — applied-N design stratum {_ladder_text(ladder)} kg N/ha",
                 f"{len(ids)} replicate trajectories; {year_text}; "
@@ -252,8 +308,9 @@ def _write_stratum_views(
                 "exact-ladder stratum: trajectories on other N ladders are held out, not interpolated",
                 _DISCLAIMER,
             ),
+            limits,
         )
-        written.append(name)
+        written.append(relative.as_posix())
 
         for cluster_id in range(partition.cluster_count):
             members = cluster_members(partition, cluster_id)
@@ -263,7 +320,7 @@ def _write_stratum_views(
             member_year_text = (
                 f"{member_years[0]}-{member_years[1]}" if member_years else "years unknown"
             )
-            cluster_name = f"stratum_{token}_cluster_{cluster_id + 1}.jpeg"
+            cluster_relative = Path(f"{token}_cluster_{cluster_id + 1}.jpeg")
             title_lines = [
                 f"source={SOURCE_NAME} — stratum {_ladder_text(ladder)} kg N/ha, "
                 f"cluster {cluster_id + 1} of {partition.cluster_count}",
@@ -282,9 +339,12 @@ def _write_stratum_views(
                 title_lines.append(season_caveat)
             title_lines.append(_DISCLAIMER)
             _titled_figure(
-                subset_overlay(overlay, members), staging / cluster_name, title_lines
+                subset_overlay(overlay, members),
+                staging / cluster_relative,
+                title_lines,
+                limits,
             )
-            written.append(cluster_name)
+            written.append(cluster_relative.as_posix())
     return written
 
 
@@ -292,6 +352,7 @@ def _write_response_type_views(
     result: ClusteringResult,
     overlay: SourceDatasetOverlay,
     staging: Path,
+    limits: _SharedAxisLimits,
 ) -> list[str]:
     partition = result.response_type_partition
     if partition is None:
@@ -304,10 +365,10 @@ def _write_response_type_views(
         years = context["year_range"]
         year_text = f"{years[0]}-{years[1]}" if years else "years unknown"
         ladders = {result.features[member].ladder for member in members}
-        name = f"response_type_{cluster_id + 1}.jpeg"
+        relative = Path(f"response_type_{cluster_id + 1}.jpeg")
         _titled_figure(
             subset_overlay(overlay, members),
-            staging / name,
+            staging / relative,
             (
                 f"source={SOURCE_NAME} — response type {cluster_id + 1} of "
                 f"{partition.cluster_count} (ladder-invariant clustering)",
@@ -322,8 +383,9 @@ def _write_response_type_views(
                 _separation_caveat(partition),
                 _DISCLAIMER,
             ),
+            limits,
         )
-        written.append(name)
+        written.append(relative.as_posix())
     return written
 
 
@@ -331,6 +393,7 @@ def _write_held_out_views(
     result: ClusteringResult,
     overlay: SourceDatasetOverlay,
     staging: Path,
+    limits: _SharedAxisLimits,
 ) -> list[str]:
     written: list[str] = []
 
@@ -338,10 +401,10 @@ def _write_held_out_views(
         ids = result.other_ladder_trajectory_ids
         ladders = {result.features[trajectory_id].ladder for trajectory_id in ids}
         context = composition(ids, result.contexts)
-        name = "stratum_other_ladders.jpeg"
+        relative = Path("other_ladders.jpeg")
         _titled_figure(
             subset_overlay(overlay, ids),
-            staging / name,
+            staging / relative,
             (
                 f"source={SOURCE_NAME} — minor applied-N ladders (not clustered)",
                 f"{len(ids)} trajectories spanning {len(ladders)} distinct ladders; "
@@ -351,8 +414,9 @@ def _write_held_out_views(
                 "partial ladders are held out by exact match rather than imputed",
                 _DISCLAIMER,
             ),
+            limits,
         )
-        written.append(name)
+        written.append(relative.as_posix())
 
     grouped: dict[str, list[str]] = {}
     for trajectory_id, reason in result.excluded.items():
@@ -382,7 +446,7 @@ def _write_held_out_views(
         context = composition(ids, result.contexts)
         years = context["year_range"]
         year_text = f"{years[0]}-{years[1]}" if years else "years unknown"
-        name = f"held_out_{reason}.jpeg"
+        relative = Path(f"held_out_{reason}.jpeg")
         title_lines = [
             f"source={SOURCE_NAME} — held out of clustering: {headline}",
             f"{len(ids)} trajectories; {year_text}; "
@@ -396,10 +460,10 @@ def _write_held_out_views(
 
         subset = subset_overlay(overlay, ids)
         if reason == EXCLUSION_DUPLICATED_N_LEVEL:
-            _scatter_only_figure(subset, staging / name, title_lines)
+            _scatter_only_figure(subset, staging / relative, title_lines, limits)
         else:
-            _titled_figure(subset, staging / name, title_lines)
-        written.append(name)
+            _titled_figure(subset, staging / relative, title_lines, limits)
+        written.append(relative.as_posix())
     return written
 
 
@@ -553,6 +617,7 @@ def _write_summary(
     result: ClusteringResult,
     overlay: SourceDatasetOverlay,
     destination: Path,
+    limits: _SharedAxisLimits,
 ) -> dict[str, Any]:
     exclusion_counts: dict[str, int] = {}
     for reason in result.excluded.values():
@@ -567,6 +632,12 @@ def _write_summary(
             "part of the release inventory or any checksum ledger."
         ),
         "source_name": SOURCE_NAME,
+        "observed_yield_range_t_ha": list(overlay.summary.yield_range_t_ha or ()),
+        "observed_n_rate_range_kg_ha": list(overlay.summary.n_rate_range_kg_ha or ()),
+        # Applied to every figure in this directory so cluster heights and ladder
+        # widths are read against one another, not a per-figure autoscale.
+        "shared_yield_axis_t_ha": list(limits.y or ()),
+        "shared_n_rate_axis_kg_ha": list(limits.x or ()),
         "total_trajectories": overlay.summary.trajectory_count,
         "total_finite_observations": overlay.summary.finite_observation_count,
         "cluster_eligible_trajectories": len(result.features),
@@ -624,6 +695,55 @@ def _promote(staging: Path, destination: Path) -> None:
         shutil.rmtree(backup, ignore_errors=True)
 
 
+def _write_cluster_root_readme(destination: Path) -> None:
+    root = destination.parent
+    if destination != DEFAULT_OUTPUT_DIR.resolve():
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "README.md").write_text(
+        "# LTCCE exploratory response clusters\n\n"
+        "The outputs are organized by the unit being clustered:\n\n"
+        "- `by_trajectory/`: original replicate-trajectory clustering, written flat: "
+        "`<ladder>_overview.jpeg` and `<ladder>_cluster_N.jpeg` per ladder stratum, "
+        "`other_ladders.jpeg`, `response_type_N.jpeg`, and `held_out_<reason>.jpeg`.\n"
+        "- `by_variety/`: context-weighted rice-variety clustering, with overview "
+        "figures, a profile heatmap, per-variety plots, and held-out varieties.\n"
+        "- `by_season/`: season-stratified clustering, one partition inside each "
+        "cropping season, with a per-season applied-N ladder composition check and "
+        "a cross-season profile comparison. A sub-clustered season also carries "
+        "`by_applied_n/` (the season decomposed by exact applied-N ladder) and one "
+        "folder per recorded experimental factor — `by_variety_code/`, "
+        "`by_design/`, `by_variety/`, `by_planting_year/` — each scoring how far "
+        "its levels merely restate the applied-N design or the season's own "
+        "response clusters. Two of those need naming carefully. "
+        "`by_variety_code/` splits on the LTCCE `VarCode` plot slot, which is "
+        "not a genotype, whereas the season's own `by_variety/` splits on the "
+        "`Variety` designation, which is — and neither is the top-level "
+        "`by_variety/` above, which clusters varieties themselves rather than "
+        "listing them. `by_planting_year/` bands the recorded year into decades, "
+        "because no single year is large enough to be a stratum, and carries "
+        "`annual_trend.jpeg` for the unbanded year-by-year view.\n\n"
+        "These products are descriptive diagnostics rather than governed analyses. "
+        "Each carries a JSON summary of its method and interpretation limits "
+        "(`by_trajectory/clustering_summary.json`); `by_variety/` and `by_season/` "
+        "also have their own README. Every figure states its interpretation "
+        "boundary in its own title block.\n\n"
+        "## Regeneration\n\n"
+        "```bash\n"
+        "conda run -n n_response python "
+        "modules/n_response_curve/reporting/generate_response_curve_clusters.py "
+        "--config scriptCONFIG.toml\n"
+        "conda run -n n_response python "
+        "modules/n_response_curve/reporting/generate_response_curve_variety_clusters.py "
+        "--config scriptCONFIG.toml\n"
+        "conda run -n n_response python "
+        "modules/n_response_curve/reporting/generate_response_curve_season_clusters.py "
+        "--config scriptCONFIG.toml\n"
+        "```\n",
+        encoding="utf-8",
+    )
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -656,17 +776,24 @@ def main() -> int:
         maximum_clusters=args.max_clusters,
     )
 
+    # Computed once, from the parent overlay, before any subsetting: every view
+    # below is a subset of it, so this is the one frame that bounds them all.
+    limits = _shared_axis_limits(overlay)
+
     destination = args.output_dir.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.with_name(f".{destination.name}.staging.{uuid.uuid4().hex}")
     staging.mkdir()
     try:
-        written = _write_stratum_views(result, overlay, staging)
-        written += _write_response_type_views(result, overlay, staging)
-        written += _write_held_out_views(result, overlay, staging)
+        written = _write_stratum_views(result, overlay, staging, limits)
+        written += _write_response_type_views(result, overlay, staging, limits)
+        written += _write_held_out_views(result, overlay, staging, limits)
         _write_ledger(result, staging / "cluster_assignments.csv")
-        summary = _write_summary(result, overlay, staging / "clustering_summary.json")
+        summary = _write_summary(
+            result, overlay, staging / "clustering_summary.json", limits
+        )
         _promote(staging, destination)
+        _write_cluster_root_readme(destination)
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -690,6 +817,16 @@ def main() -> int:
             f"k={response_partition.cluster_count} "
             f"silhouette={response_partition.silhouette:.3f} "
             f"ARI={response_partition.assignment_stability:.2f}"
+        )
+    if limits.y is not None:
+        print(
+            f"  shared y axis            {limits.y[0]:.2f} to {limits.y[1]:.2f} t/ha "
+            "(applied to every figure)"
+        )
+    if limits.x is not None:
+        print(
+            f"  shared x axis            {limits.x[0]:.1f} to {limits.x[1]:.1f} kg N/ha "
+            "(applied to every figure)"
         )
     print(f"Wrote {len(written)} figures + ledger + summary under {destination}")
     return 0
