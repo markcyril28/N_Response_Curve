@@ -232,15 +232,16 @@ _CONTEXT_TITLES: Mapping[str, str] = dict(
 # in words, so drawing both would show one dataset's season twice.
 _DUPLICATE_ENCODING_CONTEXTS = frozenset({"season_coded"})
 
-# The governed core-trial modifier panel ranks planting year ahead of every
-# applied-N ladder summary. Those are the only ranked quantities that map onto
-# rows in this composition form: zero-N yield is an outcome, P/K recording has
-# no bound context row, and the remaining ranked quantities are all summaries
-# of applied N. Keep every unranked context in recipe order after these two.
-# This is source-specific because the ranking is for the governed core-trial
-# population, not for either restricted source dataset.
+# Each dataset's modifier panel can rank only a subset of the rows in this
+# composition form. The governed core-trial panel ranks planting year ahead of
+# its applied-N ladder summaries; the ungoverned LTCCE panel ranks mean tested N
+# and N-ladder span ahead of planting year. Zero-N yield is an outcome, and the
+# other screened quantities have no composition row. Keep every unranked context
+# in recipe order after the mapped rows. These priorities are source-specific
+# because each modifier ranking describes a different response-series population.
 _DATASET_CONTEXT_PRIORITY: Mapping[str, tuple[str, ...]] = {
     "core_trial_data": ("year_band", "applied_n_band"),
+    "ltcce": ("applied_n_band", "year_band"),
 }
 
 # A field recorded at fewer levels than this is routed out of a single-dataset
