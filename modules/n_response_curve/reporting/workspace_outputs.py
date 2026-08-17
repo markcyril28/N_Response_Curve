@@ -699,8 +699,9 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
             f"Workspace view manifest has an unknown category: {target}"
         )
     if category == "curves" and any(
-        {"figures", "tables"}.intersection(Path(artifact.target_relative_path).parts)
+        part.casefold() in {"figures", "tables"}
         for artifact in artifacts
+        for part in Path(artifact.target_relative_path).parts
     ):
         raise WorkspaceOutputError(
             "The curves workspace view must mix figures and tables by analytical "
