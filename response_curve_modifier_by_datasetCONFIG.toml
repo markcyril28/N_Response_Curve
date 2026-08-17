@@ -1,0 +1,113 @@
+# Goal: answer "is the response-curve modifier ranking an LTCCE result?" by
+# rebuilding that screen once per registered source dataset and once on the
+# three pooled. The released bundle
+# (WF/03_Quality_Control/grain_yield_response_diagnostics) screens series-level
+# covariates against fitted per-series N-response slopes on ONE population --
+# the governed core_trial_data observed-series overlay, 21 series -- because
+# the release manifest records series_count_by_source =
+# {core_trial_data: 21, ltcce: 0, ph_combined_nopt_rcm: 0}. Neither restricted
+# source contributes a single series to it.
+#
+# Architecture: a standalone companion recipe. scriptCONFIG.toml remains the
+# repository configuration authority. The complete self-verifying bundle is
+# stored in the QC package subtree beside the single-population figure it
+# generalizes, but is not added to that host package's checksum ledger or to the
+# immutable N-response release package. core_trial_data is read through the
+# release manifest's declared series membership, so its panel reproduces the
+# released population exactly. ltcce and ph_combined_nopt_rcm are read directly
+# from their curated source files -- UNGOVERNED output that has passed no
+# eligibility screen, QC gate, or release verification.
+#
+# Governance: ltcce and ph_combined_nopt_rcm are data_classification =
+# "restricted", so this whole bundle inherits that classification, including
+# the pooled panel. Everything here is descriptive: no causal claim, no
+# fertilizer recommendation, no agronomic optimum, no N-by-factor interaction.
+
+[run]
+mode = "full" # full is the only supported mode; the recipe fits nothing stochastic
+overwrite = true # replace the bundle in place on re-run
+
+[population]
+# Matches the released recipe's [population] tolerances so the core_trial_data
+# panel reproduces the promoted screen rather than a near-copy of it.
+zero_n_tolerance_kg_ha = 0.00000001
+n_level_tolerance_kg_ha = 0.0
+minimum_modifier_series = 4 # below this a covariate is reported insufficient_series, not fitted
+
+[mixed_model]
+# The released figure's dashed reference line is lme4's random intercept-slope
+# correlation. The same random-intercept/random-slope model is fitted here on
+# every population, raw source reads included -- operator-authorized, on the
+# understanding that a raw-read fit is a diagnostic and not a certification.
+#
+# The R stage fails the whole run if ANY series falls below its support
+# thresholds, so the recipe takes the eligible subset per dataset and reports
+# the exclusion count instead. Where no series qualifies the stage's own reason
+# code is recorded and the panel says so, rather than a number being
+# manufactured: on a two-point ladder the random-slope model is not identified,
+# because each series' line is exactly determined by its own points.
+enabled = true
+r_stage = "modules/n_response_curve/analysis/stages/grain_yield_response_mixed_models.R"
+minimum_observations_per_series = 3 # mirrors the R stage's own gate
+minimum_distinct_n_levels = 3 # mirrors the R stage's own gate
+
+[outputs]
+figure_dpi = 220
+figure_width_inches = 10.0
+figure_height_inches = 6.4
+
+[package_extension]
+# The canonical output_root below is this exact host placement. Keeping this
+# enabled records the placement contract in run_manifest.json and refuses any
+# destination that contains a host-ledger member. No reduced mirror is written:
+# plots, CSVs, summary, run manifest, and checksum ledger now live together.
+# The host grain-yield producer recognizes this exact checksummed subtree and
+# carries it through the host package's verified staged replacement.
+enabled = true
+host_package = "WF/03_Quality_Control/grain_yield_response_diagnostics"
+placement = "factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
+
+[paths]
+base_config = "scriptCONFIG.toml"
+release_package = "WF/06_Reports/n_response_full"
+output_root = "WF/03_Quality_Control/grain_yield_response_diagnostics/factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
+
+# ---------------------------------------------------------------------------
+# Datasets. Series keys are not interchangeable between these: each dataset
+# defines a response series by whatever identifies a set of rows over which
+# only the N rate varies, and that basis differs by dataset.
+# ---------------------------------------------------------------------------
+
+[datasets.core_trial_data]
+governance = "governed_release_overlay"
+data_classification = "internal"
+series_key_basis = "response_series_uid, as declared in the release manifest overlay"
+note = """Read through the release manifest's series_uids_by_source membership and \
+the package analysis_eligibility_ledger.csv, so this panel is the same 21 series \
+the promoted grain_yield_response_diagnostics bundle screened."""
+
+[datasets.ltcce]
+governance = "ungoverned_raw_source_read"
+data_classification = "restricted"
+source_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/LTCCE_GY_processed.csv"
+encoding = "utf-8-sig"
+series_key_basis = "Year|Season|Variety"
+note = """Rep is replication inside an N level, not a separate response point, so \
+replicate yields are averaged to one observation per (series, N rate). Design is \
+constant within every series and serves as the study identifier. The N ladder \
+encodes season and era, so ladder-geometry covariates are design properties of \
+the series rather than agronomic factors."""
+
+[datasets.ph_combined_nopt_rcm]
+governance = "ungoverned_raw_source_read"
+data_classification = "restricted"
+source_path = "WF/01_Curated_Dataset/01_Core_Trial_Data/PH Combined NOPT and RCM_sheet_1.csv"
+encoding = "cp1252"
+series_key_basis = "rcm_reference|nopt_reference"
+note = """The descriptive-statistics ladder geometry reports one N level per series \
+here, which is an artefact of row-wise harmonization: the paired zero-N omission \
+arm is held as a column (n0_yield), not a second row. This recipe emits it as a \
+second observation at 0 kg N/ha, restoring the two-point ladder the design has. \
+A two-point slope is exactly (yield at N - yield at 0) / N, so the zero-N check \
+yield sits inside the slope algebraically and its screen row is flagged as forced \
+rather than treated as evidence."""
