@@ -20,6 +20,9 @@ _RELEASE_APPROVAL_SCHEMA_VERSION = 1
 _APPROVED_STATUS = "APPROVED"
 _SAFE_APPROVAL_TEXT = re.compile(r"^[^\x00-\x1f\x7f]+$")
 _FATAL_REVIEW_ISSUE_STATES = ("structural", "unresolved", "warning")
+_RELEASE_IDENTITY_ONLY_RUN_CONTROLS = frozenset(
+    {"phases", "reuse_completed_release"}
+)
 _AUTHORITY_GATES = (
     "source_integrity",
     "restricted_data",
@@ -288,7 +291,6 @@ def _semantic_policy(
             "requires_named_target": True,
             "requires_verified_prior_package": True,
             "requires_technical_hash_binding": True,
-            "requires_organizational_approval": False,
             "requires_validated_stage": True,
             "preserve_prior_package": True,
         },
@@ -337,7 +339,7 @@ def _policy_content(
     content = {
         "schema_version": _POLICY_SNAPSHOT_SCHEMA_VERSION,
         "mode": config.run_mode,
-        "config_sha256": sha256_file(config.config_path),
+        "config_sha256": release_config_sha256(config),
         "semantic_policy": _semantic_policy(
             review_gate_policy,
             table_formats=config.output_formats,
@@ -352,6 +354,18 @@ def _policy_content(
             "artifact_sha256": authority_matrix.artifact_sha256,
         }
     return content
+
+
+def release_config_sha256(config: ValidatedConfig) -> str:
+    """Hash governed configuration, excluding execution/post-release controls."""
+
+    payload = dict(config.raw)
+    payload.pop("source_dataset_overlays", None)
+    run = dict(payload["run"])
+    for key in _RELEASE_IDENTITY_ONLY_RUN_CONTROLS:
+        run.pop(key, None)
+    payload["run"] = run
+    return stable_json_sha256(payload)
 
 
 def _enabled_restricted_sources(config: ValidatedConfig) -> tuple[str, ...]:
