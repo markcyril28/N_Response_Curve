@@ -45,7 +45,8 @@ class WorkspaceOutputError(ReportingError):
 
 WORKSPACE_VIEW_MANIFEST_NAME = "WORKSPACE_VIEW_MANIFEST.json"
 WORKSPACE_CHECKSUMS_NAME = "CHECKSUMS.sha256"
-WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v1"
+WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v2"
+_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v1"
 
 #: Ordered so plans, promotion, logging, and reporting all traverse identically.
 WORKSPACE_VIEW_CATEGORIES = (
@@ -111,9 +112,9 @@ _PREFIX_RULES = (
     ("tables/dataset/", "analysis_ready", "dataset/"),
     ("tables/derived/", "analysis_ready", "derived/"),
     ("tables/quality/", "qc", "quality/"),
-    ("tables/curves/", "curves", "tables/"),
-    ("figures/overlay/", "curves", "figures/overlay/configured/"),
-    ("figures/", "curves", "figures/"),
+    ("tables/curves/", "curves", ""),
+    ("figures/overlay/", "curves", "overlay/configured/"),
+    ("figures/", "curves", ""),
 )
 
 
@@ -513,7 +514,13 @@ def _parse_checksums(path: Path) -> dict[str, str]:
     return entries
 
 
-def _read_view_manifest(target: Path) -> Mapping[str, Any]:
+def _read_view_manifest(
+    target: Path,
+    *,
+    accepted_schema_versions: frozenset[str] = frozenset(
+        {WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION}
+    ),
+) -> Mapping[str, Any]:
     manifest_path = target / WORKSPACE_VIEW_MANIFEST_NAME
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise WorkspaceOutputError(
@@ -527,7 +534,7 @@ def _read_view_manifest(target: Path) -> Mapping[str, Any]:
         ) from exc
     if (
         not isinstance(payload, Mapping)
-        or payload.get("schema_version") != WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION
+        or payload.get("schema_version") not in accepted_schema_versions
     ):
         raise WorkspaceOutputError(
             f"Workspace view manifest has an unrecognized schema: {manifest_path}"
@@ -691,6 +698,14 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
         raise WorkspaceOutputError(
             f"Workspace view manifest has an unknown category: {target}"
         )
+    if category == "curves" and any(
+        {"figures", "tables"}.intersection(Path(artifact.target_relative_path).parts)
+        for artifact in artifacts
+    ):
+        raise WorkspaceOutputError(
+            "The curves workspace view must mix figures and tables by analytical "
+            f"meaning, without figures/ or tables/ directories: {target}"
+        )
     return WorkspaceView(
         category=str(category),
         root_key=str(root_key),
@@ -709,7 +724,8 @@ def _view_targets(config: Any, view_name: str) -> dict[str, Path]:
             root = Path(config.paths[root_key])
         except KeyError as exc:
             raise WorkspaceOutputError(f"[paths].{root_key} is not configured") from exc
-        targets[category] = root / view_name
+        directory_name = f"z_{view_name}" if category == "curves" else view_name
+        targets[category] = root / directory_name
     return targets
 
 
@@ -969,11 +985,13 @@ def _resolve_workspace_layout(
         release_path=Path(package.target_path),
         targets=dict(targets),
         stages={
-            category: targets[category].parent / f".{view_name}{_STAGE_SUFFIX}"
+            category: targets[category].parent
+            / f".{targets[category].name}{_STAGE_SUFFIX}"
             for category in WORKSPACE_VIEW_CATEGORIES
         },
         backups={
-            category: targets[category].parent / f".{view_name}{_BACKUP_SUFFIX}"
+            category: targets[category].parent
+            / f".{targets[category].name}{_BACKUP_SUFFIX}"
             for category in WORKSPACE_VIEW_CATEGORIES
         },
         metadata_root=metadata_root,
@@ -1146,7 +1164,15 @@ def _structural_ownership(
     replaceable rather than wedging the run.
     """
 
-    manifest = _read_view_manifest(target)
+    manifest = _read_view_manifest(
+        target,
+        accepted_schema_versions=frozenset(
+            {
+                WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+            }
+        ),
+    )
     if (
         manifest.get("category") != category
         or manifest.get("root_key") != _CATEGORY_ROOT_KEYS[category]
@@ -1207,6 +1233,39 @@ def _structural_ownership(
             )
         _check_relative_path(relative, where="Workspace ownership artifact")
         _check_relative_path(source_relative, where="Workspace ownership source")
+        if (
+            manifest.get("schema_version")
+            == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION
+        ):
+            classified = _classify(source_relative)
+            if classified is None or classified[0] != category:
+                raise WorkspaceOutputError(
+                    "Legacy workspace ownership metadata contains an artifact from "
+                    "another view"
+                )
+            if category == "curves":
+                if source_relative.startswith("tables/curves/"):
+                    legacy_relative = "tables/" + source_relative[
+                        len("tables/curves/") :
+                    ]
+                elif source_relative.startswith("figures/overlay/"):
+                    legacy_relative = (
+                        "figures/overlay/configured/"
+                        + source_relative[len("figures/overlay/") :]
+                    )
+                elif source_relative.startswith("figures/"):
+                    legacy_relative = source_relative
+                else:
+                    raise WorkspaceOutputError(
+                        "Legacy curves ownership metadata contains an unsupported source"
+                    )
+            else:
+                legacy_relative = classified[1]
+            if relative != legacy_relative:
+                raise WorkspaceOutputError(
+                    "Legacy workspace ownership metadata does not match the exact v1 "
+                    f"layout: {relative}"
+                )
         if relative in declared_paths or relative == WORKSPACE_VIEW_MANIFEST_NAME:
             raise WorkspaceOutputError(
                 f"Workspace ownership metadata declares {relative} more than once"
