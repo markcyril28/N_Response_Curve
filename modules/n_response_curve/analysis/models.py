@@ -136,6 +136,15 @@ class ModelAttempt:
     aicc: float | None
     grouped_prediction_rmse: float | None
     grouped_prediction_fold_count: int
+    # STAT-006: excluding the two boundary folds is correct -- scoring them would
+    # be the extrapolation `no_extrapolation` forbids everywhere else -- but it
+    # silently shrinks the diagnostic behind an unchanged RMSE. The three counts
+    # make that shrinkage readable on the row itself rather than in reason text.
+    # `grouped_prediction_fold_count` is the retained count under its
+    # pre-existing spelling and is kept.
+    grouped_prediction_attempted_fold_count: int
+    grouped_prediction_retained_fold_count: int
+    grouped_prediction_excluded_boundary_fold_count: int
     grouped_prediction_basis: str | None
     credibility_status: str
     credibility_policy_id: str | None
@@ -170,6 +179,17 @@ class ModelAttempt:
     uncertainty_evidence_basis: tuple[str, ...]
     feature_variances: Mapping[str, float]
     predictions: tuple[Mapping[str, float], ...]
+
+
+@dataclass(frozen=True)
+class _GroupedPredictionSummary:
+    """One leave-one-interior-N-level-out result and its fold accounting."""
+
+    rmse: float | None
+    attempted_fold_count: int
+    retained_fold_count: int
+    excluded_boundary_fold_count: int
+    basis: str | None
 
 
 @dataclass(frozen=True)
@@ -210,6 +230,9 @@ def _attempt(
     aicc: float | None = None,
     grouped_prediction_rmse: float | None = None,
     grouped_prediction_fold_count: int = 0,
+    grouped_prediction_attempted_fold_count: int = 0,
+    grouped_prediction_retained_fold_count: int = 0,
+    grouped_prediction_excluded_boundary_fold_count: int = 0,
     grouped_prediction_basis: str | None = None,
     credibility_status: str = "withheld_policy_unavailable",
     credibility_policy_id: str | None = None,
@@ -289,6 +312,15 @@ def _attempt(
         aicc=aicc,
         grouped_prediction_rmse=grouped_prediction_rmse,
         grouped_prediction_fold_count=grouped_prediction_fold_count,
+        grouped_prediction_attempted_fold_count=(
+            grouped_prediction_attempted_fold_count
+        ),
+        grouped_prediction_retained_fold_count=(
+            grouped_prediction_retained_fold_count
+        ),
+        grouped_prediction_excluded_boundary_fold_count=(
+            grouped_prediction_excluded_boundary_fold_count
+        ),
         grouped_prediction_basis=grouped_prediction_basis,
         credibility_status=credibility_status,
         credibility_policy_id=credibility_policy_id,
@@ -1377,7 +1409,7 @@ def _grouped_prediction_summary(
     tolerance: float,
     gate: _ReviewedModelGate,
     policy: Mapping[str, Any],
-) -> tuple[float | None, int, str | None]:
+) -> _GroupedPredictionSummary:
     """Evaluate a fitted model by leaving out one distinct N-rate level at a time.
 
     Two constraints narrow this below the naive "hold out every level" loop.
@@ -1396,13 +1428,38 @@ def _grouped_prediction_summary(
     than silently scored, and the returned basis records that the statistic is
     then leave-one-interior-level-out, which is a weaker claim than
     leave-one-level-out and must not be read as the latter.
+
+    STAT-006 Option A keeps that exclusion and publishes its size: the returned
+    summary carries how many folds were enumerated, how many were scored, and
+    how many were dropped at the domain boundary. No minimum retained-fold
+    threshold is applied -- the owner-supplied value does not exist yet, so the
+    counts are reported and nothing gates on them.
     """
 
     squared_errors: list[float] = []
     held_out_levels = sorted(set(float(value) for value in x))
     parameter_count = _MODEL_PARAMETER_COUNTS[model_name]
+    attempted_levels = len(held_out_levels)
     scored_levels = 0
     extrapolating_levels = 0
+
+    def abandoned() -> _GroupedPredictionSummary:
+        """Abandon the diagnostic without claiming any scored fold.
+
+        The attempted and boundary-excluded counts observed so far are still
+        facts, so they travel; only the retained count collapses to zero. The
+        attempted total therefore does not reconcile on this path, which is the
+        honest reading of a diagnostic that stopped early.
+        """
+
+        return _GroupedPredictionSummary(
+            rmse=None,
+            attempted_fold_count=attempted_levels,
+            retained_fold_count=0,
+            excluded_boundary_fold_count=extrapolating_levels,
+            basis=None,
+        )
+
     for held_out_level in held_out_levels:
         test_mask = np.isclose(x, held_out_level, rtol=0.0, atol=tolerance)
         train_mask = ~test_mask
@@ -1412,13 +1469,13 @@ def _grouped_prediction_summary(
             len(set(float(value) for value in training_x)) < _minimum_distinct_levels(model_name)
             or len(training_x) - parameter_count < minimum_residual_df
         ):
-            return None, 0, None
+            return abandoned()
         if _model_level_gate_reason(
             model_name,
             len(set(float(value) for value in training_x)),
             policy,
         ) is not None:
-            return None, 0, None
+            return abandoned()
         training_min, training_max = _observed_bounds(training_x)
         if held_out_level < training_min or held_out_level > training_max:
             extrapolating_levels += 1
@@ -1433,7 +1490,7 @@ def _grouped_prediction_summary(
             gate=gate,
         )
         if parameters is None:
-            return None, 0, None
+            return abandoned()
         parameter_map = _parameter_mapping(model_name, parameters)
         predicted = evaluate_model(model_name, x[test_mask].tolist(), parameter_map)
         if (
@@ -1441,17 +1498,23 @@ def _grouped_prediction_summary(
             or np.min(predicted) < minimum_yield - tolerance
             or np.max(predicted) > maximum_yield + tolerance
         ):
-            return None, 0, None
+            return abandoned()
         squared_errors.extend(float(value) for value in (predicted - y[test_mask]) ** 2)
         scored_levels += 1
     if not squared_errors:
-        return None, 0, None
+        return abandoned()
     basis = (
         "leave_one_interior_n_level_out"
         if extrapolating_levels
         else "leave_one_n_level_out"
     )
-    return float(math.sqrt(float(np.mean(squared_errors)))), scored_levels, basis
+    return _GroupedPredictionSummary(
+        rmse=float(math.sqrt(float(np.mean(squared_errors)))),
+        attempted_fold_count=attempted_levels,
+        retained_fold_count=scored_levels,
+        excluded_boundary_fold_count=extrapolating_levels,
+        basis=basis,
+    )
 
 
 def _aicc(rss: float, n_observations: int, mean_parameter_count: int) -> float | None:
@@ -1684,15 +1747,12 @@ def _delta_feature_variances(
             asymptote = float(parameters["asymptote"])
             amplitude = float(parameters["amplitude"])
             rate = float(parameters["rate"])
-            # The reported rate, and therefore its gradient, depends on which
-            # quantity `q` is a fraction of. Reusing one gradient for both
-            # conventions attaches the wrong variance to the reported rate.
-            if reference_quantity == "ceiling_level":
-                ratio = asymptote * (1.0 - fraction) / amplitude
-            elif reference_quantity == "response_range":
-                ratio = 1.0 - fraction
-            else:
-                ratio = 0.0
+            # STAT-002/PRF-011 Option A: `response_range` is the only accepted
+            # reference quantity. The reported rate, and therefore its gradient,
+            # depends on which quantity `q` is a fraction of, so a policy naming
+            # the retired `ceiling_level` yields no ratio and no variance rather
+            # than a number derived from the wrong gradient.
+            ratio = 1.0 - fraction if reference_quantity == "response_range" else 0.0
             if (
                 0.0 < fraction < 1.0
                 and asymptote > 0.0
@@ -1700,16 +1760,10 @@ def _delta_feature_variances(
                 and rate > 0.0
                 and ratio > 0.0
             ):
-                # N = -ln(ratio) / r. Under `response_range` the ratio is the
-                # constant 1 - q, so only the rate parameter carries uncertainty.
+                # N = -ln(1 - q) / r: the ratio is a constant, so only the rate
+                # parameter carries uncertainty.
                 gradient = np.asarray(
-                    (
-                        -1.0 / (rate * asymptote),
-                        1.0 / (rate * amplitude),
-                        math.log(ratio) / (rate**2),
-                    )
-                    if reference_quantity == "ceiling_level"
-                    else (0.0, 0.0, math.log(ratio) / (rate**2)),
+                    (0.0, 0.0, math.log(ratio) / (rate**2)),
                     dtype=float,
                 )
                 reporting_rate_variance = float(
@@ -2354,11 +2408,7 @@ def fit_candidate_model(
         reasons.append("AICC_UNAVAILABLE")
     if replication_balance_status == "unbalanced_unequal_replication":
         reasons.append("MOD09_UNEQUAL_REPLICATION_ACROSS_REVIEWED_MEANS")
-    (
-        grouped_prediction_rmse,
-        grouped_prediction_fold_count,
-        grouped_prediction_basis,
-    ) = _grouped_prediction_summary(
+    grouped_prediction = _grouped_prediction_summary(
         model_name,
         x,
         y,
@@ -2369,6 +2419,18 @@ def fit_candidate_model(
         gate=model_gate,
         policy=policy,
     )
+    grouped_prediction_rmse = grouped_prediction.rmse
+    # The pre-existing spelling has always meant "folds actually scored", so it
+    # keeps that meaning and the STAT-006 counts sit beside it.
+    grouped_prediction_fold_count = grouped_prediction.retained_fold_count
+    grouped_prediction_attempted_fold_count = grouped_prediction.attempted_fold_count
+    grouped_prediction_retained_fold_count = grouped_prediction.retained_fold_count
+    grouped_prediction_excluded_boundary_fold_count = (
+        grouped_prediction.excluded_boundary_fold_count
+    )
+    grouped_prediction_basis = grouped_prediction.basis
+    if grouped_prediction_excluded_boundary_fold_count:
+        reasons.append("GROUPED_PREDICTION_BOUNDARY_FOLDS_EXCLUDED")
     if grouped_prediction_rmse is None:
         reasons.append("GROUPED_PREDICTION_UNAVAILABLE")
     (
@@ -2492,6 +2554,15 @@ def fit_candidate_model(
         aicc=aicc,
         grouped_prediction_rmse=grouped_prediction_rmse,
         grouped_prediction_fold_count=grouped_prediction_fold_count,
+        grouped_prediction_attempted_fold_count=(
+            grouped_prediction_attempted_fold_count
+        ),
+        grouped_prediction_retained_fold_count=(
+            grouped_prediction_retained_fold_count
+        ),
+        grouped_prediction_excluded_boundary_fold_count=(
+            grouped_prediction_excluded_boundary_fold_count
+        ),
         grouped_prediction_basis=grouped_prediction_basis,
         credibility_status=credibility_status,
         credibility_policy_id=credibility_policy_id,
@@ -2677,6 +2748,18 @@ def model_attempt_record(attempt: ModelAttempt) -> dict[str, Any]:
         "aicc": attempt.aicc,
         "grouped_prediction_rmse": attempt.grouped_prediction_rmse,
         "grouped_prediction_fold_count": attempt.grouped_prediction_fold_count,
+        # STAT-006: the fold accounting behind the RMSE above. On a completed
+        # diagnostic `attempted` reconciles as `retained + excluded_boundary`; on
+        # an abandoned one `retained` is zero and the total does not reconcile.
+        "grouped_prediction_attempted_fold_count": (
+            attempt.grouped_prediction_attempted_fold_count
+        ),
+        "grouped_prediction_retained_fold_count": (
+            attempt.grouped_prediction_retained_fold_count
+        ),
+        "grouped_prediction_excluded_boundary_fold_count": (
+            attempt.grouped_prediction_excluded_boundary_fold_count
+        ),
         "grouped_prediction_basis": attempt.grouped_prediction_basis,
         "credibility_status": attempt.credibility_status,
         "credibility_policy_id": attempt.credibility_policy_id,
