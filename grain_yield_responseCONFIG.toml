@@ -14,9 +14,9 @@
 # Architecture: this is a standalone, hash-bound companion recipe. scriptCONFIG.toml
 # remains the repository configuration authority; output is written outside the
 # immutable N-response release package and is never appended to that package.
-# The bundle groups its artifacts by theme — tables/{population,pooled,
-# heterogeneity,factors} and figures/{pooled,heterogeneity,factors} — with
-# run_manifest.json + CHECKSUMS.sha256 binding every member.
+# The bundle mixes figures and tables within shared theme directories —
+# {population,pooled,heterogeneity,factors} — with run_manifest.json and
+# CHECKSUMS.sha256 binding every member.
 
 [run]
 mode = "full" # validate | test | full
@@ -83,6 +83,10 @@ release_checksums_sha256 = "a1239ee59e1b0fef25d5432e18fe3abc804ad47b8fa5d9daacdd
 [paths]
 base_config = "scriptCONFIG.toml"
 release_package = "WF/06_Reports/n_response_full"
-output_root = "WF/06_Reports/grain_yield_response_diagnostics"
+# Canonical host for the separately signed, prioritized subtree at
+# factors/response_curve_factor_contributors/response_curve_modifier_by_dataset.
+# Full host reruns verify and carry that subtree through the same staged
+# promotion instead of deleting it.
+output_root = "WF/03_Quality_Control/grain_yield_response_diagnostics"
 test_output_root = "WF/06_Reports/grain_yield_response_diagnostics_test"
 r_stage = "modules/n_response_curve/analysis/stages/grain_yield_response_mixed_models.R"

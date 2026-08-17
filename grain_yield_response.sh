@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$SCRIPT_DIR"
 ENTRYPOINT="$PROJECT_ROOT/modules/grain_yield_response_pipeline.py"
+PRIORITIZED_EXTENSION_LAUNCHER="$PROJECT_ROOT/response_curve_modifier_by_dataset.sh"
 
 usage() {
   cat <<'EOF'
@@ -20,6 +21,23 @@ if (( $# > 0 )); then
   CONFIG_PATH="$2"
 else
   CONFIG_PATH="$PROJECT_ROOT/grain_yield_responseCONFIG.toml"
+fi
+
+if ! CONFIG_DIRECTORY="$(cd -- "$(dirname -- "$CONFIG_PATH")" && pwd -P)"; then
+  printf 'grain_yield_response.sh: configuration directory does not exist: %s\n' \
+    "$(dirname -- "$CONFIG_PATH")" >&2
+  exit 2
+fi
+CONFIG_PATH="$CONFIG_DIRECTORY/$(basename -- "$CONFIG_PATH")"
+if [[ ! -f "$CONFIG_PATH" ]]; then
+  printf 'grain_yield_response.sh: configuration file does not exist: %s\n' \
+    "$CONFIG_PATH" >&2
+  exit 2
+fi
+if [[ "$CONFIG_PATH" == "$PROJECT_ROOT/grain_yield_responseCONFIG.toml" ]]; then
+  REFRESH_PRIORITIZED_EXTENSION=true
+else
+  REFRESH_PRIORITIZED_EXTENSION=false
 fi
 
 if [[ -n "${PYTHON_BIN:-}" ]]; then
@@ -64,5 +82,17 @@ fi
 export PYTHONDONTWRITEBYTECODE=1
 export MPLCONFIGDIR="${MPLCONFIGDIR:-${TMPDIR:-/tmp}/n_response_curve_mpl}"
 
-exec "$PYTHON_BIN_RESOLVED" "$ENTRYPOINT" --config "$CONFIG_PATH"
+"$PYTHON_BIN_RESOLVED" "$ENTRYPOINT" --config "$CONFIG_PATH"
+
+# The default recipe owns the canonical QC host. Refresh its prioritized,
+# independently signed response-modifier subtree only after the host completes;
+# custom configs remain isolated and never mutate the canonical destination.
+if [[ "$REFRESH_PRIORITIZED_EXTENSION" == true ]]; then
+  [[ -x "$PRIORITIZED_EXTENSION_LAUNCHER" ]] || {
+    printf 'grain_yield_response.sh: prioritized extension launcher is missing or not executable: %s\n' \
+      "$PRIORITIZED_EXTENSION_LAUNCHER" >&2
+    exit 2
+  }
+  PYTHON_BIN="$PYTHON_BIN_RESOLVED" "$PRIORITIZED_EXTENSION_LAUNCHER"
+fi
 
