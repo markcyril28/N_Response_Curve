@@ -7,7 +7,6 @@ import hashlib
 import importlib.metadata
 import json
 import math
-import os
 from pathlib import Path
 import platform
 import re
@@ -37,6 +36,7 @@ from n_response_curve.analysis.comparisons import (
 from n_response_curve.analysis.policy_artifacts import AnalysisPolicyBundle
 from n_response_curve.data.config import ConfigError, ValidatedConfig
 from n_response_curve.data.curate import project_public_records
+from n_response_curve.data.eligibility import series_observation_support
 from n_response_curve.data.policy_artifacts import SourceDataPolicyBundle
 from n_response_curve.data.provenance import sha256_file, stable_json_sha256
 from n_response_curve.analysis.curve_evidence import CurveEvidenceResult, build_curve_evidence, curve_fit_record_uids
@@ -47,9 +47,14 @@ from n_response_curve.analysis.factor_catalog import FactorCatalogEntry, build_f
 from n_response_curve.reporting.plots import (
     model_attempt_display_rows,
     sanitize_figure_directory_token,
-    write_observed_series_figures,
     write_response_curve_figures,
     write_source_series_overlay_figures,
+)
+from n_response_curve.reporting.generate_custom_overlays import (
+    _source_token as custom_overlay_source_token,
+    _threshold_token as custom_overlay_threshold_token,
+    custom_overlay_target_names,
+    generate_custom_overlays,
 )
 from n_response_curve.reporting.sample_figures import (
     SAMPLE_FIGURE_DIRECTORY,
@@ -67,12 +72,14 @@ from n_response_curve.pipeline.policy_governance import (
     RuntimePolicySnapshot,
     effective_analysis_hypotheses,
     phase_two_review_disposition,
+    release_config_sha256,
 )
 from n_response_curve.reporting.release import (
     ReleasePackage,
     ReportingError,
     TableArtifact,
     reap_abandoned_stage_directories,
+    verify_completed_release_package,
     verify_release_package,
     write_release_package,
 )
@@ -187,15 +194,23 @@ class PhaseFiveResult:
     reused_existing_package: bool
 
 
-def _code_fingerprint() -> str:
-    module_root = Path(__file__).resolve().parents[1]
+def _code_fingerprint(*, module_root: Path | None = None) -> str:
+    module_root = (module_root or Path(__file__).resolve().parents[1]).resolve()
     project_root = module_root.parent
+    post_release_overlay_modules = {
+        (module_root / "reporting" / name).resolve()
+        for name in (
+            "generate_source_dataset_overlays.py",
+            "source_dataset_overlays.py",
+        )
+    }
     paths = [
         path
         for path in sorted(module_root.rglob("*"))
         if path.is_file()
         and path.suffix in {".py", ".R"}
         and "__pycache__" not in path.parts
+        and path.resolve() not in post_release_overlay_modules
     ]
     digest = hashlib.sha256()
     for path in paths:
@@ -2259,18 +2274,43 @@ def _figure_stage_writer(
     manifest: dict[str, Any],
     report_sections: dict[str, list[str]],
 ):
+    # Release figures are row-level (they plot individual observations), and this
+    # project's restricted-data reporting remains aggregate-only. A series is
+    # disclosure-unsafe the moment any of its rows carries
+    # data_classification="restricted" -- regardless of restricted_release_status,
+    # including rows reviewed as "eligible_for_reviewed_public_projection". Hiding
+    # only the restricted points while still fitting/plotting a curve over them
+    # would leak their shape, so the whole series is dropped from every figure
+    # kind (observed, overlay, fitted).
+    restricted_series_uids: set[str] = set()
+    for record in phase_three.input_records:
+        series_uid = str(record.get("response_series_uid") or "").strip()
+        if series_uid and record.get("data_classification") == "restricted":
+            restricted_series_uids.add(series_uid)
+    disclosure_safe_records = tuple(
+        record
+        for record in phase_three.input_records
+        if str(record.get("response_series_uid") or "").strip() not in restricted_series_uids
+    )
+
     reportable_curve_series = {
-        row["response_series_uid"] for row in phase_three.evidence.curve_rows
+        row["response_series_uid"]
+        for row in phase_three.evidence.curve_rows
+        if str(row["response_series_uid"]) not in restricted_series_uids
     }
     evidence_by_series = {str(row["response_series_uid"]): row for row in series_evidence_rows}
-    fitted_attempts = (
-        phase_three.evidence.credible_attempts
-        if phase_three.evidence.reporting_policy == "all_credible_no_selection"
-        else phase_three.evidence.selected_attempts
+    fitted_attempts = tuple(
+        attempt
+        for attempt in (
+            phase_three.evidence.credible_attempts
+            if phase_three.evidence.reporting_policy == "all_credible_no_selection"
+            else phase_three.evidence.selected_attempts
+        )
+        if str(attempt.response_series_uid) not in restricted_series_uids
     )
 
     sources_by_series: dict[str, set[str]] = {}
-    for record in phase_three.input_records:
+    for record in disclosure_safe_records:
         series_uid = str(record.get("response_series_uid") or "").strip()
         if not series_uid:
             continue
@@ -2355,82 +2395,61 @@ def _figure_stage_writer(
     eligibility_policy = config.raw["eligibility"]
     minimum_complete = int(eligibility_policy["minimum_complete_n_yield"])
     minimum_distinct_n = int(eligibility_policy["minimum_distinct_n_levels"])
-    observed_metrics_by_series: dict[str, tuple[int, int]] = {}
-    finite_observed_series: set[str] = set()
-    for record in phase_three.input_records:
+    n_level_tolerance_kg_ha = float(eligibility_policy["n_level_tolerance_kg_ha"])
+    # Renderability is decided from the disclosure-safe rows actually being
+    # plotted, recomputed with the same tolerance-aware parse/unit semantics as
+    # row-level eligibility -- never from the cached series_complete_observation_count
+    # / series_distinct_n_level_count fields, which can go stale (e.g. after
+    # duplicate/restriction exclusions) and understate or overstate what a figure
+    # would show.
+    records_by_series: dict[str, list[Mapping[str, Any]]] = {}
+    for record in disclosure_safe_records:
         response_series_uid = str(record.get("response_series_uid") or "").strip()
-        if not response_series_uid:
-            continue
-        complete_count = record.get("series_complete_observation_count")
-        distinct_n_count = record.get("series_distinct_n_level_count")
-        if (
-            isinstance(complete_count, bool)
-            or not isinstance(complete_count, int)
-            or isinstance(distinct_n_count, bool)
-            or not isinstance(distinct_n_count, int)
-        ):
-            raise ReportingError(
-                "Observed figure series lacks canonical eligibility metrics: "
-                f"{response_series_uid}"
-            )
-        metrics = (complete_count, distinct_n_count)
-        prior_metrics = observed_metrics_by_series.setdefault(response_series_uid, metrics)
-        if prior_metrics != metrics:
-            raise ReportingError(
-                "Observed figure series has inconsistent eligibility metrics: "
-                f"{response_series_uid}"
-            )
-        if record.get("n_rate_kg_ha") is not None and record.get("yield_t_ha") is not None:
-            finite_observed_series.add(response_series_uid)
-    observed_series = sorted(
-        response_series_uid
-        for response_series_uid in finite_observed_series
-        if observed_metrics_by_series[response_series_uid][0] >= minimum_complete
-        and observed_metrics_by_series[response_series_uid][1] >= minimum_distinct_n
-    )
-    sparse_series_count = len(finite_observed_series) - len(observed_series)
+        if response_series_uid:
+            records_by_series.setdefault(response_series_uid, []).append(record)
+    observed_series = []
+    for response_series_uid, rows in records_by_series.items():
+        complete_count, distinct_n_count = series_observation_support(
+            rows, n_level_tolerance_kg_ha=n_level_tolerance_kg_ha
+        )
+        if complete_count >= minimum_complete and distinct_n_count >= minimum_distinct_n:
+            observed_series.append(response_series_uid)
+    observed_series = sorted(observed_series)
+    sparse_series_count = len(records_by_series) - len(observed_series)
     if sparse_series_count:
         report_sections.setdefault("unsupported", []).append(
-            f"{sparse_series_count} resolved series below the governed observed-figure minimum "
+            f"{sparse_series_count} resolved series below the governed observed-overlay minimum "
             f"({minimum_complete} complete N/yield observations and {minimum_distinct_n} "
-            "distinct N levels) remain in the QC ledgers and were not rendered as response "
-            "curves."
+            "distinct N levels, recomputed from the disclosure-safe observations actually "
+            "plotted) remain in the QC ledgers and were not rendered as response curves."
+        )
+    if restricted_series_uids:
+        report_sections.setdefault("unsupported", []).append(
+            f"{len(restricted_series_uids)} response series carry restricted or "
+            "internal-only-no-public-row-release observations and were excluded from every "
+            "release figure (canonical observed overlay and fitted); this project's restricted-data "
+            "reporting remains aggregate-only."
         )
 
     def write_figures(stage_root: Path) -> tuple[Path, ...]:
         figures: list[Path] = []
-        observed_counts_by_source: Counter[str] = Counter()
         overlay_counts_by_source: Counter[str] = Counter()
         overlay_artifact_count = 0
         fitted_counts_by_source_model: Counter[tuple[str, str]] = Counter()
-        for response_series_uid in observed_series:
-            source_name = source_by_series.get(response_series_uid)
-            if source_name is None:
-                raise ReportingError(
-                    "Observed figure series has no authoritative source mapping: "
-                    f"{response_series_uid}"
-                )
-            source_token = source_tokens[source_name]
-            figures.extend(
-                write_observed_series_figures(
-                    phase_three.input_records,
-                    response_series_uid,
-                    output_root=stage_root / "figures" / "observed" / source_token,
-                    formats=config.figure_formats,
-                    evidence_row=evidence_by_series.get(response_series_uid),
-                )
-            )
-            observed_counts_by_source[source_name] += 1
-        for source_name in sorted(enabled_sources):
-            source_series = tuple(
+        series_uids_by_source: dict[str, tuple[str, ...]] = {
+            source_name: tuple(
                 response_series_uid
                 for response_series_uid in observed_series
                 if source_by_series[response_series_uid] == source_name
             )
+            for source_name in sorted(enabled_sources)
+        }
+        for source_name in sorted(enabled_sources):
+            source_series = series_uids_by_source[source_name]
             if not source_series:
                 continue
             overlay_paths = write_source_series_overlay_figures(
-                phase_three.input_records,
+                disclosure_safe_records,
                 source_name,
                 response_series_uids=source_series,
                 output_root=stage_root / "figures" / "overlay",
@@ -2457,7 +2476,7 @@ def _figure_stage_writer(
                 )
             figures.extend(
                 write_response_curve_figures(
-                    phase_three.input_records,
+                    disclosure_safe_records,
                     attempt,
                     output_root=(
                         stage_root
@@ -2475,20 +2494,19 @@ def _figure_stage_writer(
             manifest["figures"] = {
                 "status": "run_output",
                 "scientific_status": "run_output",
-                "observed_figure_count": len(observed_series),
+                "observed_figure_count": 0,
                 "fitted_figure_count": sum(fitted_counts_by_source_model.values()),
                 "artifact_count": len(figures),
                 "formats": list(config.figure_formats),
-                "layout_version": "figures-by-source-model-and-overlay-v2",
-                "observed_path_template": "figures/observed/<source>/<series>.<format>",
+                "layout_version": "figures-by-source-model-overlay-only-v3",
+                "observed_path_template": None,
                 "fitted_path_template": (
                     "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
                 ),
                 "source_directory_tokens": dict(sorted(source_tokens.items())),
                 "model_directory_tokens": dict(sorted(model_tokens.items())),
                 "observed_figure_count_by_source": {
-                    source_name: observed_counts_by_source[source_name]
-                    for source_name in sorted(enabled_sources)
+                    source_name: 0 for source_name in sorted(enabled_sources)
                 },
                 "fitted_figure_count_by_source": {
                     source_name: sum(
@@ -2508,7 +2526,7 @@ def _figure_stage_writer(
                     for source_name in sorted(enabled_sources)
                 },
                 "overlay": {
-                    "scope": "same_governed_series_as_observed_figures",
+                    "scope": "governed_observed_series_overlay_only",
                     "path_template": "figures/overlay/<source>.<format>",
                     "figure_count": sum(overlay_counts_by_source.values()),
                     "artifact_count": overlay_artifact_count,
@@ -2518,7 +2536,11 @@ def _figure_stage_writer(
                         for source_name in sorted(enabled_sources)
                     },
                     "series_count_by_source": {
-                        source_name: observed_counts_by_source[source_name]
+                        source_name: len(series_uids_by_source[source_name])
+                        for source_name in sorted(enabled_sources)
+                    },
+                    "series_uids_by_source": {
+                        source_name: list(series_uids_by_source[source_name])
                         for source_name in sorted(enabled_sources)
                     },
                 },
@@ -2534,8 +2556,8 @@ def _figure_stage_writer(
             "fitted_figure_count": 0,
             "artifact_count": 0,
             "formats": list(config.figure_formats),
-            "layout_version": "figures-by-source-model-and-overlay-v2",
-            "observed_path_template": "figures/observed/<source>/<series>.<format>",
+            "layout_version": "figures-by-source-model-overlay-only-v3",
+            "observed_path_template": None,
             "fitted_path_template": (
                 "figures/fitted/<source>/<model>/<series>__<attempt>.<format>"
             ),
@@ -2554,7 +2576,7 @@ def _figure_stage_writer(
                 for source_name in sorted(enabled_sources)
             },
             "overlay": {
-                "scope": "same_governed_series_as_observed_figures",
+                "scope": "governed_observed_series_overlay_only",
                 "path_template": "figures/overlay/<source>.<format>",
                 "figure_count": 0,
                 "artifact_count": 0,
@@ -2564,6 +2586,10 @@ def _figure_stage_writer(
                 },
                 "series_count_by_source": {
                     source_name: 0 for source_name in sorted(enabled_sources)
+                },
+                "series_uids_by_source": {
+                    source_name: list(series_uids_by_source[source_name])
+                    for source_name in sorted(enabled_sources)
                 },
             },
         }
@@ -2585,6 +2611,133 @@ def _figure_stage_writer(
         return sample_set.paths
 
     return write_figures
+
+
+def _governed_custom_overlay_stage_writer(
+    config: ValidatedConfig,
+    manifest: dict[str, Any],
+    release_target: Path,
+) -> Callable[[Path], tuple[Path, ...]]:
+    """Create configured overlays inside final release staging and declare them."""
+
+    settings = config.raw.get("custom_overlays", {})
+
+    def write_custom_overlays(stage_root: Path) -> tuple[Path, ...]:
+        if not isinstance(settings, Mapping) or not settings.get("enabled", False):
+            return ()
+        configured_target = (
+            config.project_root / str(settings["package_path"])
+        ).resolve()
+        if configured_target != release_target.resolve():
+            raise ConfigError(
+                "[custom_overlays].package_path must equal the active release target "
+                "when custom overlays are governed release artifacts"
+            )
+        source_name = str(settings["source_name"])
+        source_token = custom_overlay_source_token(source_name)
+        threshold_token = custom_overlay_threshold_token(
+            float(settings["yield_threshold_t_ha"])
+        )
+        zero_threshold_token = custom_overlay_threshold_token(
+            float(settings["zero_n_yield_threshold_t_ha"])
+        )
+        generate_zero_n_strata = bool(settings["generate_zero_n_strata"])
+        target_names = custom_overlay_target_names(
+            source_token=source_token,
+            threshold_token=threshold_token,
+            zero_threshold_token=zero_threshold_token,
+            generate_zero_n_strata=generate_zero_n_strata,
+        )
+        result = generate_custom_overlays(
+            project_root=config.project_root,
+            config_path=config.config_path,
+            package=stage_root,
+            source_name=source_name,
+            yield_threshold_t_ha=float(settings["yield_threshold_t_ha"]),
+            high_n_threshold_kg_ha=float(settings["high_n_threshold_kg_ha"]),
+            replace_existing=False,
+            generate_zero_n_strata=generate_zero_n_strata,
+            zero_n_yield_threshold_t_ha=float(
+                settings["zero_n_yield_threshold_t_ha"]
+            ),
+            configured_figure_formats=config.figure_formats,
+            governed_release=True,
+            allow_active_pipeline=True,
+            source_package_path=release_target,
+        )
+        overlay_root = stage_root / "figures" / "overlay"
+        paths = tuple(overlay_root / name for name in target_names)
+        if any(not path.is_file() for path in paths):
+            raise ReportingError(
+                "Governed custom-overlay generator did not produce its declared inventory"
+            )
+        figures = manifest.get("figures")
+        if not isinstance(figures, dict):
+            raise ReportingError(
+                "Governed custom overlays require the Phase 5 figure inventory"
+            )
+        source_tokens = figures.get("source_directory_tokens")
+        if (
+            not isinstance(source_tokens, Mapping)
+            or source_tokens.get(source_name) != source_token
+        ):
+            raise ReportingError(
+                "Governed custom-overlay source disagrees with the figure hierarchy"
+            )
+        if "diagnostics" in figures:
+            raise ReportingError("Release figure diagnostics were declared more than once")
+        relative_paths = {
+            path.name: path.relative_to(stage_root).as_posix() for path in paths
+        }
+        figure_paths = sorted(
+            relative
+            for name, relative in relative_paths.items()
+            if Path(name).suffix.casefold() == ".jpeg"
+        )
+        manifest_paths = sorted(
+            relative
+            for name, relative in relative_paths.items()
+            if Path(name).suffix.casefold() == ".json"
+        )
+        checksum_paths = sorted(
+            relative
+            for name, relative in relative_paths.items()
+            if Path(name).suffix.casefold() == ".sha256"
+        )
+        current_artifact_count = figures.get("artifact_count")
+        if not isinstance(current_artifact_count, int) or isinstance(
+            current_artifact_count, bool
+        ):
+            raise ReportingError("Release figure artifact count is invalid")
+        figures["artifact_count"] = current_artifact_count + len(figure_paths)
+        figures["diagnostics"] = {
+            "schema_version": "governed-overlay-diagnostics-v1",
+            "status": "governed_release_artifacts",
+            "scope": "configured_descriptive_subsets_of_governed_observed_series",
+            "directory": "figures/overlay",
+            "source_name": source_name,
+            "formats": ["jpeg"],
+            "figure_count": len(figure_paths),
+            "artifact_count": len(paths),
+            "figure_paths": figure_paths,
+            "manifest_paths": manifest_paths,
+            "checksum_ledger_paths": checksum_paths,
+            "configuration": {
+                "yield_threshold_t_ha": float(settings["yield_threshold_t_ha"]),
+                "high_n_threshold_kg_ha": float(
+                    settings["high_n_threshold_kg_ha"]
+                ),
+                "generate_zero_n_strata": generate_zero_n_strata,
+                "zero_n_yield_threshold_t_ha": float(
+                    settings["zero_n_yield_threshold_t_ha"]
+                ),
+            },
+            "generation_status": result["status"],
+            "accountable_human_review": "not_claimed",
+        }
+        return paths
+
+    return write_custom_overlays
 
 
 def _qc_summary_tables(phase_two: Any) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
@@ -4555,17 +4708,92 @@ def _release_target(config: ValidatedConfig) -> Path:
     raise ConfigError("Validate mode does not have a release target")
 
 
+# These fields are deterministically derived only after Phase 2 from the
+# identity-bound inputs. Reuse still requires their presence and verifies the
+# complete stored identity hash; they are not available for pre-Phase-2 matching.
+_COMPLETED_RELEASE_DATA_DERIVED_IDENTITY_FIELDS = frozenset(
+    {
+        "hypothesis_specifications_sha256",
+        "literature_verification",
+    }
+)
+
+
+def _find_reusable_completed_release(
+    config: ValidatedConfig,
+    *,
+    expected_identity: Mapping[str, Any],
+    policy_content_sha256: str,
+) -> ReleasePackage | None:
+    """Find the newest complete package that still matches current run inputs.
+
+    A package directory merely existing is never completion evidence. Every
+    candidate must pass the release verifier, retain its identity hash and
+    complete review ledger, and match each current identity field supplied by
+    the caller.
+    """
+
+    if config.run_mode == "test":
+        output_root = config.paths["test_output_root"]
+    elif config.run_mode == "full":
+        output_root = config.paths["reports_root"]
+    else:
+        return None
+    if not output_root.is_dir():
+        return None
+
+    package_name = _completed_release_name_pattern(config)
+    for candidate in sorted(output_root.iterdir(), key=lambda path: path.name, reverse=True):
+        if (
+            package_name.fullmatch(candidate.name) is None
+            or candidate.is_symlink()
+            or not candidate.is_dir()
+        ):
+            continue
+        try:
+            package = verify_completed_release_package(candidate)
+            manifest = json.loads(package.manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ReportingError, json.JSONDecodeError):
+            continue
+        identity = manifest.get("run_identity")
+        identity_sha256 = manifest.get("run_identity_sha256")
+        if (
+            manifest.get("status")
+            != f"phase_5_{config.run_mode}_release_complete"
+            or not isinstance(identity, Mapping)
+            or not isinstance(identity_sha256, str)
+            or set(identity)
+            != (
+                set(expected_identity)
+                | _COMPLETED_RELEASE_DATA_DERIVED_IDENTITY_FIELDS
+            )
+            or stable_json_sha256(identity) != identity_sha256
+            or any(identity.get(key) != value for key, value in expected_identity.items())
+            or not _review_gate_allows_reuse(
+                manifest,
+                run_identity_sha256=identity_sha256,
+                policy_content_sha256=policy_content_sha256,
+                mode=config.run_mode,
+            )
+        ):
+            continue
+        return package
+    return None
+
+
 def _release_run_id(config: ValidatedConfig) -> str:
-    seed = int(config.raw["run"]["random_seed"])
-    run_id = f"n_response_{config.run_mode}_{seed}"
-    if config.run_mode not in {"test", "full"}:
-        return run_id
-    launcher_run_id = os.environ.get("N_RESPONSE_LAUNCHER_RUN_ID", "")
-    match = re.fullmatch(
-        r"n_response_launcher_(\d{8}T\d{6}Z_\d+)",
-        launcher_run_id,
+    return f"n_response_{config.run_mode}"
+
+
+def _completed_release_name_pattern(config: ValidatedConfig) -> re.Pattern[str]:
+    """Match the stable target and seed-named packages created before it."""
+
+    stable_name = _release_run_id(config)
+    legacy_name = f"{stable_name}_{int(config.raw['run']['random_seed'])}"
+    return re.compile(
+        rf"(?:{re.escape(stable_name)}|{re.escape(legacy_name)}"
+        r"(?:_\d{8}T\d{6}Z_\d+)?)"
     )
-    return f"{run_id}_{match.group(1)}" if match is not None else run_id
 
 
 def _source_target_paths(config: ValidatedConfig) -> tuple[Path, ...]:
@@ -4962,7 +5190,7 @@ def release_phases_three_to_five(
     # operational annotations must not mutate the already-hashed run identity
     # through shared nested dictionaries.
     identity_payload = _redact({
-        "config_sha256": sha256_file(config.config_path),
+        "config_sha256": release_config_sha256(config),
         "code_sha256": _code_fingerprint(),
         "policy_content_sha256": policy_snapshot.policy_content_sha256,
         "effective_enablement_sha256": (
@@ -5090,7 +5318,6 @@ def release_phases_three_to_five(
             "gate_policy": config.raw["run"]["qc_gate"],
             "gate_scope": "validate_only",
             "writing_mode_disposition": "preserve_complete_findings",
-            "authority_status": "technical_run_not_scientific_approval",
             "reconciles": phase_two.qc.reconciles,
             "inventory_row_count": phase_two.qc.inventory_rows,
             "row_ledger_count": len(phase_two.eligibility.ledger),
@@ -5358,6 +5585,9 @@ def release_phases_three_to_five(
             overwrite=bool(config.raw["run"]["overwrite"]),
             source_roots=_source_target_paths(config),
             stage_writers=stage_writers,
+            final_stage_writers=(
+                _governed_custom_overlay_stage_writer(config, manifest, target),
+            ),
             release_validator=_strict_release_validator(config),
             staged_artifact_validator=_restricted_uid_leak_validator(
                 release_identities.restricted_internal_uids
@@ -5373,6 +5603,7 @@ __all__ = [
     "PhaseFourResult",
     "PhaseThreeResult",
     "build_effective_model_policy",
+    "_find_reusable_completed_release",
     "_release_run_id",
     "release_phases_three_to_five",
     "run_phase_four",
