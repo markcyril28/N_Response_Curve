@@ -44,7 +44,7 @@ from n_response_curve.reporting.plots import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/04_Response_Curves/n_response_full/figures"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/04_Response_Curves/z_n_response_full"
 DEFAULT_YIELD_THRESHOLD_T_HA = 7.8
 DEFAULT_ZERO_N_YIELD_THRESHOLD_T_HA = 5.0
 DEFAULT_N_RATE_THRESHOLD_KG_HA = 250.0
@@ -53,8 +53,8 @@ _SOURCE_NAMES = (
     "ltcce",
     "ph_combined_nopt_rcm",
 )
-# Owned by reporting/generate_response_curve_clusters.py. Tolerated in the LTCCE
-# destination and carried across this generator's snapshot replacement.
+# Owned by the trajectory- and variety-cluster generators. Tolerated in the
+# LTCCE destination and carried across this generator's snapshot replacement.
 _PRESERVED_SUBDIRECTORY = "clusters"
 _REQUIRED_CORE_LEDGER_COLUMNS = frozenset(
     {
@@ -274,6 +274,15 @@ def _write_governed_core_figures(
         finally:
             plt.close(selected_figure)
 
+        # Same reason the LTCCE branch below carries it: this destination is
+        # replaced as a whole snapshot, so the separately generated cluster
+        # views beneath it have to be copied into staging or the replacement
+        # silently discards them. `clusters/by_planting_year/` is owned by
+        # `generate_core_trial_planting_year_view.py`, not by this generator.
+        preserved = destination_dir / _PRESERVED_SUBDIRECTORY
+        if preserved.is_dir() and not preserved.is_symlink():
+            shutil.copytree(preserved, staging_dir / _PRESERVED_SUBDIRECTORY)
+
         if destination_dir.exists():
             if not destination_dir.is_dir() or destination_dir.is_symlink():
                 raise RuntimeError("Governed core overlay destination is not a plain directory")
@@ -371,8 +380,8 @@ def _write_ltcce_figures(
 
         # This directory is replaced as a whole snapshot, so the separately
         # generated cluster views beneath it have to be carried across or they
-        # would be discarded. They are owned by
-        # reporting/generate_response_curve_clusters.py, not by this generator.
+        # would be discarded. The organized `by_trajectory` and `by_variety`
+        # products are owned by their dedicated generators, not by this one.
         preserved = destination_dir / _PRESERVED_SUBDIRECTORY
         if preserved.is_dir() and not preserved.is_symlink():
             shutil.copytree(preserved, staging_dir / _PRESERVED_SUBDIRECTORY)
