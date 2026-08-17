@@ -39,6 +39,30 @@ KNOWN_REPRESENTATION_BASES = frozenset(
         "unclear_mixed_scope",
     }
 )
+# Only row-level and per-treatment-mean bases carry enough resolution to fit
+# an N-response curve; site/region summaries and unclear-scope bases cannot.
+CURVE_CAPABLE_REPRESENTATION_BASES = frozenset(
+    {"observation_level", "treatment_mean"}
+)
+
+
+def _require_curve_capable_bases_are_known(
+    curve_capable: frozenset[str], known: frozenset[str]
+) -> None:
+    """Fail closed if the curve-capable set drifts outside the known set.
+
+    Deliberately an explicit ``raise`` rather than a bare ``assert`` statement:
+    ``assert`` is stripped by ``python -O``, which would silently disable this
+    invariant in an optimized run instead of failing closed.
+    """
+
+    if not curve_capable <= known:
+        raise AssertionError(
+            "CURVE_CAPABLE_REPRESENTATION_BASES must be a subset of KNOWN_REPRESENTATION_BASES"
+        )
+
+
+_require_curve_capable_bases_are_known(CURVE_CAPABLE_REPRESENTATION_BASES, KNOWN_REPRESENTATION_BASES)
 
 
 @dataclass(frozen=True)
@@ -395,6 +419,72 @@ def _manifest_relative_path(config: ValidatedConfig, source_path: Path) -> str:
         ) from exc
 
 
+def verify_configured_source_integrity(
+    config: ValidatedConfig,
+    *,
+    checksum_revision_approvals: Mapping[
+        str, ChecksumRevisionApproval | Mapping[str, object]
+    ] | None = None,
+    designated_reviewers: Iterable[str] = (),
+) -> SourceIntegrityReport:
+    """Verify configured sources with the same approved-revision semantics as ingestion."""
+
+    revision_approvals = dict(checksum_revision_approvals or {})
+    unexpected_revision_sources = set(revision_approvals) - set(config.enabled_sources)
+    if unexpected_revision_sources:
+        raise ConfigError(
+            "Checksum revision approval supplied for a disabled or unknown source: "
+            + ", ".join(sorted(unexpected_revision_sources))
+        )
+    provisional_revision_paths = tuple(
+        _manifest_relative_path(config, _configured_source_path(config, source_name))
+        for source_name in sorted(revision_approvals)
+    )
+    integrity_report = verify_source_integrity(
+        config.paths["source_manifest"],
+        config.paths["source_checksums"],
+        provisional_revision_paths=provisional_revision_paths,
+    )
+    if integrity_report.failed_files:
+        raise ConfigError(
+            "Configured input checksums do not match the intake package: "
+            + ", ".join(integrity_report.failed_files)
+        )
+    for source_name, approval in sorted(revision_approvals.items()):
+        source_path = _configured_source_path(config, source_name)
+        artifact_path = _manifest_relative_path(config, source_path)
+        expected_sha256 = integrity_report.artifact_sha256.get(artifact_path)
+        if expected_sha256 is None:
+            raise ConfigError(
+                "Enabled source with a checksum revision is not registered in the "
+                f"manifest: {source_name} ({artifact_path})"
+            )
+        source_config = config.sources[source_name]
+        workbook_value = source_config.get("workbook")
+        validate_checksum_revision_approval(
+            approval,
+            candidate_path=source_path,
+            expected_old_sha256=expected_sha256,
+            artifact_path=artifact_path,
+            candidate_encoding=str(source_config["encoding"]),
+            candidate_data_classification=str(
+                source_config["data_classification"]
+            ),
+            candidate_workbook_path=(
+                (config.project_root / workbook_value).resolve()
+                if isinstance(workbook_value, str) and workbook_value.strip()
+                else None
+            ),
+            candidate_sheet=(
+                str(source_config["sheet"])
+                if source_config.get("sheet") is not None
+                else None
+            ),
+            designated_reviewers=designated_reviewers,
+        )
+    return integrity_report
+
+
 def ingest_configured_sources(
     config: ValidatedConfig,
     *,
@@ -414,12 +504,6 @@ def ingest_configured_sources(
     revision_approvals = dict(checksum_revision_approvals or {})
     representation_bases = dict(source_representation_bases or {})
     workbook_reconciliations = dict(source_workbook_reconciliations or {})
-    unexpected_revision_sources = set(revision_approvals) - set(config.enabled_sources)
-    if unexpected_revision_sources:
-        raise ConfigError(
-            "Checksum revision approval supplied for a disabled or unknown source: "
-            + ", ".join(sorted(unexpected_revision_sources))
-        )
     unexpected_representation_sources = set(representation_bases) - set(
         config.enabled_sources
     )
@@ -447,20 +531,11 @@ def ingest_configured_sources(
                 f"Adapter registry key {adapter!r} does not match its versioned specification"
             )
 
-    provisional_revision_paths = tuple(
-        _manifest_relative_path(config, _configured_source_path(config, source_name))
-        for source_name in sorted(revision_approvals)
+    integrity_report = verify_configured_source_integrity(
+        config,
+        checksum_revision_approvals=revision_approvals,
+        designated_reviewers=designated_reviewers,
     )
-    integrity_report = verify_source_integrity(
-        config.paths["source_manifest"],
-        config.paths["source_checksums"],
-        provisional_revision_paths=provisional_revision_paths,
-    )
-    if integrity_report.failed_files:
-        raise ConfigError(
-            "Configured input checksums do not match the intake package: "
-            + ", ".join(integrity_report.failed_files)
-        )
 
     schema = config.raw["schema"]
     legacy_spec = SourceAdapterSpec(
@@ -618,9 +693,11 @@ __all__ = [
     "RawColumn",
     "RawRow",
     "KNOWN_REPRESENTATION_BASES",
+    "CURVE_CAPABLE_REPRESENTATION_BASES",
     "SourceAdapterSpec",
     "WorkbookCsvReconciliation",
     "SUPPORTED_SHAPE_ADAPTERS",
     "ingest_configured_sources",
     "ingest_csv",
+    "verify_configured_source_integrity",
 ]
