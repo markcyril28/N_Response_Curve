@@ -22,6 +22,7 @@ class ConfigError(ValueError):
 
 
 RUN_MODES = {"validate", "test", "full"}
+PIPELINE_PHASES = ("phase_2", "phase_3", "phase_4", "phase_5")
 KNOWN_MODELS = {"linear", "quadratic", "linear_plateau", "quadratic_plateau", "mitscherlich"}
 KNOWN_SOURCE_TYPES = {
     "literature",
@@ -35,6 +36,9 @@ KNOWN_SOURCE_AVAILABILITY = {"available", "expected_unavailable"}
 KNOWN_SOURCE_CONFIRMATION_STATUSES = {"verified", "pending"}
 KNOWN_SOURCE_ENCODINGS = {"utf-8-sig", "cp1252"}
 KNOWN_DATA_CLASSIFICATIONS = {"internal", "restricted"}
+SUPPORTED_SOURCE_DATASET_OVERLAY_NAMES = frozenset(
+    {"core_trial_data", "ltcce", "ph_combined_nopt_rcm"}
+)
 KNOWN_COMPARISON_DIMENSIONS = {"water_regime", "season", "region", "province", "variety", "recommendation_class"}
 KNOWN_SERIES_IDENTITY_DIMENSIONS = {
     "water_regime", "season", "region", "province", "variety", "planting_year",
@@ -234,6 +238,8 @@ TOP_LEVEL_SECTIONS = {
     "analysis_policy",
     "source_data_policy",
     "analysis_matrix",
+    "custom_overlays",
+    "source_dataset_overlays",
 }
 
 
@@ -268,6 +274,7 @@ class ValidatedConfig:
     source_data_policy_manifest_sha256: str | None
     source_data_policy_secret_env: str | None
     run_mode: str
+    phases: tuple[str, ...]
     reuse_completed_release: bool
 
     @property
@@ -344,6 +351,7 @@ def validate_config(
     data["logging"] = dict(data["logging"])
     # Absent workspace-clearing controls mean "disabled": an opt-in destructive
     # action must never be implied by a key the operator did not write.
+    data["run"].setdefault("phases", list(PIPELINE_PHASES))
     data["run"].setdefault("reuse_completed_release", False)
     data["outputs"].setdefault("clear_output_root_before_run", False)
     data["logging"].setdefault("clear_log_root_before_run", False)
@@ -502,7 +510,7 @@ def validate_config(
         {
             "mode", "overwrite", "random_seed", "test_group_limit", "fail_fast", "qc_gate",
             "r_threads_per_job", "max_parallel_r_jobs", "r_stage_timeout_seconds",
-            "r_termination_grace_seconds", "cpu_detection", "reuse_completed_release",
+            "r_termination_grace_seconds", "cpu_detection", "phases", "reuse_completed_release",
         },
         where="[run]",
     )
@@ -513,7 +521,27 @@ def validate_config(
     _require_bool(run, "overwrite", where="[run]")
     _require_int(run, "random_seed", where="[run]")
     _require_bool(run, "fail_fast", where="[run]")
+    phases = _toggle_list(
+        run,
+        "phases",
+        set(PIPELINE_PHASES),
+        where="[run]",
+        allow_empty=True,
+    )
     _require_bool(run, "reuse_completed_release", where="[run]")
+    if phases and tuple(phases) != PIPELINE_PHASES:
+        raise ConfigError(
+            "[run].phases must be the complete ordered phase_2-to-phase_5 chain "
+            "or an empty list; phases 2-4 exchange in-memory results and cannot "
+            "be resumed independently"
+        )
+    if not phases and (
+        mode not in {"test", "full"} or not run["reuse_completed_release"]
+    ):
+        raise ConfigError(
+            "[run].phases may be empty only in test/full mode with "
+            "reuse_completed_release = true"
+        )
     _require_string(run, "qc_gate", where="[run]")
     if run["qc_gate"] != "fail_on_any_review":
         raise ConfigError(
@@ -694,6 +722,237 @@ def validate_config(
                 "full mode requires every enabled source to be verified with an assigned adapter: "
                 + ", ".join(unverified_enabled_sources)
             )
+
+    # Post-release diagnostic overlay figures layered onto an already-written
+    # package; not governed v2 release outputs, so they stay off by default.
+    custom_overlays = data.get("custom_overlays", {})
+    if not isinstance(custom_overlays, Mapping):
+        raise ConfigError("[custom_overlays] must be a table")
+    custom_overlays = dict(custom_overlays)
+    _check_unknown_keys(
+        custom_overlays,
+        {
+            "enabled", "replace_existing", "generate_zero_n_strata",
+            "source_name", "zero_n_yield_threshold_t_ha", "yield_threshold_t_ha",
+            "high_n_threshold_kg_ha", "package_path",
+        },
+        where="[custom_overlays]",
+    )
+    custom_overlays.setdefault("enabled", False)
+    custom_overlays.setdefault("replace_existing", False)
+    custom_overlays.setdefault("generate_zero_n_strata", False)
+    custom_overlays.setdefault("source_name", "")
+    custom_overlays.setdefault("zero_n_yield_threshold_t_ha", 5.0)
+    custom_overlays.setdefault("yield_threshold_t_ha", 7.5)
+    custom_overlays.setdefault("high_n_threshold_kg_ha", 200.0)
+    custom_overlays.setdefault("package_path", "")
+    _require_bool(custom_overlays, "enabled", where="[custom_overlays]")
+    _require_bool(custom_overlays, "replace_existing", where="[custom_overlays]")
+    _require_bool(custom_overlays, "generate_zero_n_strata", where="[custom_overlays]")
+    if not isinstance(custom_overlays["source_name"], str):
+        raise ConfigError("[custom_overlays].source_name must be a string")
+    _require_positive_number(custom_overlays, "zero_n_yield_threshold_t_ha", where="[custom_overlays]")
+    _require_positive_number(custom_overlays, "yield_threshold_t_ha", where="[custom_overlays]")
+    _require_number_at_least(custom_overlays, "high_n_threshold_kg_ha", 0, where="[custom_overlays]")
+    if not isinstance(custom_overlays["package_path"], str):
+        raise ConfigError("[custom_overlays].package_path must be a string")
+    if custom_overlays["enabled"]:
+        if not custom_overlays["source_name"].strip():
+            raise ConfigError(
+                "[custom_overlays].source_name must be a nonempty string when enabled"
+            )
+        if custom_overlays["source_name"] not in enabled_sources:
+            raise ConfigError(
+                "[custom_overlays].source_name must be one of [selection].enabled_sources"
+            )
+        _resolve_relative_path(
+            custom_overlays["package_path"], root, "[custom_overlays].package_path"
+        )
+    data["custom_overlays"] = custom_overlays
+
+    # Restricted source-wide diagnostic figures generated separately from an
+    # already-written package. These are explicit internal diagnostics, not
+    # governed v2 release artifacts, and therefore default to disabled with no
+    # selected sources.
+    source_dataset_overlays = data.get("source_dataset_overlays", {})
+    if not isinstance(source_dataset_overlays, Mapping):
+        raise ConfigError("[source_dataset_overlays] must be a table")
+    source_dataset_overlays = dict(source_dataset_overlays)
+    _check_unknown_keys(
+        source_dataset_overlays,
+        {
+            "enabled",
+            "replace_existing",
+            "placement",
+            "source_names",
+            "yield_threshold_t_ha",
+            "package_path",
+            "output_root",
+        },
+        where="[source_dataset_overlays]",
+    )
+    source_dataset_overlays.setdefault("enabled", False)
+    source_dataset_overlays.setdefault("replace_existing", False)
+    source_dataset_overlays.setdefault("placement", "separate_bundle")
+    source_dataset_overlays.setdefault("source_names", [])
+    source_dataset_overlays.setdefault("yield_threshold_t_ha", 7.8)
+    source_dataset_overlays.setdefault("package_path", "")
+    source_dataset_overlays.setdefault("output_root", "")
+    _require_bool(
+        source_dataset_overlays,
+        "enabled",
+        where="[source_dataset_overlays]",
+    )
+    _require_bool(
+        source_dataset_overlays,
+        "replace_existing",
+        where="[source_dataset_overlays]",
+    )
+    _require_positive_number(
+        source_dataset_overlays,
+        "yield_threshold_t_ha",
+        where="[source_dataset_overlays]",
+    )
+    placement = source_dataset_overlays["placement"]
+    if placement not in {"separate_bundle", "restricted_package_extension"}:
+        raise ConfigError(
+            "[source_dataset_overlays].placement must be separate_bundle or "
+            "restricted_package_extension"
+        )
+    source_dataset_overlay_names = _string_list(
+        source_dataset_overlays["source_names"],
+        where="[source_dataset_overlays].source_names",
+    )
+    _check_unique(
+        source_dataset_overlay_names,
+        where="[source_dataset_overlays].source_names",
+    )
+    if any(not name.strip() for name in source_dataset_overlay_names):
+        raise ConfigError(
+            "[source_dataset_overlays].source_names must contain only nonempty source names"
+        )
+    if not isinstance(source_dataset_overlays["output_root"], str):
+        raise ConfigError("[source_dataset_overlays].output_root must be a string")
+    if not isinstance(source_dataset_overlays["package_path"], str):
+        raise ConfigError("[source_dataset_overlays].package_path must be a string")
+    if source_dataset_overlays["enabled"]:
+        if not source_dataset_overlay_names:
+            raise ConfigError(
+                "[source_dataset_overlays].source_names must contain at least one source when enabled"
+            )
+        unknown_source_dataset_overlays = sorted(
+            set(source_dataset_overlay_names) - set(enabled_sources)
+        )
+        if unknown_source_dataset_overlays:
+            raise ConfigError(
+                "[source_dataset_overlays].source_names must be members of "
+                "[selection].enabled_sources: "
+                + ", ".join(unknown_source_dataset_overlays)
+            )
+        unsupported_source_dataset_overlays = sorted(
+            set(source_dataset_overlay_names) - SUPPORTED_SOURCE_DATASET_OVERLAY_NAMES
+        )
+        if unsupported_source_dataset_overlays:
+            raise ConfigError(
+                "[source_dataset_overlays].source_names must have registered "
+                "source-overlay adapters: "
+                + ", ".join(unsupported_source_dataset_overlays)
+            )
+        restricted_source_dataset_overlays = sorted(
+            [
+                name
+                for name in source_dataset_overlay_names
+                if data["sources"].get(name, {}).get("data_classification")
+                == "restricted"
+            ]
+        )
+        if restricted_source_dataset_overlays:
+            raise ConfigError(
+                "[source_dataset_overlays] cannot materialize restricted-row derivatives with "
+                f"enabled selection under SRC-09 Option C; restricted source(s) selected: "
+                + ", ".join(restricted_source_dataset_overlays)
+            )
+        # Under SRC-09 Option C, registered adapters may materialize only
+        # non-restricted inputs. Restricted source membership may remain in a
+        # disabled profile as configuration memory.
+        if not source_dataset_overlays["output_root"].strip():
+            raise ConfigError(
+                "[source_dataset_overlays].output_root must be a nonempty string when enabled"
+            )
+        source_dataset_overlay_root = _resolve_relative_path(
+            source_dataset_overlays["output_root"],
+            root,
+            "[source_dataset_overlays].output_root",
+        )
+        if placement == "restricted_package_extension":
+            if not source_dataset_overlays["package_path"].strip():
+                raise ConfigError(
+                    "[source_dataset_overlays].package_path must be nonempty for a "
+                    "restricted package extension"
+                )
+            package_root = _resolve_relative_path(
+                source_dataset_overlays["package_path"],
+                root,
+                "[source_dataset_overlays].package_path",
+            )
+            expected_extension_root = (
+                package_root / "restricted_diagnostics" / "source_dataset_overlays"
+            )
+            if source_dataset_overlay_root != expected_extension_root:
+                raise ConfigError(
+                    "[source_dataset_overlays].output_root must equal package_path/"
+                    "restricted_diagnostics/source_dataset_overlays for a restricted "
+                    "package extension"
+                )
+            reports_root = paths["reports_root"].resolve()
+            test_output_root = paths["test_output_root"].resolve()
+            if (
+                not package_root.is_relative_to(reports_root)
+                or package_root == reports_root
+                or source_dataset_overlay_root.is_relative_to(test_output_root)
+                or test_output_root.is_relative_to(source_dataset_overlay_root)
+            ):
+                raise ConfigError(
+                    "[source_dataset_overlays] restricted package extension must be "
+                    "inside one governed report package and outside test outputs"
+                )
+            custom_package_path = custom_overlays.get("package_path", "")
+            if custom_overlays.get("enabled", False) and (
+                not isinstance(custom_package_path, str)
+                or _resolve_relative_path(
+                    custom_package_path,
+                    root,
+                    "[custom_overlays].package_path",
+                )
+                != package_root
+            ):
+                raise ConfigError(
+                    "[source_dataset_overlays].package_path must equal the governed "
+                    "custom-overlay package path"
+                )
+        else:
+            if source_dataset_overlays["package_path"].strip():
+                raise ConfigError(
+                    "[source_dataset_overlays].package_path must be empty for a "
+                    "separate bundle"
+                )
+            protected_output_roots = (
+                paths["reports_root"].resolve(),
+                paths["test_output_root"].resolve(),
+            )
+            if any(
+                source_dataset_overlay_root == protected
+                or source_dataset_overlay_root.is_relative_to(protected)
+                or protected.is_relative_to(source_dataset_overlay_root)
+                for protected in protected_output_roots
+            ):
+                raise ConfigError(
+                    "[source_dataset_overlays].output_root must be outside the governed "
+                    "report and test-output roots"
+                )
+    source_dataset_overlays["source_names"] = source_dataset_overlay_names
+    data["source_dataset_overlays"] = source_dataset_overlays
+
     if check_files:
         for key in INPUT_PATHS:
             _require_file(paths[key], f"[paths].{key}")
@@ -1163,6 +1422,7 @@ def validate_config(
         source_data_policy_manifest_sha256=source_data_policy_manifest_sha256,
         source_data_policy_secret_env=source_data_policy_secret_env,
         run_mode=mode,
+        phases=tuple(phases),
         reuse_completed_release=run["reuse_completed_release"],
     )
 
