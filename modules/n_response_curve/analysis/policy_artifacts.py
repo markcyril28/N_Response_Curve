@@ -2110,7 +2110,11 @@ def _first_stage_contextual_uncertainty_policy(
     )
 
 
-_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"ceiling_level", "response_range"})
+# STAT-002/PRF-011 Option A: both reviewed MOD-07 and MOD-08 artifacts must
+# measure progress through the fitted N-responsive range.  Accepting the retired
+# `ceiling_level` value here would let a scientifically incompatible artifact
+# pass bundle validation only to be refused later by curve execution.
+_ASYMPTOTE_REFERENCE_QUANTITIES = frozenset({"response_range"})
 # PRF-012: on a weakly approached fit the sensitivities to `C` and `A` are nearly
 # collinear, so the likelihood is a ridge and the Wald standard error on the
 # ceiling is unreliable exactly for the fits this gate exists to reject — and an
