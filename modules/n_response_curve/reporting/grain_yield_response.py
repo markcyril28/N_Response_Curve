@@ -29,8 +29,9 @@ from ..analysis.grain_yield_response.config import GrainYieldResponseConfig
 from ..analysis.grain_yield_response.descriptive import DescriptiveResults
 from ..analysis.grain_yield_response.factor_support import FactorSupportResults
 from ..analysis.grain_yield_response.heterogeneity import HeterogeneityResults
-from ..analysis.grain_yield_response.population import GovernedPopulation, sha256_file
+from ..analysis.grain_yield_response.population import GovernedPopulation
 from ..analysis.grain_yield_response.series_covariates import SeriesCovariateResults
+from ..data.provenance import sha256_file
 
 
 MANIFEST_NAME = "run_manifest.json"
