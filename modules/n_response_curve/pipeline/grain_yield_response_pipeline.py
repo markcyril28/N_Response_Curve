@@ -41,9 +41,9 @@ from ..analysis.grain_yield_response.population import (
     RawFinitePopulation,
     load_governed_population,
     load_raw_finite_population,
-    sha256_file,
 )
 from ..data.config import load_config
+from ..data.provenance import sha256_file
 
 
 @dataclass(frozen=True)
