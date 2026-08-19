@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tomllib
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -24,6 +23,7 @@ if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
 from n_response_curve.reporting import source_dataset_overlays as sdo  # noqa: E402
+from n_response_curve.reporting.source_config_spec import load_source_spec  # noqa: E402
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
@@ -33,22 +33,12 @@ DEFAULT_OUTPUT_DIR = (
 
 
 def _load_source_spec(config_path: Path, source_name: str) -> tuple[Path, str]:
-    with config_path.open("rb") as handle:
-        config = tomllib.load(handle)
-    sources = config.get("sources")
-    if not isinstance(sources, dict) or source_name not in sources:
-        raise ValueError(f"The configuration is missing [sources.{source_name}]")
-    source = sources[source_name]
-    raw_path = source.get("data_path")
-    encoding = source.get("encoding")
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        raise ValueError(f"[sources.{source_name}].data_path must be a nonempty string")
-    if not isinstance(encoding, str) or not encoding.strip():
-        raise ValueError(f"[sources.{source_name}].encoding must be a nonempty string")
-    source_path = Path(raw_path)
-    if not source_path.is_absolute():
-        source_path = PROJECT_ROOT / source_path
-    return source_path, encoding
+    return load_source_spec(
+        config_path,
+        source_name,
+        relative_root=PROJECT_ROOT,
+        resolve_path=False,
+    )
 
 
 def _exclude_treatment_classes(
