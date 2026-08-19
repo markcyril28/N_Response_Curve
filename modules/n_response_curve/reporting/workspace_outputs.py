@@ -13,9 +13,10 @@ the authoritative completed-release verifier before staging and again before the
 transaction commits.
 
 Each view target carries its own ``WORKSPACE_VIEW_MANIFEST.json`` and
-``CHECKSUMS.sha256`` binding it to the source release path, run identity, and
-checksum ledger it was projected from, so a view can be verified standalone and
-drift can never be silently accepted.
+``CHECKSUMS.sha256`` binding the managed projection to the source release path,
+run identity, and checksum ledger. The curves view may additionally carry the
+separately produced ``overlay/source_dataset`` subtree; its exact boundary and
+filesystem safety are verified, while its bytes remain owned by those producers.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ WORKSPACE_VIEW_MANIFEST_NAME = "WORKSPACE_VIEW_MANIFEST.json"
 WORKSPACE_CHECKSUMS_NAME = "CHECKSUMS.sha256"
 WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v2"
 _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v1"
+_SOURCE_DATASET_EXTENSION_V2 = "overlay/source_dataset"
+_SOURCE_DATASET_EXTENSION_V1 = "figures/overlay/source_dataset"
 
 #: Ordered so plans, promotion, logging, and reporting all traverse identically.
 WORKSPACE_VIEW_CATEGORIES = (
@@ -69,6 +72,8 @@ _STAGE_SUFFIX = ".workspace-stage"
 _BACKUP_SUFFIX = ".workspace-prior"
 _TRANSACTION_NAME = ".workspace-output-transaction.json"
 _TRANSACTION_SCHEMA_VERSION = "workspace-output-transaction-v4"
+_OWNERSHIP_REGISTRY_PREFIX = ".workspace-output-ownership"
+_OWNERSHIP_REGISTRY_SCHEMA_VERSION = "workspace-output-ownership-v1"
 _PROJECT_LOCK_NAME = ".workspace-outputs.lock"
 
 #: The manifest fields that bind a view to exactly one source release package.
@@ -349,15 +354,18 @@ def plan_workspace_views(
 ) -> dict[str, PlannedWorkspaceView]:
     """Resolve the deterministic, collision-free mapping for every view.
 
-    Refuses traversal, duplicated sources, duplicated targets, and any package
-    path the mapping does not cover.
+    Refuses traversal, duplicated sources, case-insensitive target aliases,
+    file/directory-prefix collisions, and any package path the mapping does not
+    cover.
     """
 
     grouped: dict[str, list[WorkspaceArtifact]] = {
         category: [] for category in WORKSPACE_VIEW_CATEGORIES
     }
     claimed_sources: set[str] = set()
-    claimed_targets: set[tuple[str, str]] = set()
+    claimed_targets: dict[str, dict[tuple[str, ...], str]] = {
+        category: {} for category in WORKSPACE_VIEW_CATEGORIES
+    }
     for relative in sorted(package.artifact_sha256):
         _check_relative_path(relative, where="Release checksum ledger entry")
         classified = _classify(relative)
@@ -367,12 +375,16 @@ def plan_workspace_views(
         _check_relative_path(target_relative, where="Workspace view target")
         if relative in claimed_sources:
             raise WorkspaceOutputError(f"Package artifact mapped twice: {relative}")
-        if (category, target_relative) in claimed_targets:
-            raise WorkspaceOutputError(
-                f"Workspace view collision in {category}: {target_relative}"
-            )
+        target_key = tuple(part.casefold() for part in Path(target_relative).parts)
+        for claimed_key, claimed_spelling in claimed_targets[category].items():
+            shared = min(len(target_key), len(claimed_key))
+            if target_key[:shared] == claimed_key[:shared]:
+                raise WorkspaceOutputError(
+                    "Workspace view collision in "
+                    f"{category}: {claimed_spelling} / {target_relative}"
+                )
         claimed_sources.add(relative)
-        claimed_targets.add((category, target_relative))
+        claimed_targets[category][target_key] = target_relative
         grouped[category].append(
             WorkspaceArtifact(
                 source_relative_path=relative,
@@ -553,6 +565,58 @@ def _declared_directory_closure(relatives: Iterable[str]) -> set[str]:
     return closure
 
 
+def _standalone_extension_prefix(category: str, schema_version: Any) -> str | None:
+    """Return the separately owned source-dataset subtree for one curves schema."""
+
+    if category != "curves":
+        return None
+    if schema_version == WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
+        return _SOURCE_DATASET_EXTENSION_V2
+    if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
+        return _SOURCE_DATASET_EXTENSION_V1
+    return None
+
+
+def _extension_inventory(
+    files: Iterable[str],
+    directories: Iterable[str],
+    *,
+    category: str,
+    schema_version: Any,
+) -> tuple[set[str], set[str]]:
+    """Select only entries below the exact separately owned extension root."""
+
+    prefix = _standalone_extension_prefix(category, schema_version)
+    if prefix is None:
+        return set(), set()
+    child_prefix = prefix + "/"
+    extension_files = {relative for relative in files if relative.startswith(child_prefix)}
+    extension_directories = {
+        relative
+        for relative in directories
+        if relative == prefix or relative.startswith(child_prefix)
+    }
+    return extension_files, extension_directories
+
+
+def _inventory_directory_closure(
+    files: Iterable[str], directories: Iterable[str]
+) -> set[str]:
+    """Directory closure for a validated tree, including intentional empty dirs."""
+
+    listed_directories = set(directories)
+    sentinels = {f"{relative}/.workspace-owned" for relative in listed_directories}
+    return listed_directories | _declared_directory_closure(set(files) | sentinels)
+
+
+def _contains_type_bucket(relatives: Iterable[str]) -> bool:
+    return any(
+        part.casefold() in {"figures", "tables"}
+        for relative in relatives
+        for part in Path(relative).parts
+    )
+
+
 def _walk_view_entries(target: Path) -> tuple[set[str], set[str]]:
     """Inventory a view with ``lstat`` semantics, refusing every unsafe entry.
 
@@ -607,7 +671,7 @@ def _walk_view_entries(target: Path) -> tuple[set[str], set[str]]:
 
 
 def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
-    """Strictly verify one view against its own manifest and checksum ledger."""
+    """Verify the managed ledger plus any validated standalone curves extension."""
 
     target = Path(target_path)
     if target.is_symlink() or not target.is_dir():
@@ -616,11 +680,21 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
     expected = _parse_checksums(target / WORKSPACE_CHECKSUMS_NAME)
     files, directories = _walk_view_entries(target)
     actual = files - {WORKSPACE_CHECKSUMS_NAME}
-    if actual != set(expected):
+    category = manifest.get("category")
+    extension_files, extension_directories = _extension_inventory(
+        actual,
+        directories,
+        category=str(category),
+        schema_version=manifest.get("schema_version"),
+    )
+    if actual - extension_files != set(expected):
         raise WorkspaceOutputError(
             f"Workspace view checksum ledger does not cover its contents: {target}"
         )
-    if directories != _declared_directory_closure(expected):
+    allowed_directories = _declared_directory_closure(expected) | _inventory_directory_closure(
+        extension_files, extension_directories
+    )
+    if directories != allowed_directories:
         raise WorkspaceOutputError(
             "Workspace view contains a directory its checksum ledger does not "
             f"account for: {target}"
@@ -690,7 +764,6 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
         raise WorkspaceOutputError(
             f"Workspace view manifest accounting is wrong: {target}"
         )
-    category = manifest.get("category")
     root_key = manifest.get("root_key")
     if category not in WORKSPACE_VIEW_CATEGORIES or root_key != _CATEGORY_ROOT_KEYS.get(
         str(category)
@@ -698,10 +771,11 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
         raise WorkspaceOutputError(
             f"Workspace view manifest has an unknown category: {target}"
         )
-    if category == "curves" and any(
-        part.casefold() in {"figures", "tables"}
-        for artifact in artifacts
-        for part in Path(artifact.target_relative_path).parts
+    if category == "curves" and (
+        _contains_type_bucket(
+            artifact.target_relative_path for artifact in artifacts
+        )
+        or _contains_type_bucket(directories)
     ):
         raise WorkspaceOutputError(
             "The curves workspace view must mix figures and tables by analytical "
@@ -858,6 +932,7 @@ class _WorkspaceLayout:
     metadata_root: Path
     journal_path: Path
     journal_temporary_path: Path
+    ownership_registry_path: Path
     lock_path: Path
     target_set_fingerprint: str
 
@@ -943,18 +1018,21 @@ def _check_workspace_path_isolation(layout: _WorkspaceLayout) -> None:
     metadata_root = _logical_path(layout.metadata_root)
     journal = _logical_path(layout.journal_path)
     temporary = _logical_path(layout.journal_temporary_path)
+    registry = _logical_path(layout.ownership_registry_path)
     if (
         journal == temporary
+        or registry in (journal, temporary)
         or journal.parent != metadata_root
         or temporary.parent != metadata_root
+        or registry.parent != metadata_root
     ):
         raise WorkspaceOutputError(
-            "Workspace transaction journal must live directly under the run metadata "
+            "Workspace transaction metadata must live directly under the run metadata "
             f"root: {journal}"
         )
 
     lock_path = _logical_path(layout.lock_path)
-    if lock_path in (journal, temporary):
+    if lock_path in (journal, temporary, registry):
         raise WorkspaceOutputError(
             f"Workspace output lock collides with the transaction journal: {lock_path}"
         )
@@ -998,6 +1076,9 @@ def _resolve_workspace_layout(
         metadata_root=metadata_root,
         journal_path=journal_path,
         journal_temporary_path=journal_path.with_name(journal_path.name + ".tmp"),
+        ownership_registry_path=(
+            metadata_root / f"{_OWNERSHIP_REGISTRY_PREFIX}.{fingerprint}.json"
+        ),
         lock_path=lock_path,
         target_set_fingerprint=fingerprint,
     )
@@ -1151,18 +1232,25 @@ class _ViewOwnership:
 
 
 def _structural_ownership(
-    target: Path, *, category: str, view_name: str
+    target: Path,
+    *,
+    category: str,
+    view_name: str,
+    expected_plan: PlannedWorkspaceView | None = None,
 ) -> _ViewOwnership:
     """Prove this module generated the directory now sitting at ``target``.
 
     Ownership requires the complete generated shape: every source-binding field,
     both accounting fields, a well-formed artifact list on safe unique paths, a
     checksum ledger whose inventory is exactly those artifacts plus the manifest,
-    and a ledger entry for the manifest matching the manifest's own bytes.
+    and a ledger entry for the manifest matching the manifest's own bytes. Curves
+    views may also carry the exact separately owned source-dataset subtree; every
+    entry there is recursively lstat-validated but is not claimed by this ledger.
 
-    Deliberately *not* required: that the declared artifact bytes still match.
-    A drifted-but-owned prior is still ours, still recoverable, and must stay
-    replaceable rather than wedging the run.
+    With an expected plan, every declared digest and every current artifact byte
+    must match that verified package. Drift is accepted only through a separately
+    stored generated-metadata attestation; co-located self-signed metadata alone
+    never establishes replacement authority.
     """
 
     manifest = _read_view_manifest(
@@ -1234,16 +1322,13 @@ def _structural_ownership(
             )
         _check_relative_path(relative, where="Workspace ownership artifact")
         _check_relative_path(source_relative, where="Workspace ownership source")
-        if (
-            manifest.get("schema_version")
-            == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION
-        ):
-            classified = _classify(source_relative)
-            if classified is None or classified[0] != category:
-                raise WorkspaceOutputError(
-                    "Legacy workspace ownership metadata contains an artifact from "
-                    "another view"
-                )
+        schema_version = manifest.get("schema_version")
+        classified = _classify(source_relative)
+        if classified is None or classified[0] != category:
+            raise WorkspaceOutputError(
+                "Workspace ownership metadata contains an artifact from another view"
+            )
+        if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
             if category == "curves":
                 if source_relative.startswith("tables/curves/"):
                     legacy_relative = "tables/" + source_relative[
@@ -1267,6 +1352,11 @@ def _structural_ownership(
                     "Legacy workspace ownership metadata does not match the exact v1 "
                     f"layout: {relative}"
                 )
+        elif relative != classified[1]:
+            raise WorkspaceOutputError(
+                "Workspace ownership metadata does not match the exact current "
+                f"layout: {relative}"
+            )
         if relative in declared_paths or relative == WORKSPACE_VIEW_MANIFEST_NAME:
             raise WorkspaceOutputError(
                 f"Workspace ownership metadata declares {relative} more than once"
@@ -1280,6 +1370,35 @@ def _structural_ownership(
                 sha256=digest,
             )
         )
+    if expected_plan is not None:
+        actual_projection = {
+            (
+                artifact.source_relative_path,
+                artifact.sha256,
+            )
+            for artifact in artifacts
+        }
+        expected_projection = {
+            (
+                artifact.source_relative_path,
+                artifact.sha256,
+            )
+            for artifact in expected_plan.artifacts
+        }
+        if actual_projection != expected_projection:
+            raise WorkspaceOutputError(
+                "Workspace ownership metadata does not match the verified release mapping"
+            )
+        for artifact in artifacts:
+            artifact_path = target / artifact.target_relative_path
+            _assert_plain_regular_file(
+                artifact_path, label="Workspace ownership artifact"
+            )
+            if sha256_file(artifact_path) != artifact.sha256:
+                raise WorkspaceOutputError(
+                    "Workspace ownership artifact bytes do not match the verified "
+                    f"release mapping: {artifact.target_relative_path}"
+                )
     if (
         manifest.get("artifact_count") != len(artifacts)
         or manifest.get("total_bytes") != total_bytes
@@ -1305,9 +1424,25 @@ def _structural_ownership(
         WORKSPACE_CHECKSUMS_NAME,
     }
     files, directories = _walk_view_entries(target)
-    if files != expected_files or directories != _declared_directory_closure(
-        expected_files
+    extension_files, extension_directories = _extension_inventory(
+        files,
+        directories,
+        category=category,
+        schema_version=manifest.get("schema_version"),
+    )
+    if (
+        category == "curves"
+        and manifest.get("schema_version") == WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION
+        and _contains_type_bucket(directories)
     ):
+        raise WorkspaceOutputError(
+            "The curves workspace view contains a figures/ or tables/ directory"
+        )
+    actual_managed_files = files - extension_files
+    allowed_directories = _declared_directory_closure(
+        expected_files
+    ) | _inventory_directory_closure(extension_files, extension_directories)
+    if actual_managed_files != expected_files or directories != allowed_directories:
         raise WorkspaceOutputError(
             "Workspace ownership inventory contains undeclared or missing filesystem "
             "entries"
@@ -1323,8 +1458,116 @@ def _structural_ownership(
     )
 
 
+def _assert_plain_regular_file(path: Path, *, label: str) -> None:
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise WorkspaceOutputError(f"{label} is unavailable: {path}") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise WorkspaceOutputError(f"{label} is not a plain regular file: {path}")
+
+
+def _ownership_metadata_fingerprint(target: Path) -> str:
+    """Bind ownership to immutable generator metadata kept outside the view."""
+
+    manifest = target / WORKSPACE_VIEW_MANIFEST_NAME
+    checksums = target / WORKSPACE_CHECKSUMS_NAME
+    _assert_plain_regular_file(manifest, label="Workspace ownership manifest")
+    _assert_plain_regular_file(checksums, label="Workspace ownership checksum ledger")
+    payload = {
+        "manifest_sha256": sha256_file(manifest),
+        "checksums_sha256": sha256_file(checksums),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _parse_ownership_registry_file(
+    path: Path, layout: _WorkspaceLayout
+) -> Mapping[str, str]:
+    _assert_plain_regular_file(path, label="Workspace ownership registry")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WorkspaceOutputError(
+            f"Workspace ownership registry is unreadable: {path}"
+        ) from exc
+    categories = payload.get("categories") if isinstance(payload, Mapping) else None
+    if (
+        not isinstance(payload, Mapping)
+        or payload.get("schema_version") != _OWNERSHIP_REGISTRY_SCHEMA_VERSION
+        or payload.get("view_name") != layout.view_name
+        or payload.get("target_set_fingerprint") != layout.target_set_fingerprint
+        or not isinstance(categories, Mapping)
+        or set(categories) != set(WORKSPACE_VIEW_CATEGORIES)
+        or any(
+            not _is_state_digest(categories.get(category))
+            for category in WORKSPACE_VIEW_CATEGORIES
+        )
+    ):
+        raise WorkspaceOutputError(
+            f"Workspace ownership registry has an invalid schema: {path}"
+        )
+    return {category: str(categories[category]) for category in WORKSPACE_VIEW_CATEGORIES}
+
+
+def _read_ownership_registry(layout: _WorkspaceLayout) -> Mapping[str, str]:
+    """Read attestations, completing an interrupted verified registry write."""
+
+    path = layout.ownership_registry_path
+    temporary = path.with_name(path.name + ".tmp")
+    if temporary.exists() or temporary.is_symlink():
+        pending = _parse_ownership_registry_file(temporary, layout)
+        try:
+            live = {
+                category: _ownership_metadata_fingerprint(layout.targets[category])
+                for category in WORKSPACE_VIEW_CATEGORIES
+            }
+        except WorkspaceOutputError as exc:
+            raise WorkspaceOutputError(
+                "Interrupted workspace ownership registry cannot be reconciled with "
+                "the live views; its temporary is preserved"
+            ) from exc
+        if live != pending:
+            raise WorkspaceOutputError(
+                "Interrupted workspace ownership registry does not attest the live "
+                "views; its temporary is preserved"
+            )
+        if path.exists() or path.is_symlink():
+            _assert_plain_regular_file(path, label="Workspace ownership registry")
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+        return pending
+    if not path.exists() and not path.is_symlink():
+        return {}
+    return _parse_ownership_registry_file(path, layout)
+
+
+def _write_ownership_registry(layout: _WorkspaceLayout) -> None:
+    """Durably attest the exact generated manifests and ledgers now live."""
+
+    path = layout.ownership_registry_path
+    if path.exists() or path.is_symlink():
+        _assert_plain_regular_file(path, label="Workspace ownership registry")
+    payload = {
+        "schema_version": _OWNERSHIP_REGISTRY_SCHEMA_VERSION,
+        "view_name": layout.view_name,
+        "target_set_fingerprint": layout.target_set_fingerprint,
+        "categories": {
+            category: _ownership_metadata_fingerprint(layout.targets[category])
+            for category in WORKSPACE_VIEW_CATEGORIES
+        },
+    }
+    _write_transaction(path, payload)
+
+
 def _live_view_state(
-    target: Path, *, category: str, view_name: str
+    target: Path,
+    *,
+    category: str,
+    view_name: str,
+    expected_plan: PlannedWorkspaceView,
+    trusted_attestation: str | None = None,
 ) -> _ViewOwnership | None:
     """Classify a view target: ``None`` when absent, else proven ownership.
 
@@ -1343,7 +1586,28 @@ def _live_view_state(
     if not any(target.iterdir()):
         return None
     try:
-        return _structural_ownership(target, category=category, view_name=view_name)
+        if trusted_attestation is not None:
+            try:
+                ownership = _structural_ownership(
+                    target,
+                    category=category,
+                    view_name=view_name,
+                )
+                if _ownership_metadata_fingerprint(target) != trusted_attestation:
+                    raise WorkspaceOutputError(
+                        "Workspace ownership metadata does not match its external attestation"
+                    )
+                return ownership
+            except WorkspaceOutputError:
+                # A crash can commit a new exact generation before its registry
+                # update. Permit only byte-for-byte bootstrap against this package.
+                pass
+        return _structural_ownership(
+            target,
+            category=category,
+            view_name=view_name,
+            expected_plan=expected_plan,
+        )
     except WorkspaceOutputError as exc:
         raise WorkspaceOutputError(
             "Workspace view target holds unmanaged content this run cannot prove it "
@@ -1411,7 +1675,9 @@ def _check_recovery_candidate(
     label: str,
     category: str,
     view_name: str,
+    expected_plan: PlannedWorkspaceView,
     allowed: Mapping[str, tuple[Any, Any] | None],
+    trusted_attestation: str | None,
 ) -> None:
     """Refuse any candidate that is not exactly one state the journal recorded.
 
@@ -1451,7 +1717,29 @@ def _check_recovery_candidate(
             if required_binding is not None:
                 raise WorkspaceOutputError(unproven)
             return
-        ownership = _structural_ownership(path, category=category, view_name=view_name)
+        if required_binding is None and trusted_attestation is not None:
+            try:
+                ownership = _structural_ownership(
+                    path,
+                    category=category,
+                    view_name=view_name,
+                )
+                if _ownership_metadata_fingerprint(path) != trusted_attestation:
+                    raise WorkspaceOutputError(unproven)
+            except WorkspaceOutputError:
+                ownership = _structural_ownership(
+                    path,
+                    category=category,
+                    view_name=view_name,
+                    expected_plan=expected_plan,
+                )
+        else:
+            ownership = _structural_ownership(
+                path,
+                category=category,
+                view_name=view_name,
+                expected_plan=expected_plan,
+            )
     except WorkspaceOutputError as exc:
         raise WorkspaceOutputError(unproven) from exc
     if (
@@ -1475,7 +1763,10 @@ def _check_recovery_candidate(
 
 
 def _authorize_recovery_candidates(
-    layout: _WorkspaceLayout, payload: Mapping[str, Any]
+    layout: _WorkspaceLayout,
+    payload: Mapping[str, Any],
+    expected_plan: Mapping[str, PlannedWorkspaceView],
+    trusted_attestations: Mapping[str, str],
 ) -> None:
     """Prove every path this recovery may delete or rename is journaled state.
 
@@ -1516,7 +1807,9 @@ def _authorize_recovery_candidates(
                 label=label,
                 category=category,
                 view_name=layout.view_name,
+                expected_plan=expected_plan[category],
                 allowed=allowed,
+                trusted_attestation=trusted_attestations.get(category),
             )
 
 
@@ -1613,6 +1906,61 @@ def _refuse_unauthorized_residue(layout: _WorkspaceLayout) -> None:
         )
 
 
+def _recovery_source_package(
+    layout: _WorkspaceLayout,
+    payload: Mapping[str, Any],
+    *,
+    config: Any,
+) -> ReleasePackage:
+    """Resolve and verify the package named by an older interrupted generation."""
+
+    project_root = Path(getattr(config, "project_root"))
+    expected_binding = (
+        payload.get("source_run_identity_sha256"),
+        payload.get("source_checksum_ledger_sha256"),
+    )
+    for category in WORKSPACE_VIEW_CATEGORIES:
+        for candidate in (
+            layout.stages[category],
+            layout.targets[category],
+            layout.backups[category],
+        ):
+            if candidate.is_symlink() or not candidate.is_dir() or not any(candidate.iterdir()):
+                continue
+            try:
+                manifest = _read_view_manifest(
+                    candidate,
+                    accepted_schema_versions=frozenset(
+                        {
+                            WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                            _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                        }
+                    ),
+                )
+                declared = manifest.get("source_release_path")
+                if not isinstance(declared, str) or not declared:
+                    continue
+                source_path = Path(declared)
+                if not source_path.is_absolute():
+                    _check_relative_path(
+                        source_path.as_posix(), where="Recovery source release path"
+                    )
+                    source_path = project_root / source_path
+                recovered = _verify_source_package(source_path)
+                snapshot = _snapshot_package(recovered)
+            except (OSError, WorkspaceOutputError):
+                continue
+            if (
+                snapshot.run_identity_sha256,
+                snapshot.checksum_ledger_sha256,
+            ) == expected_binding:
+                return recovered
+    raise WorkspaceOutputError(
+        "Interrupted workspace transaction refers to a source package that can no "
+        "longer be independently verified; recovery will not delete its candidates"
+    )
+
+
 def _recover_workspace_transaction(
     layout: _WorkspaceLayout,
     package: ReleasePackage,
@@ -1620,6 +1968,7 @@ def _recover_workspace_transaction(
     config: Any,
     source_run_identity_sha256: str,
     source_checksum_ledger_sha256: str,
+    trusted_attestations: Mapping[str, str],
     force_rollback: bool = False,
 ) -> str | None:
     """Commit or roll back an interrupted five-view transaction as one set.
@@ -1634,9 +1983,22 @@ def _recover_workspace_transaction(
     if not journal.exists() and not journal.is_symlink():
         return None
     payload = _read_transaction(layout)
+    binding_matches = (
+        payload.get("source_run_identity_sha256") == source_run_identity_sha256
+        and payload.get("source_checksum_ledger_sha256")
+        == source_checksum_ledger_sha256
+    )
+    recovery_package = package
+    if not binding_matches:
+        recovery_package = _recovery_source_package(layout, payload, config=config)
     # Before the commit-or-roll-back fork, and before any mutation: a journal is
     # evidence of what this module did, never authority over what is there now.
-    _authorize_recovery_candidates(layout, payload)
+    _authorize_recovery_candidates(
+        layout,
+        payload,
+        plan_workspace_views(recovery_package),
+        trusted_attestations,
+    )
     records = payload["categories"]
     had_prior = {
         category: bool(records[category]["had_prior"])
@@ -1646,11 +2008,6 @@ def _recover_workspace_transaction(
     backups = layout.backups
     targets = layout.targets
 
-    binding_matches = (
-        payload.get("source_run_identity_sha256") == source_run_identity_sha256
-        and payload.get("source_checksum_ledger_sha256")
-        == source_checksum_ledger_sha256
-    )
     committed_live_set = False
     if force_rollback:
         # The caller has already established that this set must be undone, so
@@ -1672,6 +2029,7 @@ def _recover_workspace_transaction(
         # projected. The live set counts as committed only if all five views are
         # structurally owned and consistently bound to *that* journal's source.
         live_bindings: set[tuple[str, str, str, str]] = set()
+        expected_plan = plan_workspace_views(recovery_package)
         try:
             for category in WORKSPACE_VIEW_CATEGORIES:
                 verify_workspace_view(targets[category])
@@ -1679,6 +2037,8 @@ def _recover_workspace_transaction(
                     targets[category],
                     category=category,
                     view_name=layout.view_name,
+                    expected_plan=expected_plan[category],
+                    trusted_attestation=trusted_attestations.get(category),
                 )
                 if ownership is None:
                     raise WorkspaceOutputError("Live workspace view is absent")
@@ -1700,6 +2060,7 @@ def _recover_workspace_transaction(
             _remove_tree(stages[category])
             _remove_tree(backups[category])
         _remove_transaction(journal)
+        _write_ownership_registry(layout)
         return "transaction_commit_completed"
 
     for category in WORKSPACE_VIEW_CATEGORIES:
@@ -1741,6 +2102,99 @@ def _recover_workspace_transaction(
 # --------------------------------------------------------------------------
 # Production
 # --------------------------------------------------------------------------
+
+
+def _copy_standalone_extension(source_view: Path, stage: Path) -> None:
+    """Carry the validated standalone subtree into a newly generated curves stage."""
+
+    manifest = _read_view_manifest(
+        source_view,
+        accepted_schema_versions=frozenset(
+            {
+                WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+            }
+        ),
+    )
+    schema_version = manifest.get("schema_version")
+    source_prefix = _standalone_extension_prefix("curves", schema_version)
+    assert source_prefix is not None
+    files, directories = _walk_view_entries(source_view)
+    extension_files, extension_directories = _extension_inventory(
+        files,
+        directories,
+        category="curves",
+        schema_version=schema_version,
+    )
+    if not extension_files and not extension_directories:
+        return
+
+    try:
+        before = {
+            relative: sha256_file(source_view / relative)
+            for relative in sorted(extension_files)
+        }
+    except OSError as exc:
+        raise WorkspaceOutputError(
+            "Standalone source-dataset extension changed while it was inventoried"
+        ) from exc
+
+    def destination_relative(relative: str) -> Path:
+        suffix = Path(relative).relative_to(source_prefix)
+        return Path(_SOURCE_DATASET_EXTENSION_V2) / suffix
+
+    for relative in sorted(
+        extension_directories, key=lambda item: (len(Path(item).parts), item)
+    ):
+        (stage / destination_relative(relative)).mkdir(exist_ok=True)
+    for relative in sorted(extension_files):
+        source = source_view / relative
+        destination = stage / destination_relative(relative)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            info = os.lstat(source)
+        except OSError as exc:
+            raise WorkspaceOutputError(
+                f"Standalone extension file disappeared during copy: {source}"
+            ) from exc
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink > 1
+            or source.is_symlink()
+        ):
+            raise WorkspaceOutputError(
+                f"Standalone extension file became unsafe during copy: {source}"
+            )
+        _copy_artifact(source, destination)
+        if sha256_file(destination) != before[relative]:
+            raise WorkspaceOutputError(
+                f"Standalone extension file changed during copy: {source}"
+            )
+
+    after_files, after_directories = _walk_view_entries(source_view)
+    after_extension_files, after_extension_directories = _extension_inventory(
+        after_files,
+        after_directories,
+        category="curves",
+        schema_version=schema_version,
+    )
+    try:
+        after = {
+            relative: sha256_file(source_view / relative)
+            for relative in sorted(after_extension_files)
+        }
+    except OSError as exc:
+        raise WorkspaceOutputError(
+            "Standalone source-dataset extension changed during copy"
+        ) from exc
+    if (
+        after_extension_files != extension_files
+        or after_extension_directories != extension_directories
+        or after != before
+    ):
+        raise WorkspaceOutputError(
+            "Standalone source-dataset extension changed during copy"
+        )
 
 
 def _stage_view(
@@ -1834,12 +2288,14 @@ def _materialize_workspace_views_locked(
         verified.target_path, getattr(config, "project_root", verified.target_path)
     )
 
+    trusted_attestations = _read_ownership_registry(layout)
     transaction_recovery = _recover_workspace_transaction(
         layout,
         verified,
         config=config,
         source_run_identity_sha256=source_run_identity_sha256,
         source_checksum_ledger_sha256=source_checksum_ledger_sha256,
+        trusted_attestations=trusted_attestations,
     )
     if transaction_recovery and run_log is not None:
         run_log.info(
@@ -1847,6 +2303,8 @@ def _materialize_workspace_views_locked(
             action=transaction_recovery,
             source_release=verified.target_path,
         )
+    if transaction_recovery:
+        trusted_attestations = _read_ownership_registry(layout)
     _refuse_unauthorized_residue(layout)
 
     states = {
@@ -1854,6 +2312,8 @@ def _materialize_workspace_views_locked(
             targets[category],
             category=category,
             view_name=view_name,
+            expected_plan=plan[category],
+            trusted_attestation=trusted_attestations.get(category),
         )
         for category in WORKSPACE_VIEW_CATEGORIES
     }
@@ -1869,6 +2329,7 @@ def _materialize_workspace_views_locked(
             _check_package_snapshot_unchanged(
                 source_snapshot, _snapshot_package(reuse_source)
             )
+            _write_ownership_registry(layout)
             if run_log is not None:
                 run_log.info(
                     "workspace_views_reused",
@@ -1903,6 +2364,8 @@ def _materialize_workspace_views_locked(
                 source_checksum_ledger_sha256=source_checksum_ledger_sha256,
                 source_run_manifest_sha256=source_run_manifest_sha256,
             )
+            if category == "curves" and states[category] is not None:
+                _copy_standalone_extension(targets[category], stages[category])
         for category in WORKSPACE_VIEW_CATEGORIES:
             verify_workspace_view(stages[category])
         # Every staged byte and directory entry reaches stable storage before the
@@ -1930,12 +2393,14 @@ def _materialize_workspace_views_locked(
             }
             for category in WORKSPACE_VIEW_CATEGORIES
         }
-    except Exception as exc:
+    except BaseException as exc:
         for stage in stages.values():
             try:
                 _remove_tree(stage)
             except OSError:  # pragma: no cover - best effort during failure handling
                 continue
+        if not isinstance(exc, Exception):
+            raise
         if isinstance(exc, WorkspaceOutputError):
             raise
         raise WorkspaceOutputError(f"Workspace view staging failed: {exc}") from exc
@@ -1944,18 +2409,45 @@ def _materialize_workspace_views_locked(
     # The journal's own home is linked from its parent before the journal is
     # written, so ``_write_transaction`` only ever has to sync the metadata root
     # itself -- keeping that sync the event immediately after the journal write.
-    _durable_mkdir(layout.metadata_root, exist_ok=True)
-    _write_transaction(
-        journal,
-        {
-            "schema_version": _TRANSACTION_SCHEMA_VERSION,
-            "view_name": view_name,
-            "target_set_fingerprint": layout.target_set_fingerprint,
-            "source_run_identity_sha256": source_run_identity_sha256,
-            "source_checksum_ledger_sha256": source_checksum_ledger_sha256,
-            "categories": category_records,
-        },
-    )
+    try:
+        _durable_mkdir(layout.metadata_root, exist_ok=True)
+        _write_transaction(
+            journal,
+            {
+                "schema_version": _TRANSACTION_SCHEMA_VERSION,
+                "view_name": view_name,
+                "target_set_fingerprint": layout.target_set_fingerprint,
+                "source_run_identity_sha256": source_run_identity_sha256,
+                "source_checksum_ledger_sha256": source_checksum_ledger_sha256,
+                "categories": category_records,
+            },
+        )
+    except BaseException as exc:
+        try:
+            if journal.exists():
+                _recover_workspace_transaction(
+                    layout,
+                    verified,
+                    config=config,
+                    source_run_identity_sha256=source_run_identity_sha256,
+                    source_checksum_ledger_sha256=source_checksum_ledger_sha256,
+                    trusted_attestations=trusted_attestations,
+                    force_rollback=True,
+                )
+            else:
+                _remove_tree(layout.journal_temporary_path)
+                for stage in stages.values():
+                    _remove_tree(stage)
+        except BaseException as recovery_exc:
+            raise WorkspaceOutputError(
+                "Workspace transaction journal publication failed and cleanup also "
+                f"failed: {recovery_exc}"
+            ) from exc
+        if not isinstance(exc, Exception):
+            raise
+        raise WorkspaceOutputError(
+            f"Workspace transaction journal publication failed: {exc}"
+        ) from exc
     try:
         for category in WORKSPACE_VIEW_CATEGORIES:
             target = targets[category]
@@ -1970,7 +2462,7 @@ def _materialize_workspace_views_locked(
                 target.rmdir()
                 _sync_directory(target.parent)
             _promote_directory(stages[category], target)
-    except Exception as exc:
+    except BaseException as exc:
         try:
             _recover_workspace_transaction(
                 layout,
@@ -1978,12 +2470,16 @@ def _materialize_workspace_views_locked(
                 config=config,
                 source_run_identity_sha256=source_run_identity_sha256,
                 source_checksum_ledger_sha256=source_checksum_ledger_sha256,
+                trusted_attestations=trusted_attestations,
+                force_rollback=True,
             )
-        except Exception as recovery_exc:
+        except BaseException as recovery_exc:
             raise WorkspaceOutputError(
                 "Workspace view promotion failed and transactional recovery also failed: "
                 f"{recovery_exc}"
             ) from exc
+        if not isinstance(exc, Exception):
+            raise
         raise WorkspaceOutputError(f"Workspace view promotion failed: {exc}") from exc
 
     try:
@@ -1992,7 +2488,7 @@ def _materialize_workspace_views_locked(
             view_name=view_name,
             expected_package=verified,
         )
-    except Exception as exc:
+    except BaseException as exc:
         try:
             _recover_workspace_transaction(
                 layout,
@@ -2000,12 +2496,16 @@ def _materialize_workspace_views_locked(
                 config=config,
                 source_run_identity_sha256=source_run_identity_sha256,
                 source_checksum_ledger_sha256=source_checksum_ledger_sha256,
+                trusted_attestations=trusted_attestations,
+                force_rollback=True,
             )
-        except Exception as recovery_exc:
+        except BaseException as recovery_exc:
             raise WorkspaceOutputError(
                 "Promoted workspace views failed final verification and transactional "
                 f"recovery also failed: {recovery_exc}"
             ) from exc
+        if not isinstance(exc, Exception):
+            raise
         if isinstance(exc, WorkspaceOutputError):
             raise
         raise WorkspaceOutputError(
@@ -2020,7 +2520,7 @@ def _materialize_workspace_views_locked(
             source_snapshot,
             _snapshot_package(_verify_source_package(layout.release_path)),
         )
-    except Exception as exc:
+    except BaseException as exc:
         try:
             _recover_workspace_transaction(
                 layout,
@@ -2028,13 +2528,16 @@ def _materialize_workspace_views_locked(
                 config=config,
                 source_run_identity_sha256=source_run_identity_sha256,
                 source_checksum_ledger_sha256=source_checksum_ledger_sha256,
+                trusted_attestations=trusted_attestations,
                 force_rollback=True,
             )
-        except Exception as recovery_exc:
+        except BaseException as recovery_exc:
             raise WorkspaceOutputError(
                 "Source release package changed during promotion and transactional "
                 f"recovery also failed: {recovery_exc}"
             ) from exc
+        if not isinstance(exc, Exception):
+            raise
         if isinstance(exc, WorkspaceOutputError):
             raise
         raise WorkspaceOutputError(
@@ -2051,6 +2554,7 @@ def _materialize_workspace_views_locked(
         if had_prior[category] and backup.exists():
             _remove_tree(backup)
     _remove_transaction(journal)
+    _write_ownership_registry(layout)
     if run_log is not None:
         run_log.info(
             "workspace_views_materialized",
@@ -2066,6 +2570,100 @@ def _materialize_workspace_views_locked(
         source_run_identity_sha256=source_run_identity_sha256,
         source_checksum_ledger_sha256=source_checksum_ledger_sha256,
     )
+
+
+@dataclass(frozen=True)
+class _LegacyCurvesMigration:
+    historical: Path
+    canonical: Path
+    prior_state_sha256: str
+
+
+def _prepare_legacy_curves_migration(
+    config: Any, layout: _WorkspaceLayout
+) -> _LegacyCurvesMigration | None:
+    """Move one exact historical-v1 curves target into the transaction boundary."""
+
+    curves_root = Path(config.paths[_CATEGORY_ROOT_KEYS["curves"]])
+    historical = curves_root / layout.view_name
+    canonical = layout.targets["curves"]
+    historical_present = historical.exists() or historical.is_symlink()
+    canonical_present = canonical.exists() or canonical.is_symlink()
+    if historical_present and canonical_present:
+        raise WorkspaceOutputError(
+            "Both historical and canonical curves workspace targets exist; move neither "
+            f"until an operator resolves them: {historical} / {canonical}"
+        )
+    if not historical_present:
+        return None
+    if historical.is_symlink() or not historical.is_dir():
+        raise WorkspaceOutputError(
+            f"Historical curves workspace target is unsafe: {historical}"
+        )
+    manifest = _read_view_manifest(
+        historical,
+        accepted_schema_versions=frozenset(
+            {_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION}
+        ),
+    )
+    if manifest.get("schema_version") != _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
+        raise WorkspaceOutputError(
+            f"Historical curves workspace target is not an exact v1 view: {historical}"
+        )
+    _structural_ownership(
+        historical,
+        category="curves",
+        view_name=layout.view_name,
+    )
+    fingerprint = _state_fingerprint(historical)
+    migration = _LegacyCurvesMigration(
+        historical=historical,
+        canonical=canonical,
+        prior_state_sha256=fingerprint,
+    )
+    try:
+        _promote_directory(historical, canonical)
+    except BaseException as exc:
+        # A rename may have completed before an interruption was delivered. The
+        # migration record must therefore exist before promotion, and that exact
+        # side-effect state is restored here rather than escaping the outer
+        # transaction without anything to roll back.
+        if (
+            not historical.exists()
+            and not historical.is_symlink()
+            and canonical.is_dir()
+            and not canonical.is_symlink()
+        ):
+            try:
+                _rollback_legacy_curves_migration(migration)
+            except BaseException as rollback_exc:
+                raise WorkspaceOutputError(
+                    "Historical curves migration was interrupted after its rename, "
+                    f"and restoring the historical path also failed: {rollback_exc}"
+                ) from exc
+        raise
+    return migration
+
+
+def _rollback_legacy_curves_migration(migration: _LegacyCurvesMigration) -> None:
+    """Restore an unchanged v1 prior to its historical path after a failed run."""
+
+    if migration.historical.exists() or migration.historical.is_symlink():
+        raise WorkspaceOutputError(
+            "Historical curves migration rollback found its original path occupied: "
+            f"{migration.historical}"
+        )
+    if migration.canonical.is_symlink() or not migration.canonical.is_dir():
+        raise WorkspaceOutputError(
+            "Historical curves migration rollback cannot find its canonical prior: "
+            f"{migration.canonical}"
+        )
+    if _state_fingerprint(migration.canonical) != migration.prior_state_sha256:
+        raise WorkspaceOutputError(
+            "Historical curves migration rollback refuses a canonical target that no "
+            f"longer matches the v1 prior: {migration.canonical}"
+        )
+    _promote_directory(migration.canonical, migration.historical)
 
 
 def materialize_workspace_views(
@@ -2086,12 +2684,24 @@ def materialize_workspace_views(
         )
     layout = _resolve_workspace_layout(config, package, view_name=view_name)
     with _workspace_output_lock(layout):
-        return _materialize_workspace_views_locked(
-            config,
-            package,
-            layout=layout,
-            run_log=run_log,
-        )
+        legacy_migration = _prepare_legacy_curves_migration(config, layout)
+        try:
+            return _materialize_workspace_views_locked(
+                config,
+                package,
+                layout=layout,
+                run_log=run_log,
+            )
+        except BaseException as exc:
+            if legacy_migration is not None:
+                try:
+                    _rollback_legacy_curves_migration(legacy_migration)
+                except BaseException as rollback_exc:
+                    raise WorkspaceOutputError(
+                        "Workspace generation failed after moving a historical curves "
+                        f"view, and restoring that view also failed: {rollback_exc}"
+                    ) from exc
+            raise
 
 
 def workspace_view_display_paths(
