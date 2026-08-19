@@ -9,10 +9,19 @@ which mixes scalar tuning keys with one binding sub-table per profiled source.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 import tomllib
 from typing import Any, Mapping
+
+from n_response_curve.analysis.recipe_config_values import (
+    boolean as _boolean_value,
+    confined_path as _confined_path_value,
+    number as _number_value,
+    string as _string_value,
+    string_list as _string_list_value,
+    table as _table_value,
+)
+from n_response_curve.data.provenance import sha256_file
 
 
 class RecipeConfigError(ValueError):
@@ -25,11 +34,21 @@ SUPPORTED_FIGURE_FORMATS = frozenset({"jpeg", "png"})
 
 # Keys of an [agronomic.<source>] sub-table. ``nitrogen_rate`` and ``yield_t_ha``
 # are required; the rest are optional because not every dataset records them.
+#
+# ``farmers_practice_n_rate`` / ``farmers_practice_yield_t_ha`` bind a second
+# recorded N treatment held in sibling columns, the same shape as
+# ``zero_n_yield_t_ha``: ph_combined_nopt_rcm's registered schema evidence names
+# four N treatments per record (FP-N, RCM-N, NOPT-N, NOPT-0N), of which
+# ``nitrogen_rate`` binds one. Optional on purpose — a source that records no
+# farmer's-practice arm simply omits both, and a config that drops them loses
+# the derived series rather than failing the run.
 _SINGLE_BINDING_KEYS = (
     "nitrogen_rate",
     "yield_t_ha",
     "yield_kg_ha",
     "zero_n_yield_t_ha",
+    "farmers_practice_n_rate",
+    "farmers_practice_yield_t_ha",
     "year",
 )
 _LIST_BINDING_KEYS = ("context", "grouping", "series")
@@ -107,10 +126,7 @@ class DescriptiveStatisticsConfig:
 
 
 def _table(data: Mapping[str, Any], name: str) -> Mapping[str, Any]:
-    value = data.get(name)
-    if not isinstance(value, Mapping):
-        raise RecipeConfigError(f"Missing or invalid [{name}] table")
-    return value
+    return _table_value(data, name, error=RecipeConfigError)
 
 
 _TABLE_KEYS: Mapping[str, frozenset[str]] = {
@@ -166,17 +182,11 @@ _TABLE_KEYS: Mapping[str, frozenset[str]] = {
 
 
 def _string(table: Mapping[str, Any], key: str, where: str) -> str:
-    value = table.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise RecipeConfigError(f"{where}.{key} must be a non-empty string")
-    return value.strip()
+    return _string_value(table, key, where, error=RecipeConfigError)
 
 
 def _boolean(table: Mapping[str, Any], key: str, where: str) -> bool:
-    value = table.get(key)
-    if not isinstance(value, bool):
-        raise RecipeConfigError(f"{where}.{key} must be a Boolean")
-    return value
+    return _boolean_value(table, key, where, error=RecipeConfigError)
 
 
 def _integer(
@@ -196,31 +206,26 @@ def _number(
     minimum: float = 0.0,
     maximum: float | None = None,
 ) -> float:
-    value = table.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise RecipeConfigError(f"{where}.{key} must be a number")
-    result = float(value)
-    if result < minimum:
-        raise RecipeConfigError(f"{where}.{key} must be at least {minimum}")
-    if maximum is not None and result > maximum:
-        raise RecipeConfigError(f"{where}.{key} must be at most {maximum}")
-    return result
+    return _number_value(
+        table,
+        key,
+        where,
+        error=RecipeConfigError,
+        minimum=minimum,
+        maximum=maximum,
+    )
 
 
 def _string_list(
     table: Mapping[str, Any], key: str, where: str, *, allow_empty: bool = False
 ) -> tuple[str, ...]:
-    value = table.get(key)
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item.strip() for item in value
-    ):
-        raise RecipeConfigError(f"{where}.{key} must be a list of non-empty strings")
-    values = tuple(item.strip() for item in value)
-    if not values and not allow_empty:
-        raise RecipeConfigError(f"{where}.{key} must not be empty")
-    if len(values) != len(set(values)):
-        raise RecipeConfigError(f"{where}.{key} must not contain duplicates")
-    return values
+    return _string_list_value(
+        table,
+        key,
+        where,
+        error=RecipeConfigError,
+        allow_empty=allow_empty,
+    )
 
 
 def _number_list(
@@ -249,23 +254,7 @@ def _number_list(
 
 
 def _confined_path(root: Path, raw: str, where: str) -> Path:
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = candidate.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise RecipeConfigError(f"{where} must stay inside the project root") from exc
-    return resolved
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return _confined_path_value(root, raw, where, error=RecipeConfigError)
 
 
 def _validate_binding_entry(entry: Any, where: str) -> None:
@@ -562,4 +551,4 @@ def load_recipe_config(
 def config_sha256(config: DescriptiveStatisticsConfig) -> str:
     """Digest of the recipe configuration file as it was read."""
 
-    return _sha256_file(config.config_path)
+    return sha256_file(config.config_path)
