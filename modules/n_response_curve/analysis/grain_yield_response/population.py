@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-import hashlib
 import json
 import math
 from pathlib import Path, PurePosixPath
@@ -11,6 +10,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from n_response_curve.data.provenance import sha256_file
 from .config import GrainYieldResponseConfig, RecipeConfigError
 
 
@@ -38,14 +38,6 @@ class RawFinitePopulation:
     yield_t_source_count: int
     yield_kg_fallback_count: int
     input_sha256: dict[str, str]
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def distinct_n_level_count(values: Any, *, tolerance: float) -> int:
