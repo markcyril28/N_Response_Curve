@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import collections
 import math
-import os
 import shutil
 import sys
 import textwrap
@@ -45,44 +44,62 @@ MODULES_ROOT = PROJECT_ROOT / "modules"
 if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
+from n_response_curve.reporting.directory_publication import (  # noqa: E402
+    nested_publication_container as _nested_publication_container,
+    plain_absolute_path as _plain_absolute_path,
+    promote_directory as _promote_directory,
+    publication_lock as _core_overlay_publication_lock,
+)
+from n_response_curve.reporting.figure_axis_frames import (  # noqa: E402
+    shared_axis_limits as _shared_axis_limits,
+)
+from n_response_curve.reporting.figure_captions import (  # noqa: E402
+    EXPLORATORY_DIAGNOSTIC_DISCLAIMER as _DISCLAIMER,
+    reserve_suptitle as _reserve_suptitle,
+    wrap_title_lines as _wrap_title_lines,
+)
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically as _save_figure,
+)
+from n_response_curve.reporting.planting_year_axis import (  # noqa: E402
+    contiguous_runs as _contiguous_runs,
+    decade_spans as _decade_spans,
+)
+from n_response_curve.reporting.reference_sheet_layout import (  # noqa: E402
+    AXIS_LABEL_FONT_SIZE as _AXIS_LABEL_FONT_SIZE,
+    CAPTION_COLUMN_CHARS as _CAPTION_COLUMN_CHARS,
+    CAPTION_COLUMN_OFFSET as _CAPTION_COLUMN_OFFSET,
+    CAPTION_FONT_SIZE as _CAPTION_FONT_SIZE,
+    ERA_MARKERS as _ERA_MARKERS,
+    HEADLINE_FONT_SIZE as _HEADLINE_FONT_SIZE,
+    HOST_ROW_IN as _HOST_ROW_IN,
+    HOST_TREND_FRACTION as _HOST_TREND_FRACTION,
+    INSET_BOTTOM_FRACTION as _INSET_BOTTOM_FRACTION,
+    INSET_LEGEND_IN as _INSET_LEGEND_IN,
+    INSET_READOUT_FONT_SIZE as _INSET_READOUT_FONT_SIZE,
+    INSET_TICK_FONT_SIZE as _INSET_TICK_FONT_SIZE,
+    INSET_TITLE_FONT_SIZE as _INSET_TITLE_FONT_SIZE,
+    INSET_TOP_FRACTION as _INSET_TOP_FRACTION,
+    LEGEND_FONT_SIZE as _LEGEND_FONT_SIZE,
+    NARROW_PANEL_IN as _NARROW_PANEL_IN,
+    PANEL_GUTTER_IN as _PANEL_GUTTER_IN,
+    SHEET_BOTTOM_IN as _SHEET_BOTTOM_IN,
+    SHEET_LEFT_IN as _SHEET_LEFT_IN,
+    SHEET_RIGHT_IN as _SHEET_RIGHT_IN,
+    SHEET_WIDTH_IN as _SHEET_WIDTH_IN,
+    TICK_FONT_SIZE as _TICK_FONT_SIZE,
+    TREND_GAP_IN as _TREND_GAP_IN,
+    TREND_LEGEND_IN as _TREND_LEGEND_IN,
+    TREND_ROW_IN as _TREND_ROW_IN,
+    TREND_XAXIS_IN as _TREND_XAXIS_IN,
+    ZERO_N_TREATMENT_CLASS as _ZERO_N_TREATMENT_CLASS,
+)
 from n_response_curve.reporting.generate_response_curve_season_clusters import (  # noqa: E402
-    _AXIS_LABEL_FONT_SIZE,
-    _CAPTION_COLUMN_CHARS,
-    _CAPTION_COLUMN_OFFSET,
-    _CAPTION_FONT_SIZE,
-    _DISCLAIMER,
-    _ERA_MARKERS,
-    _HEADLINE_FONT_SIZE,
-    _HOST_ROW_IN,
-    _HOST_TREND_FRACTION,
-    _INSET_BOTTOM_FRACTION,
-    _INSET_LEGEND_IN,
-    _INSET_READOUT_FONT_SIZE,
-    _INSET_TICK_FONT_SIZE,
-    _INSET_TITLE_FONT_SIZE,
-    _INSET_TOP_FRACTION,
-    _LEGEND_FONT_SIZE,
-    _NARROW_PANEL_IN,
-    _PANEL_GUTTER_IN,
-    _SHEET_BOTTOM_IN,
-    _SHEET_LEFT_IN,
-    _SHEET_RIGHT_IN,
-    _SHEET_WIDTH_IN,
-    _TICK_FONT_SIZE,
-    _TITLE_FONT_SIZE,
-    _TREND_GAP_IN,
-    _TREND_LEGEND_IN,
-    _TREND_ROW_IN,
-    _TREND_XAXIS_IN,
-    _ZERO_N_TREATMENT_CLASS,
     _draw_overlay_on_axes,
-    _load_source_spec,
-    _reserve_suptitle,
-    _save_figure,
-    _shared_axis_limits,
     _treatment_class_colours,
-    _wrap_title_lines,
-    SOURCE_NAME,
+)
+from n_response_curve.reporting.source_config_spec import (  # noqa: E402
+    load_source_spec as _load_source_spec_for,
 )
 from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
     RESPONSE_TYPE_FEATURES,
@@ -107,12 +124,23 @@ from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
 TARGET_VARIETY = "IR8"
 TARGET_SEASON = "DS"
 GAP_TOKEN = "—"
+SOURCE_NAME = "ltcce"
 
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
     / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset/ltcce"
     / "clusters/by_season/ds/by_variety/ir8_by_planting_year"
 )
+
+
+def _load_source_spec(config_path: Path) -> tuple[Path, str]:
+    return _load_source_spec_for(
+        config_path,
+        SOURCE_NAME,
+        relative_root=PROJECT_ROOT,
+        resolve_path=False,
+        missing_sources_message="The configuration must contain a [sources] table",
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -205,18 +233,6 @@ def _year_means(ids: Sequence[str], result) -> tuple[dict[str, float], dict[str,
         dict(zip(RESPONSE_TYPE_FEATURES, means, strict=True)),
         dict(zip(RESPONSE_TYPE_FEATURES, errors, strict=True)),
     )
-
-
-def _contiguous_runs(years: Sequence[int]) -> list[list[int]]:
-    """Split years into runs with no gap -- 1984 breaks IR8's run in two."""
-
-    runs: list[list[int]] = []
-    for year in years:
-        if runs and year == runs[-1][-1] + 1:
-            runs[-1].append(year)
-        else:
-            runs.append([year])
-    return runs
 
 
 def _write_year_panel_grid(
@@ -409,18 +425,6 @@ def _annual_records(
     return tuple(records)
 
 
-def _ir8_decade_spans(
-    decade_groups: dict[str, tuple[str, ...]]
-) -> tuple[tuple[str, int, int], ...]:
-    """(label, first year, last year) for each decade band, oldest first."""
-
-    spans = []
-    for decade in sorted(decade_groups):
-        start = int(decade.rstrip("s"))
-        spans.append((decade, start, start + 9))
-    return tuple(spans)
-
-
 def _decade_inset_readout(
     ids: Sequence[str], result, total: int, *, compact: bool
 ) -> str:
@@ -467,13 +471,7 @@ def _split_calendar_runs(records: Sequence[AnnualRecord]) -> list[list[AnnualRec
     through it would read as an observed trend across a year with no data.
     """
 
-    runs: list[list[AnnualRecord]] = []
-    for record in records:
-        if runs and record.year == runs[-1][-1].year + 1:
-            runs[-1].append(record)
-        else:
-            runs.append([record])
-    return runs
+    return _contiguous_runs(records, year=lambda record: record.year, presorted=True)
 
 
 # The reference sheet (`by_planting_year/decades_and_trend.jpeg`) is 34in wide
@@ -520,7 +518,7 @@ def _write_decades_and_trend(
     decades = sorted(decade_groups)
     total = sum(len(ids) for ids in decade_groups.values())
     records = _annual_records(year_groups, result)
-    spans = _ir8_decade_spans(decade_groups)
+    spans = _decade_spans(sorted(decade_groups))
     if len(decades) < 2 or len(records) < 2 or len(spans) != len(decades):
         return
 
@@ -919,7 +917,7 @@ def _write_annual_trend(
         ladder, mixed = _dominant_ladder(ids, result)
         records.append((year, ladder, mixed, len(ids), means, errors))
 
-    runs = _contiguous_runs(years)
+    runs = _contiguous_runs(years, year=int, presorted=True)
     panels = (
         ("yield_at_zero_n_t_ha", "Yield at zero N (t/ha)"),
         ("response_above_zero_n_t_ha", "Response above zero N (t/ha)"),
@@ -1103,9 +1101,13 @@ def main() -> int:
         )
     decade_groups = _decade_groups(year_groups)
 
-    destination = args.output_dir.resolve()
+    destination = _plain_absolute_path(args.output_dir, label="IR8 output destination")
+    publication_container = _nested_publication_container(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = destination.with_name(f".{destination.name}.staging.{uuid.uuid4().hex}")
+    staging = publication_container.parent / (
+        f".{publication_container.name}.{destination.name}.nested-staging."
+        f"{uuid.uuid4().hex}"
+    )
     staging.mkdir()
     try:
         _write_year_panel_grid(
@@ -1139,9 +1141,8 @@ def main() -> int:
         )
         _write_readme(year_groups, decade_groups, staging / "README.md")
 
-        if destination.exists():
-            shutil.rmtree(destination)
-        os.replace(staging, destination)
+        with _core_overlay_publication_lock(publication_container):
+            _promote_directory(staging, destination)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
