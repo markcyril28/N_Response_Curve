@@ -32,9 +32,7 @@ import os
 import shutil
 import sys
 import textwrap
-import tomllib
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -45,6 +43,59 @@ MODULES_ROOT = PROJECT_ROOT / "modules"
 if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
+from n_response_curve.reporting.figure_captions import (  # noqa: E402
+    COMPOSITION_TITLE_WIDTH as _COMPOSITION_TITLE_WIDTH,
+    TITLE_FONT_SIZE as _TITLE_FONT_SIZE,
+    reserve_suptitle as _reserve_suptitle,
+    wrap_title_lines as _wrap_title_lines,
+)
+from n_response_curve.reporting.reference_sheet_layout import (  # noqa: E402
+    AXIS_LABEL_FONT_SIZE as _AXIS_LABEL_FONT_SIZE,
+    CAPTION_COLUMN_CHARS as _CAPTION_COLUMN_CHARS,
+    CAPTION_COLUMN_OFFSET as _CAPTION_COLUMN_OFFSET,
+    CAPTION_FONT_SIZE as _CAPTION_FONT_SIZE,
+    CAPTION_LINE_SPACING as _CAPTION_LINE_SPACING,
+    CAPTION_PARAGRAPH_GAP_LINES as _CAPTION_PARAGRAPH_GAP_LINES,
+    DESIGN_GAP_IN as _DESIGN_GAP_IN,
+    DESIGN_ROW_IN as _DESIGN_ROW_IN,
+    DESIGN_TITLE_FONT_SIZE as _DESIGN_TITLE_FONT_SIZE,
+    DESIGN_TITLE_IN as _DESIGN_TITLE_IN,
+    ERA_MARKERS as _ERA_MARKERS,
+    HEADLINE_FONT_SIZE as _HEADLINE_FONT_SIZE,
+    HOST_ROW_IN as _HOST_ROW_IN,
+    HOST_TREND_FRACTION as _HOST_TREND_FRACTION,
+    INSET_BOTTOM_FRACTION as _INSET_BOTTOM_FRACTION,
+    INSET_LEGEND_IN as _INSET_LEGEND_IN,
+    INSET_READOUT_FONT_SIZE as _INSET_READOUT_FONT_SIZE,
+    INSET_TICK_FONT_SIZE as _INSET_TICK_FONT_SIZE,
+    INSET_TITLE_FONT_SIZE as _INSET_TITLE_FONT_SIZE,
+    INSET_TOP_FRACTION as _INSET_TOP_FRACTION,
+    LEGEND_FONT_SIZE as _LEGEND_FONT_SIZE,
+    NARROW_PANEL_IN as _NARROW_PANEL_IN,
+    PANEL_GUTTER_IN as _PANEL_GUTTER_IN,
+    SHEET_BOTTOM_IN as _SHEET_BOTTOM_IN,
+    SHEET_LEFT_IN as _SHEET_LEFT_IN,
+    SHEET_RIGHT_IN as _SHEET_RIGHT_IN,
+    SHEET_WIDTH_IN as _SHEET_WIDTH_IN,
+    TICK_FONT_SIZE as _TICK_FONT_SIZE,
+    TREND_GAP_IN as _TREND_GAP_IN,
+    TREND_LEGEND_IN as _TREND_LEGEND_IN,
+    TREND_ROW_IN as _TREND_ROW_IN,
+    TREND_XAXIS_IN as _TREND_XAXIS_IN,
+    ZERO_N_TREATMENT_CLASS as _ZERO_N_TREATMENT_CLASS,
+    text_inches as _text_inches,
+)
+from n_response_curve.reporting.figure_axis_frames import (  # noqa: E402
+    SharedAxisLimits as _SharedAxisLimits,
+    shared_axis_limits as _shared_axis_limits,
+)
+from n_response_curve.reporting.source_config_spec import load_source_spec  # noqa: E402
+from n_response_curve.reporting.figure_captions import (  # noqa: E402
+    EXPLORATORY_DIAGNOSTIC_DISCLAIMER as _DISCLAIMER,
+)
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically as _save_figure,
+)
 from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
     EXCLUSION_DUPLICATED_N_LEVEL,
     EXCLUSION_INCOMPLETE_LADDER,
@@ -113,15 +164,11 @@ DEFAULT_OUTPUT_DIR = (
 )
 SOURCE_NAME = "ltcce"
 
-_DISCLAIMER = (
-    "exploratory diagnostic; not a governed analysis (ANA-11) — no curve is fitted"
-)
 
 # Repeated on every within-season figure. Each season picks its own k and its own
 # centroids, so the integers are not a shared vocabulary.
 _LOCAL_LABEL_NOTE = "cluster numbering is local to this season and is not comparable across seasons"
 
-_AXIS_PAD_FRACTION = 0.04
 
 # The separated variants: `<name>_figure.jpeg` carries the plates, its identity
 # and the disclaimer, and this one markdown file carries the prose for all of
@@ -137,7 +184,6 @@ _SEPARATED_FIGURE_SUFFIX = "_figure.jpeg"
 # squeezes the axes. Every figure this generator writes is therefore enlarged,
 # and the title font raised to match the bigger canvas.
 _OVERLAY_FIGURE_INCHES = (12.0, 7.5)
-_TITLE_FONT_SIZE = 10
 
 # Readable names for the four clustering features, in RESPONSE_TYPE_FEATURES order.
 _FEATURE_TITLES = (
@@ -168,24 +214,13 @@ _EXCLUSION_EXPLANATIONS = {
 
 
 def _load_source_spec(config_path: Path) -> tuple[Path, str]:
-    with config_path.open("rb") as handle:
-        config = tomllib.load(handle)
-    sources = config.get("sources")
-    if not isinstance(sources, dict):
-        raise ValueError("The configuration must contain a [sources] table")
-    source = sources.get(SOURCE_NAME)
-    if not isinstance(source, dict):
-        raise ValueError(f"The configuration is missing [sources.{SOURCE_NAME}]")
-    raw_path = source.get("data_path")
-    encoding = source.get("encoding")
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].data_path must be a nonempty string")
-    if not isinstance(encoding, str) or not encoding.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].encoding must be a nonempty string")
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    return path, encoding
+    return load_source_spec(
+        config_path,
+        SOURCE_NAME,
+        relative_root=PROJECT_ROOT,
+        resolve_path=False,
+        missing_sources_message="The configuration must contain a [sources] table",
+    )
 
 
 def _season_token(season: str) -> str:
@@ -200,56 +235,12 @@ def _season_token(season: str) -> str:
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _SharedAxisLimits:
-    """One padded x/y frame, shared by every overlay figure written here."""
-
-    x: tuple[float, float] | None
-    y: tuple[float, float] | None
-
-    def apply(self, axes: Any) -> None:
-        if self.x is not None:
-            axes.set_xlim(*self.x)
-        if self.y is not None:
-            axes.set_ylim(*self.y)
 
 
-def _padded_limits(
-    value_range: tuple[float, float] | None,
-) -> tuple[float, float] | None:
-    if value_range is None:
-        return None
-    low, high = value_range
-    if not (math.isfinite(low) and math.isfinite(high)):
-        return None
-    span = high - low
-    pad = span * _AXIS_PAD_FRACTION if span > 0 else max(abs(high), 1.0) * 0.05
-    return low - pad, high + pad
 
 
-def _shared_axis_limits(overlay: SourceDatasetOverlay) -> _SharedAxisLimits:
-    """Pin one frame from the parent overlay, before any season subsetting.
-
-    Every figure below is a subset of this overlay. Sharing the frame is what
-    makes the DS response magnitude visibly larger than the wet-season one
-    instead of each panel autoscaling to look the same height.
-    """
-
-    return _SharedAxisLimits(
-        x=_padded_limits(overlay.summary.n_rate_range_kg_ha),
-        y=_padded_limits(overlay.summary.yield_range_t_ha),
-    )
 
 
-def _save_figure(figure: Any, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        figure.savefig(temporary, format="jpeg", dpi=150)
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _titled_figure(
@@ -452,26 +443,6 @@ def _substructure_directory(substructure: ClusterSubstructure) -> str:
     return f"cluster_{substructure.cluster_id + 1}"
 
 
-def _reserve_suptitle(
-    figure: Any,
-    suptitle_text: str,
-    *,
-    legend_strip: float = 0.035,
-) -> None:
-    """Place a multi-line suptitle and reserve exactly the strip it occupies.
-
-    constrained_layout makes no room for figure-level artists, so the top strip
-    is reserved by hand, sized from the suptitle's own line count. Note `rect` is
-    (left, bottom, width, height) — passing a top edge as the fourth element
-    silently over-reserves and lets the panel titles collide with the suptitle.
-    """
-
-    figure.suptitle(suptitle_text, fontsize=_TITLE_FONT_SIZE, y=0.995, va="top")
-    title_points = (suptitle_text.count("\n") + 1) * _TITLE_FONT_SIZE * 1.2 + 14.0
-    reserved = title_points / (figure.get_figheight() * 72.0)
-    figure.get_layout_engine().set(
-        rect=(0.0, legend_strip, 1.0, 1.0 - reserved - legend_strip)
-    )
 
 
 def _write_substratum_panel(
@@ -883,17 +854,8 @@ def _factor_directory(season: str, substructure: FactorSubstructure) -> Path:
     return Path(_season_token(season)) / substructure.definition.directory
 
 
-# The disclosure lines run long, and matplotlib clips a title at the axes edge
-# instead of shrinking it — a truncated caveat is worse than no caveat, so the
-# lines are folded before they are handed over. Sized for the 12-inch canvas the
-# composition figures use at font size 9.
-_COMPOSITION_TITLE_WIDTH = 130
 
 
-def _wrap_title_lines(lines: Sequence[str], width: int = _COMPOSITION_TITLE_WIDTH) -> str:
-    return "\n".join(
-        textwrap.fill(line, width=width, break_long_words=False) for line in lines
-    )
 
 
 # ...and the same for the overlay canvas, which is narrower and set one point
@@ -1708,106 +1670,11 @@ def _decade_band_spans(
     return tuple(spans)
 
 
-# Hand-placed layout for the combined sheet, in inches, measured from the
-# bottom edge. `constrained_layout` cannot be used here: the whole point of the
-# figure is that each decade's response curve sits on the stretch of the trend
-# its trajectories came from, and that requires the insets and the trend axes
-# to be positioned from one shared year-to-inches mapping. A layout engine
-# sizes every axes from its own labels, so the correspondence would drift.
-_SHEET_WIDTH_IN = 34.0
-# Wide enough for the trend tick labels plus the rotated y label at the type
-# sizes set below. Every strip on this sheet that carries text is derived from
-# a font size for the same reason: `add_axes` runs text off the canvas without
-# raising, so a hard-coded margin fails silently the moment the type grows.
-_SHEET_LEFT_IN = 1.30
-_SHEET_RIGHT_IN = 0.35
-_SHEET_BOTTOM_IN = 0.25
-_HOST_ROW_IN = 11.6
-# How much of the host axes the trend itself is allowed to occupy, measured
-# from the bottom. The rest is the band the insets sit in, plus the strip
-# between them that carries each inset's applied-N tick labels.
-_HOST_TREND_FRACTION = 0.42
-# Derived, never chosen. The response panel is given exactly the height of the
-# host's trend band, and both panels are drawn to one shared y range, so the
-# two share an inches-per-t/ha as well as an x axis: a change of a given size
-# has the same slope in both. That is the only way the two ends of the same
-# curve can be read against each other.
-_TREND_ROW_IN = _HOST_TREND_FRACTION * _HOST_ROW_IN
-_TREND_GAP_IN = 0.12
-# Kept out of the shared rectangle so two neighbouring insets never touch;
-# taken off the inset, never off the band, so the alignment stays exact.
-_PANEL_GUTTER_IN = 0.10
-# An inset narrower than this gets the abbreviated read-out. Every inset on the
-# decade axis clears it comfortably; the branch is kept for a season whose
-# record spans enough decades to divide the sheet into thin bands.
-_NARROW_PANEL_IN = 2.2
-# The caption carries the governance disclosures and runs to eight or twelve
-# entries. Centred across a 34-inch sheet it reads as a wall of text, and at a
-# readable measure a single column leaves half the sheet empty, so it is set as
-# two left-aligned columns balanced by wrapped line count.
-_HEADLINE_FONT_SIZE = 23
-_CAPTION_FONT_SIZE = 13
-_CAPTION_COLUMN_CHARS = 108
-_CAPTION_COLUMN_OFFSET = 0.52
-_CAPTION_LINE_SPACING = 1.45
-# Each bullet is drawn as its own text object separated by this fraction of a
-# line, rather than the whole column joined with newlines into one. Joined, the
-# gap between two disclosures is exactly the gap between two lines of the same
-# disclosure, and the column has no paragraph structure at all — which is what
-# made it read as a wall regardless of the type size.
-_CAPTION_PARAGRAPH_GAP_LINES = 0.55
-# Type on this sheet is set much larger than on the 12-inch composition
-# figures. Every panel here is several inches across; sizes that read on the
-# small canvas render as a grey blur once the sheet is 34 inches wide and the
-# reader is looking at it scaled to fit a screen.
-_AXIS_LABEL_FONT_SIZE = 17
-_TICK_FONT_SIZE = 14
-_INSET_TITLE_FONT_SIZE = 20
-_INSET_TICK_FONT_SIZE = 12
-_INSET_READOUT_FONT_SIZE = 12
-_LEGEND_FONT_SIZE = 14
-# The optional design row: one panel per recorded plot design, positioned on the
-# same year-to-inches mapping as the decade insets, so a design's panel is as
-# wide as the stretch of the experiment that ran under it.
-_DESIGN_ROW_IN = 4.6
-_DESIGN_GAP_IN = 0.62
-_DESIGN_TITLE_FONT_SIZE = 21
 
 
-def _text_inches(
-    font_size: float, lines: float = 1.0, *, spacing: float = 1.35
-) -> float:
-    """Height in inches of `lines` lines set at `font_size` points.
-
-    Every strip on the sheet that exists only to carry text is sized through
-    this rather than by a chosen number, so raising a font size cannot push its
-    own labels off the canvas. `savefig` does not complain when it happens, and
-    neither does the linter.
-    """
-
-    return font_size * spacing * lines / 72.0
 
 
-# Derived, never chosen — see `_text_inches`. The trend x-axis strip carries a
-# row of tick labels *and* the axis label; the trend legend carries its title
-# row and its entry row; the design row's `set_title` draws above the axes and
-# so needs its own allowance, or it runs into the caption above it.
-_INSET_LEGEND_IN = _text_inches(_LEGEND_FONT_SIZE) + 0.22
-_TREND_XAXIS_IN = (
-    _text_inches(_TICK_FONT_SIZE) + _text_inches(_AXIS_LABEL_FONT_SIZE) + 0.26
-)
-_TREND_LEGEND_IN = _text_inches(_LEGEND_FONT_SIZE, 2.0) + 0.24
-_DESIGN_TITLE_IN = _text_inches(_DESIGN_TITLE_FONT_SIZE) + 0.16
-# Era is carried by marker shape when colour has been spent on the quantity.
-# Cycled in this order, which is the order the eras are first observed.
-_ERA_MARKERS = ("o", "s", "^", "D", "v", "P", "X")
 
-# Every inset draws its treatment classes through `_draw_overlay_on_axes`, which
-# calls `scatter` once per class in `treatment_classes` order with no explicit
-# colour, so each class takes the matching entry of the axes property cycle.
-# `treatment_classes` is built with `sorted()`, so the order is stable across
-# runs and seasons.
-_ZERO_N_TREATMENT_CLASS = "zero N"
 
 
 def _treatment_class_colours(overlay: SourceDatasetOverlay) -> dict[str, Any]:
@@ -1827,12 +1694,6 @@ def _treatment_class_colours(overlay: SourceDatasetOverlay) -> dict[str, Any]:
         treatment_class: cycle[index % len(cycle)]
         for index, treatment_class in enumerate(overlay.summary.treatment_classes)
     }
-# The strip between the trend's ceiling and the insets' lower edge has to hold
-# the insets' applied-N tick labels *and* the line naming the shared inset
-# frame, both of which grew with the type. Raised from 0.50, with `_HOST_ROW_IN`
-# grown to match so the insets keep their height.
-_INSET_BOTTOM_FRACTION = 0.53
-_INSET_TOP_FRACTION = 0.94
 
 
 _LADDER_READOUT_PREFIX = "applied N "
