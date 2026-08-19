@@ -28,9 +28,7 @@ import math
 import os
 import shutil
 import sys
-import tomllib
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -39,6 +37,17 @@ MODULES_ROOT = PROJECT_ROOT / "modules"
 if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
+from n_response_curve.reporting.figure_axis_frames import (  # noqa: E402
+    SharedAxisLimits as _SharedAxisLimits,
+    shared_axis_limits as _shared_axis_limits,
+)
+from n_response_curve.reporting.figure_captions import (  # noqa: E402
+    EXPLORATORY_DIAGNOSTIC_DISCLAIMER as _DISCLAIMER,
+)
+from n_response_curve.reporting.source_config_spec import load_source_spec  # noqa: E402
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically as _save_figure,
+)
 from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
     EXCLUSION_DUPLICATED_N_LEVEL,
     EXCLUSION_INCOMPLETE_LADDER,
@@ -70,41 +79,21 @@ DEFAULT_OUTPUT_DIR = (
 )
 SOURCE_NAME = "ltcce"
 
-# Carried into every figure so the boundary survives this conversation.
-_DISCLAIMER = (
-    "exploratory diagnostic; not a governed analysis (ANA-11) — no curve is fitted"
-)
 
 # Percentage-point excess of one season in a cluster, over that season's share of
 # the parent stratum, at which the split is disclosed as season-confounded.
 _SEASON_CONCENTRATION_MARGIN = 0.15
 
-# Every view in this directory is a subset of one parent overlay, so a per-figure
-# autoscale makes a low-yielding cluster look as tall as a high-yielding one, and a
-# short N ladder as wide as a long one. Both axes are therefore pinned once, from
-# the parent, and shared by all views.
-_AXIS_PAD_FRACTION = 0.04
 
 
 def _load_source_spec(config_path: Path) -> tuple[Path, str]:
-    with config_path.open("rb") as handle:
-        config = tomllib.load(handle)
-    sources = config.get("sources")
-    if not isinstance(sources, dict):
-        raise ValueError("The configuration must contain a [sources] table")
-    source = sources.get(SOURCE_NAME)
-    if not isinstance(source, dict):
-        raise ValueError(f"The configuration is missing [sources.{SOURCE_NAME}]")
-    raw_path = source.get("data_path")
-    encoding = source.get("encoding")
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].data_path must be a nonempty string")
-    if not isinstance(encoding, str) or not encoding.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].encoding must be a nonempty string")
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    return path, encoding
+    return load_source_spec(
+        config_path,
+        SOURCE_NAME,
+        relative_root=PROJECT_ROOT,
+        resolve_path=False,
+        missing_sources_message="The configuration must contain a [sources] table",
+    )
 
 
 def _ladder_token(ladder: Sequence[float]) -> str:
@@ -168,60 +157,12 @@ def _season_mixture_caveat(
     )
 
 
-def _save_figure(figure: Any, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        figure.savefig(temporary, format="jpeg", dpi=150)
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
-@dataclass(frozen=True)
-class _SharedAxisLimits:
-    """One padded x/y frame, shared by every figure this generator writes."""
-
-    x: tuple[float, float] | None
-    y: tuple[float, float] | None
-
-    def apply(self, axes: Any) -> None:
-        if self.x is not None:
-            axes.set_xlim(*self.x)
-        if self.y is not None:
-            axes.set_ylim(*self.y)
 
 
-def _padded_limits(
-    value_range: tuple[float, float] | None,
-) -> tuple[float, float] | None:
-    if value_range is None:
-        return None
-    low, high = value_range
-    if not (math.isfinite(low) and math.isfinite(high)):
-        return None
-    span = high - low
-    pad = span * _AXIS_PAD_FRACTION if span > 0 else max(abs(high), 1.0) * 0.05
-    return low - pad, high + pad
 
 
-def _shared_axis_limits(overlay: SourceDatasetOverlay) -> _SharedAxisLimits:
-    """Pin one frame, padded, from the parent overlay every view subsets.
-
-    Taken before any subsetting, so it bounds every figure this generator writes
-    and the clusters stay comparable to one another and to the parent stratum.
-    Both floors are the padded data minimum rather than zero: these are
-    descriptive overlays, not a magnitude comparison against an absolute origin.
-    The shared x frame spans every applied-N ladder in the source, so a
-    four-level stratum reading 0-135 now occupies only the part of the axis it
-    actually covers instead of being stretched to the full width.
-    """
-
-    return _SharedAxisLimits(
-        x=_padded_limits(overlay.summary.n_rate_range_kg_ha),
-        y=_padded_limits(overlay.summary.yield_range_t_ha),
-    )
 
 
 def _titled_figure(
