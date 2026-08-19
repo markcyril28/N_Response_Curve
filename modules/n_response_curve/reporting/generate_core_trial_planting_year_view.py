@@ -49,6 +49,7 @@ import csv
 import math
 import os
 import shutil
+import stat
 import statistics
 import sys
 import textwrap
@@ -64,43 +65,66 @@ if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
 from n_response_curve.analysis.values import finite_number  # noqa: E402
+from n_response_curve.reporting.source_display_names import (  # noqa: E402
+    display_source_name,
+)
+from n_response_curve.reporting.directory_publication import (  # noqa: E402
+    copy_preserved_plain_tree as _copy_plain_tree_without_links,
+    nested_publication_container as _nested_publication_container,
+    plain_absolute_path as _plain_absolute_path,
+    promote_directory as _promote_directory,
+    publication_lock as _core_overlay_publication_lock,
+)
 from n_response_curve.reporting.generate_raw_dataset_overlays import (  # noqa: E402
     _load_governed_core_inputs,
 )
+from n_response_curve.reporting.figure_axis_frames import (  # noqa: E402
+    shared_axis_limits as _shared_axis_limits,
+)
+from n_response_curve.reporting.figure_captions import (  # noqa: E402
+    EXPLORATORY_DIAGNOSTIC_DISCLAIMER as _DISCLAIMER,
+)
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically as _save_figure,
+)
+from n_response_curve.reporting.reference_sheet_layout import (  # noqa: E402
+    AXIS_LABEL_FONT_SIZE as _AXIS_LABEL_FONT_SIZE,
+    CAPTION_COLUMN_CHARS as _CAPTION_COLUMN_CHARS,
+    CAPTION_COLUMN_OFFSET as _CAPTION_COLUMN_OFFSET,
+    CAPTION_FONT_SIZE as _CAPTION_FONT_SIZE,
+    CAPTION_LINE_SPACING as _CAPTION_LINE_SPACING,
+    CAPTION_PARAGRAPH_GAP_LINES as _CAPTION_PARAGRAPH_GAP_LINES,
+    HEADLINE_FONT_SIZE as _HEADLINE_FONT_SIZE,
+    HOST_ROW_IN as _HOST_ROW_IN,
+    HOST_TREND_FRACTION as _HOST_TREND_FRACTION,
+    INSET_BOTTOM_FRACTION as _INSET_BOTTOM_FRACTION,
+    INSET_LEGEND_IN as _INSET_LEGEND_IN,
+    INSET_READOUT_FONT_SIZE as _INSET_READOUT_FONT_SIZE,
+    INSET_TICK_FONT_SIZE as _INSET_TICK_FONT_SIZE,
+    INSET_TITLE_FONT_SIZE as _INSET_TITLE_FONT_SIZE,
+    INSET_TOP_FRACTION as _INSET_TOP_FRACTION,
+    LEGEND_FONT_SIZE as _LEGEND_FONT_SIZE,
+    NARROW_PANEL_IN as _NARROW_PANEL_IN,
+    PANEL_GUTTER_IN as _PANEL_GUTTER_IN,
+    SHEET_BOTTOM_IN as _SHEET_BOTTOM_IN,
+    SHEET_LEFT_IN as _SHEET_LEFT_IN,
+    SHEET_RIGHT_IN as _SHEET_RIGHT_IN,
+    SHEET_WIDTH_IN as _SHEET_WIDTH_IN,
+    TICK_FONT_SIZE as _TICK_FONT_SIZE,
+    TREND_GAP_IN as _TREND_GAP_IN,
+    TREND_LEGEND_IN as _TREND_LEGEND_IN,
+    TREND_ROW_IN as _TREND_ROW_IN,
+    TREND_XAXIS_IN as _TREND_XAXIS_IN,
+    ZERO_N_TREATMENT_CLASS as _ZERO_N_TREATMENT_CLASS,
+    text_inches as _text_inches,
+)
+from n_response_curve.reporting.planting_year_axis import (  # noqa: E402
+    contiguous_runs as _contiguous_runs,
+    decade_spans as _decade_spans_value,
+    year_bounds as _year_bounds_value,
+)
 from n_response_curve.reporting.generate_response_curve_season_clusters import (  # noqa: E402
-    _AXIS_LABEL_FONT_SIZE,
-    _CAPTION_COLUMN_CHARS,
-    _CAPTION_COLUMN_OFFSET,
-    _CAPTION_FONT_SIZE,
-    _CAPTION_LINE_SPACING,
-    _CAPTION_PARAGRAPH_GAP_LINES,
-    _DISCLAIMER,
-    _HEADLINE_FONT_SIZE,
-    _HOST_ROW_IN,
-    _HOST_TREND_FRACTION,
-    _INSET_BOTTOM_FRACTION,
-    _INSET_LEGEND_IN,
-    _INSET_READOUT_FONT_SIZE,
-    _INSET_TICK_FONT_SIZE,
-    _INSET_TITLE_FONT_SIZE,
-    _INSET_TOP_FRACTION,
-    _LEGEND_FONT_SIZE,
-    _NARROW_PANEL_IN,
-    _PANEL_GUTTER_IN,
-    _SHEET_BOTTOM_IN,
-    _SHEET_LEFT_IN,
-    _SHEET_RIGHT_IN,
-    _SHEET_WIDTH_IN,
-    _TICK_FONT_SIZE,
-    _TREND_GAP_IN,
-    _TREND_LEGEND_IN,
-    _TREND_ROW_IN,
-    _TREND_XAXIS_IN,
-    _ZERO_N_TREATMENT_CLASS,
     _draw_overlay_on_axes,
-    _save_figure,
-    _shared_axis_limits,
-    _text_inches,
     _treatment_class_colours,
 )
 from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
@@ -128,6 +152,47 @@ DEFAULT_OUTPUT_DIR = (
     / SOURCE_NAME
     / "clusters/by_planting_year"
 )
+
+
+def _copy_preserved_plain_tree(source: Path, destination: Path) -> None:
+    """Copy one preserved directory without following links or hardlinks."""
+
+    _copy_plain_tree_without_links(source, destination)
+
+
+def _copy_preserved_plain_entry(source: Path, destination: Path) -> None:
+    """Copy one operator-owned entry after proving it is plain local content."""
+
+    info = os.lstat(source)
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"Preserved core-trial entry is a symlink: {source}")
+    if stat.S_ISDIR(info.st_mode):
+        _copy_preserved_plain_tree(source, destination)
+        return
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"Preserved core-trial entry is not regular: {source}")
+    if info.st_nlink != 1:
+        raise RuntimeError(f"Preserved core-trial entry is hardlinked: {source}")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(source, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+        ):
+            raise RuntimeError(
+                f"Preserved core-trial entry changed during validation: {source}"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as input_handle:
+            with destination.open("xb") as output_handle:
+                shutil.copyfileobj(input_handle, output_handle)
+    finally:
+        os.close(descriptor)
+
 
 # The sheet reproduces LTCCE's `decades_and_trend_matched_colours.jpeg`, whose
 # 34 inches carry six decades. Reusing that inches-per-year density rather than
@@ -256,26 +321,7 @@ def _year_bounds(label: str) -> tuple[int, int] | None:
     boundary, where the inset placement would be ambiguous.
     """
 
-    text = label.strip()
-    if not text:
-        return None
-    head, _, tail = text.partition("-")
-    head = head.strip()
-    tail = tail.strip()
-    if not (len(head) == 4 and head.isdigit()):
-        return None
-    first = int(head)
-    if not tail:
-        return first, first
-    if len(tail) == 2 and tail.isdigit():
-        last = first - first % 100 + int(tail)
-    elif len(tail) == 4 and tail.isdigit():
-        last = int(tail)
-    else:
-        return None
-    if last < first:
-        return None
-    return first, last
+    return _year_bounds_value(label)
 
 
 def _decade_of(bounds: tuple[int, int], label: str) -> str:
@@ -441,12 +487,7 @@ def _trend_points(series: Sequence[_Series]) -> tuple[_TrendPoint, ...]:
 
 def _decade_spans(decades: Sequence[str]) -> tuple[tuple[str, int, int], ...]:
     """(label, first year, last year) for each decade band, oldest first."""
-
-    spans = []
-    for decade in decades:
-        start = int(decade.rstrip("s"))
-        spans.append((decade, start, start + 9))
-    return tuple(spans)
+    return _decade_spans_value(decades)
 
 
 def _calendar_runs(points: Sequence[_TrendPoint]) -> list[list[_TrendPoint]]:
@@ -456,13 +497,10 @@ def _calendar_runs(points: Sequence[_TrendPoint]) -> list[list[_TrendPoint]]:
     that were never observed, which on this source is most of them.
     """
 
-    runs: list[list[_TrendPoint]] = []
-    for point in points:
-        if runs and point.year == runs[-1][-1].year + 1:
-            runs[-1].append(point)
-        else:
-            runs.append([point])
-    return runs
+    return [
+        list(run)
+        for run in _contiguous_runs(points, year=lambda point: point.year, presorted=True)
+    ]
 
 
 def _site_eras(series: Sequence[_Series]) -> tuple[tuple[str, int, int], ...]:
@@ -868,7 +906,8 @@ def _write_decades_and_trend(
     # sentence at the same size runs off both edges, and `figure.text` clips it
     # without saying so.
     headline = textwrap.fill(
-        f"source={SOURCE_NAME} — each planting decade's response curves drawn on "
+        f"source={display_source_name(SOURCE_NAME)} — each planting decade's "
+        "response curves drawn on "
         "the stretch of the yield trend they came from, by season",
         width=max(
             40,
@@ -1477,9 +1516,15 @@ def main() -> int:
     gaps = _trend_gaps(series, points, spans)
     eras = _site_eras(series)
 
-    destination = args.output_dir.resolve()
+    destination = _plain_absolute_path(
+        args.output_dir, label="Core-trial output destination"
+    )
+    publication_container = _nested_publication_container(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = destination.with_name(f".{destination.name}.staging.{uuid.uuid4().hex}")
+    staging = publication_container.parent / (
+        f".{publication_container.name}.{destination.name}.nested-staging."
+        f"{uuid.uuid4().hex}"
+    )
     staging.mkdir()
     carried: list[str] = []
     try:
@@ -1518,29 +1563,25 @@ def main() -> int:
             governed_observations,
             staging / "README.md",
         )
-        # This directory is replaced as a whole snapshot, so anything in it that
-        # this generator did not write has to be copied into staging or the
-        # replacement destroys it. Operators archive and curate under these
-        # trees; a rebuild of two figures is not a licence to delete their work.
-        owned = {
-            ANNOTATED_FIGURE_FILENAME,
-            FIGURE_ONLY_FILENAME,
-            NOTES_FILENAME,
-            "README.md",
-        }
-        if destination.is_dir() and not destination.is_symlink():
-            for entry in sorted(destination.iterdir()):
-                if entry.name in owned or entry.is_symlink():
-                    continue
-                if entry.is_dir():
-                    shutil.copytree(entry, staging / entry.name)
-                else:
-                    shutil.copy2(entry, staging / entry.name)
-                carried.append(entry.name)
+        with _core_overlay_publication_lock(publication_container):
+            # This directory is replaced as a whole snapshot, so anything in it
+            # that this generator did not write has to be copied into staging or
+            # the replacement destroys it. Operators archive and curate under
+            # these trees; rebuilding two figures is not a licence to delete them.
+            owned = {
+                ANNOTATED_FIGURE_FILENAME,
+                FIGURE_ONLY_FILENAME,
+                NOTES_FILENAME,
+                "README.md",
+            }
+            if destination.is_dir() and not destination.is_symlink():
+                for entry in sorted(destination.iterdir()):
+                    if entry.name in owned:
+                        continue
+                    _copy_preserved_plain_entry(entry, staging / entry.name)
+                    carried.append(entry.name)
 
-        if destination.exists():
-            shutil.rmtree(destination)
-        os.replace(staging, destination)
+            _promote_directory(staging, destination)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
