@@ -618,7 +618,8 @@ def _build_figure(
         # is largest, so the panel prints the composition rather than leaving the
         # reader to infer it from the legend counts.
         composition = ", ".join(
-            f"{name} {100.0 * int(counts.get(name, 0)) / len(observations):.0f}%"
+            f"{dsf._legend_label(name)} "
+            f"{100.0 * int(counts.get(name, 0)) / len(observations):.0f}%"
             for name in sorted(
                 names, key=lambda name: int(counts.get(name, 0)), reverse=True
             )
@@ -646,7 +647,8 @@ def _build_figure(
         # only one of the three usually gets there, and an unattributed count
         # reads as if the warning applied to every curve on the panel.
         reaching = ", ".join(
-            dsf._ordered_sources(loaded, tail["source_name"].unique())
+            dsf._legend_label(name)
+            for name in dsf._ordered_sources(loaded, tail["source_name"].unique())
         )
         caveat_parts.append(
             f"Above {top_quarter:.0f} kg N/ha the cloud holds {len(tail):,} "
@@ -657,7 +659,9 @@ def _build_figure(
     # Each caveat names only the datasets it is true of. Reusing one sentence for
     # every dataset carrying any note would tell the reader, for instance, that
     # ltcce records no zero-N row when it records 3,421 of them.
-    unanchored = [fit.source_name for fit in fits if fit.n_min > 0.0]
+    unanchored = [
+        dsf._legend_label(fit.source_name) for fit in fits if fit.n_min > 0.0
+    ]
     if unanchored:
         caveat_parts.append(
             f"{', '.join(unanchored)}: no recorded zero-N row in this basis, so "
