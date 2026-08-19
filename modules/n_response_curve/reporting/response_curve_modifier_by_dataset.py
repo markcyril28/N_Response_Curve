@@ -57,11 +57,11 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from ..analysis.grain_yield_response.population import sha256_file  # noqa: E402
 from ..analysis.grain_yield_response.series_covariates import (  # noqa: E402
     derive_series_covariates,
     screen_series_slope_modifiers,
 )
+from ..data.provenance import sha256_file  # noqa: E402
 from .grain_yield_response import (  # noqa: E402
     DiagnosticBundleError,
     _RANKING_FACTOR_COLOR,
