@@ -46,11 +46,14 @@ from ..analysis.descriptive_statistics.contracts import (
     ProfileContractError,
 )
 from ..analysis.descriptive_statistics.sources import (
+    NATIVE_T_HA,
+    OBSERVATION_COLUMNS,
     ColumnBinding,
     LoadedSources,
     ProfiledSource,
     build_all_observations,
 )
+from .source_display_names import display_source_name
 
 
 # The sibling grain-yield bundle's vocabulary (Tableau/Vega-10), reused so the
@@ -484,20 +487,23 @@ def _source_colours(loaded: LoadedSources) -> dict[str, str]:
 
 
 def _legend_label(source_name: str) -> str:
-    """The dataset name alone.
+    """The dataset's reader-facing name alone.
 
     Figures deliberately do not print the data classification beside the name.
     Classification is recorded per artifact in ``run_manifest.json``, which is
     the binding record; repeating it on every legend entry only crowded the
     panels, and its absence here changes no governance behaviour — restricted
     sources are still labeled, counted, and suppressed exactly as before.
+
+    The registered ``source_name`` remains the identifier in every table,
+    filename, and manifest entry; only rendered text is renamed.
     """
 
-    return source_name
+    return display_source_name(source_name)
 
 
 def _tick_label(source_name: str) -> str:
-    return source_name
+    return display_source_name(source_name)
 
 
 def _ordered_sources(
@@ -724,7 +730,9 @@ def _plot_column_fill_profile(
             # are in the caption instead.
             label=_legend_label(name),
         )
-        empty_notes.append(f"{name}: {int(np.sum(values <= 0.0))} of {values.size}")
+        empty_notes.append(
+            f"{_legend_label(name)}: {int(np.sum(values <= 0.0))} of {values.size}"
+        )
 
     axis.set_ylim(-2.0, 104.0)
     axis.set_xlim(0.0, 100.0)
@@ -738,7 +746,7 @@ def _plot_column_fill_profile(
     axis.legend(fontsize=8, loc="center right")
     axis.grid(alpha=0.2)
     suppression_note = ", ".join(
-        f"{name}: {excluded.get(name, 0)}" for name in names
+        f"{_legend_label(name)}: {excluded.get(name, 0)}" for name in names
     )
     _footnote(
         figure,
@@ -829,7 +837,8 @@ def _plot_numeric_spread_overview(
     stats = [
         {
             "label": (
-                f"{box.label}\n{box.source_name} (n={box.observations:,})"
+                f"{box.label}\n{_tick_label(box.source_name)} "
+                f"(n={box.observations:,})"
             ),
             "med": box.median,
             "q1": box.q1,
@@ -1043,6 +1052,199 @@ def _plot_categorical_cardinality(
 # --------------------------------------------------------------------------
 
 
+# ph_combined_nopt_rcm records four N treatments per row, each in its own column
+# pair (see [agronomic.ph_combined_nopt_rcm] for the list its registered schema
+# evidence declares). ``nitrogen_rate`` binds NOPT-N, the recommended rate; this
+# figure draws the farmer's-practice arm instead, because a recorded-rate
+# distribution is a statement about what was applied in the field, and FP-N is
+# the arm the farmer chose. core_trial_data's own "Type of Experiment/
+# Study/Trial" column names 12 of its rows Farmer's Practice comparisons rather
+# than a designed dose ladder, so they join that series rather than reading as
+# rungs of a literature-extracted ladder.
+#
+# One series per dataset either way: the arm replaces its source rather than
+# joining it, so no field is counted twice.
+#
+# The substitution is local to this figure. ``build_all_observations`` still
+# returns exactly one row per recorded record through the governed binding, so
+# harmonized_observations.csv, nitrogen_rate_profile.csv and
+# context_composition.csv are unchanged and still report core_trial_data's
+# recorded Type of Experiment mix in full.
+_CORE_TRIAL_SOURCE_NAME = "core_trial_data"
+_CORE_TRIAL_EXPERIMENT_TYPE_LABEL = "experiment_type"
+_CORE_TRIAL_FARMERS_PRACTICE_LEVEL = "Farmer's Practice"
+_FARMERS_PRACTICE_SUFFIX = "_fp"
+# The source whose farmer's-practice series adopts core_trial_data's recorded
+# Farmer's Practice rows. Named rather than inferred: a second source binding an
+# arm would get its own series, and the 12 rows would still belong to this one.
+_FARMERS_PRACTICE_PARENT_SOURCE = "ph_combined_nopt_rcm"
+_FARMERS_PRACTICE_SERIES_NAME = (
+    _FARMERS_PRACTICE_PARENT_SOURCE + _FARMERS_PRACTICE_SUFFIX
+)
+# The two treatments this figure then does not draw. Named in the caption so
+# that one series over a source recording four treatments cannot read as the
+# whole record.
+_UNDRAWN_ARM_NOTE = (
+    "Its NOPT-N binding (70-150 kg N ha⁻¹, the recommended rate the rest of "
+    "the bundle profiles) and its RCM-N treatment (37-189 kg N ha⁻¹) are not "
+    "drawn here."
+)
+
+
+@dataclass(frozen=True)
+class _FarmersPracticeSeries:
+    """The farmer's-practice series and an account of what composes it.
+
+    Every count travels with the frame so the caption can state the composition
+    rather than let a substitution and a reassignment pass as if the series were
+    the source's own governed rows.
+    """
+
+    observations: pd.DataFrame
+    relabeled_rows: int
+    arm_rows: int
+    replaced_source_names: tuple[str, ...]
+
+    @property
+    def exists(self) -> bool:
+        return self.relabeled_rows > 0 or self.arm_rows > 0
+
+
+def _core_trial_farmers_practice_index(
+    loaded: LoadedSources, observations: pd.DataFrame
+) -> pd.Index:
+    """Rows of ``observations`` that core_trial_data records as Farmer's Practice."""
+
+    empty = observations.index[:0]
+    core = next(
+        (
+            source
+            for source in loaded.sources
+            if source.source_name == _CORE_TRIAL_SOURCE_NAME
+        ),
+        None,
+    )
+    is_core = observations["source_name"] == _CORE_TRIAL_SOURCE_NAME
+    if core is None or not is_core.any():
+        return empty
+    binding = next(
+        (
+            candidate
+            for candidate in core.binding.context
+            if candidate.label == _CORE_TRIAL_EXPERIMENT_TYPE_LABEL
+        ),
+        None,
+    )
+    if binding is None:
+        return empty
+
+    core_index = observations.index[is_core]
+    lookup = pd.Series(
+        np.arange(core.data_row_count), index=pd.Index(core.source_row_numbers)
+    )
+    positions = (
+        observations.loc[core_index, "source_row_number"]
+        .map(lookup)
+        .to_numpy(dtype=np.int64)
+    )
+    levels = (
+        core.text[binding.raw_column_id]
+        .astype(str)
+        .str.strip()
+        .to_numpy()[positions]
+    )
+    return core_index[levels == _CORE_TRIAL_FARMERS_PRACTICE_LEVEL]
+
+
+def _farmers_practice_arm(
+    source: ProfiledSource, *, zero_n_tolerance_kg_ha: float
+) -> pd.DataFrame | None:
+    """One source's farmer's-practice arm, read from its sibling column pair.
+
+    Held to the same admission rule as every other observation — a finite rate
+    and a finite yield — so the series counts rows the way the recorded series
+    do. Returns ``None`` when the source binds no such arm, which is the normal
+    case: only a dataset that crosswalks a farmer's treatment has one.
+    """
+
+    binding = source.binding
+    rate_binding = binding.farmers_practice_n_rate
+    yield_binding = binding.farmers_practice_yield_t_ha
+    if rate_binding is None or yield_binding is None:
+        return None
+
+    n_rate = source.numeric_series(rate_binding).astype(float)
+    yield_t_ha = source.numeric_series(yield_binding).astype(float)
+    if binding.year is not None:
+        year = source.numeric_series(binding.year).astype(float)
+    else:
+        year = pd.Series(np.nan, index=n_rate.index, dtype=float)
+    series_name = source.source_name + _FARMERS_PRACTICE_SUFFIX
+    frame = pd.DataFrame(
+        {
+            "source_name": series_name,
+            "data_classification": source.data_classification,
+            "source_row_number": list(source.source_row_numbers),
+            "study_key": "",
+            "trial_key": "",
+            "series_key": f"{series_name}::{source.source_name}",
+            "year": year,
+            "n_rate_kg_ha": n_rate,
+            "yield_t_ha": yield_t_ha,
+            "yield_unit_lineage": NATIVE_T_HA,
+            "is_zero_n": n_rate.abs() <= zero_n_tolerance_kg_ha,
+            # A farmer-chosen rate is not a rung of a resolved ladder.
+            "is_series_resolved": False,
+        },
+        index=n_rate.index,
+    )
+    retained = frame.loc[frame["n_rate_kg_ha"].notna() & frame["yield_t_ha"].notna()]
+    return retained.loc[:, list(OBSERVATION_COLUMNS)].reset_index(drop=True)
+
+
+def _farmers_practice_series(
+    loaded: LoadedSources,
+    observations: pd.DataFrame,
+    config: DescriptiveStatisticsConfig,
+) -> _FarmersPracticeSeries:
+    """Draw every recorded farmer's-practice rate, one series per dataset."""
+
+    arms: list[pd.DataFrame] = []
+    replaced: list[str] = []
+    for source in loaded.sources:
+        arm = _farmers_practice_arm(
+            source, zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha
+        )
+        if arm is None or arm.empty:
+            continue
+        arms.append(arm)
+        replaced.append(source.source_name)
+
+    relabeled = _core_trial_farmers_practice_index(loaded, observations)
+    if _FARMERS_PRACTICE_PARENT_SOURCE not in replaced:
+        # Nothing to adopt the rows; leave them where they were recorded rather
+        # than open a series named for an arm this run did not read.
+        relabeled = observations.index[:0]
+
+    regrouped = observations
+    if len(relabeled) or replaced:
+        regrouped = observations.copy()
+    if len(relabeled):
+        regrouped.loc[relabeled, "source_name"] = _FARMERS_PRACTICE_SERIES_NAME
+    if replaced:
+        # The arm stands in for its source; keeping both would draw one field
+        # twice, under its recommended rate and under the rate it was given.
+        regrouped = regrouped.loc[~regrouped["source_name"].isin(replaced)]
+        regrouped = pd.concat([regrouped, *arms], ignore_index=True)
+
+    return _FarmersPracticeSeries(
+        observations=regrouped,
+        relabeled_rows=int(len(relabeled)),
+        arm_rows=int(sum(len(arm) for arm in arms)),
+        replaced_source_names=tuple(replaced),
+    )
+
+
 def _share_histogram(
     axis: plt.Axes,
     values: np.ndarray,
@@ -1050,8 +1252,9 @@ def _share_histogram(
     edges: np.ndarray,
     colour: str,
     label: str,
+    linestyle: str = "-",
 ) -> None:
-    """Within-dataset share histogram; counts differ ~19-fold between sources."""
+    """Within-series share histogram; counts differ ~20-fold between sources."""
 
     weights = np.full(values.size, 100.0 / values.size)
     axis.hist(
@@ -1059,14 +1262,15 @@ def _share_histogram(
         bins=edges,
         weights=weights,
         histtype="stepfilled",
-        alpha=0.35,
+        alpha=0.28,
         color=colour,
         edgecolor="none",
         label=label,
     )
-    # Three translucent fills stacked over each other hide whichever dataset is
+    # Four translucent fills stacked over each other hide whichever series is
     # drawn first; an opaque outline keeps every shape readable. Unlabeled, so
-    # it adds no second legend entry.
+    # it adds no second legend entry. ``linestyle`` marks the derived series,
+    # which is the one distinction the fills alone cannot carry.
     axis.hist(
         values,
         bins=edges,
@@ -1074,6 +1278,7 @@ def _share_histogram(
         histtype="step",
         color=colour,
         linewidth=1.7,
+        linestyle=linestyle,
     )
 
 
@@ -1086,20 +1291,24 @@ def _plot_nitrogen_rate_distribution(
     observations = _observations(loaded, config)
     if observations.empty:
         return None
-    names = _ordered_sources(loaded, observations["source_name"])
+    farmers_practice = _farmers_practice_series(loaded, observations, config)
+    observations = farmers_practice.observations
+    names = _nitrogen_series_order(loaded, observations, farmers_practice)
     if not names:
         return None
 
     rates = observations["n_rate_kg_ha"].to_numpy(dtype=float)
     width = float(config.nitrogen_bin_width_kg_ha)
     lower = float(np.floor(np.nanmin(rates) / width) * width)
-    upper = float(np.ceil(np.nanmax(rates) / width) * width) + width
+    # No trailing empty bin: numpy closes the last interval on the right, so a
+    # maximum sitting exactly on the top edge is already counted.
+    upper = float(np.ceil(np.nanmax(rates) / width) * width)
     edges = np.arange(lower, upper + width / 2.0, width)
     if edges.size < 2:
         return None
 
-    colours = _source_colours(loaded)
-    figure, axis = _figure(config)
+    colours = _nitrogen_series_colours(loaded, farmers_practice)
+    figure, axis = _figure(config, height_inches=7.0)
     for name in names:
         values = observations.loc[
             observations["source_name"] == name, "n_rate_kg_ha"
@@ -1116,6 +1325,9 @@ def _plot_nitrogen_rate_distribution(
                 f"{_legend_label(name)} — "
                 f"{values.size:,} observations, {distinct} distinct rates"
             ),
+            # The one distinction the fills cannot carry: this series is read
+            # from an arm the rest of the bundle does not profile.
+            linestyle="--" if name.endswith(_FARMERS_PRACTICE_SUFFIX) else "-",
         )
     axis.set(
         title=(
@@ -1123,17 +1335,99 @@ def _plot_nitrogen_rate_distribution(
             f"({width:g} kg N ha⁻¹ bins)"
         ),
         xlabel="Inorganic N rate (kg N ha⁻¹)",
-        ylabel="Share of the dataset's harmonized observations (%)",
+        ylabel="Share of the dataset's recorded observations (%)",
     )
     axis.legend(fontsize=8)
     axis.grid(alpha=0.2)
-    _footnote(
-        figure,
+    _footnote(figure, _nitrogen_rate_distribution_caption(farmers_practice))
+    return figure
+
+
+def _nitrogen_series_order(
+    loaded: LoadedSources,
+    observations: pd.DataFrame,
+    farmers_practice: _FarmersPracticeSeries,
+) -> tuple[str, ...]:
+    """Profiling order, with a farmer's-practice series in its source's place.
+
+    The derived names are placed by hand rather than through
+    ``_ordered_sources``, which walks ``loaded.sources``: a synthetic entry
+    there would shift every other figure's palette index and offer the other
+    builders a source with no rows behind it.
+    """
+
+    present = set(observations["source_name"])
+    ordered = []
+    for source in loaded.sources:
+        name = source.source_name
+        if name in farmers_practice.replaced_source_names:
+            name += _FARMERS_PRACTICE_SUFFIX
+        if name in present:
+            ordered.append(name)
+    return tuple(ordered)
+
+
+def _nitrogen_series_colours(
+    loaded: LoadedSources, farmers_practice: _FarmersPracticeSeries
+) -> dict[str, str]:
+    """Source colours, with each arm keeping the colour of the source it reads.
+
+    A dataset holds one colour across every figure of a run, and the arm is that
+    dataset here — recolouring it would read as a fourth dataset appearing in
+    this panel alone.
+    """
+
+    colours = _source_colours(loaded)
+    return {
+        **colours,
+        **{
+            name + _FARMERS_PRACTICE_SUFFIX: colours[name]
+            for name in farmers_practice.replaced_source_names
+            if name in colours
+        },
+    }
+
+
+def _nitrogen_rate_distribution_caption(
+    farmers_practice: _FarmersPracticeSeries,
+) -> str:
+    """The caption, carrying the composition of the derived series in full.
+
+    A series read from an arm is only readable if the reader is told which arm
+    it is, which rows were moved into it, and which recorded treatments of the
+    same source the panel therefore does not show.
+    """
+
+    caption = (
         "Bars are within-dataset shares because the observation counts differ "
         "by more than an order of magnitude. The rates are discrete "
-        "experimental ladders, not a sample from a continuous distribution.",
+        "experimental ladders, not a sample from a continuous distribution."
     )
-    return figure
+    if not farmers_practice.exists:
+        return caption
+
+    if farmers_practice.arm_rows:
+        caption += (
+            f" The dashed {_FARMERS_PRACTICE_SERIES_NAME} series is "
+            f"{_FARMERS_PRACTICE_PARENT_SOURCE} read through its recorded "
+            "farmer's-practice arm — the rate the farmer applied "
+            f"({farmers_practice.arm_rows:,} records carrying both that rate "
+            "and its measured yield), which is farmer-chosen and so is not a "
+            f"ladder at all. {_UNDRAWN_ARM_NOTE}"
+        )
+    if farmers_practice.relabeled_rows:
+        caption += (
+            f" {farmers_practice.relabeled_rows} core_trial_data row"
+            f"{'s' if farmers_practice.relabeled_rows != 1 else ''} recorded as "
+            "Farmer's Practice (Type of Experiment/Study/Trial) are drawn in "
+            "that series rather than as rungs of a literature-extracted ladder."
+        )
+    caption += (
+        " nitrogen_rate_profile.csv and context_composition.csv are unaffected: "
+        "they report every source's recorded rows through its governed rate "
+        "binding, so their per-source counts are the recorded ones."
+    )
+    return caption
 
 
 @dataclass(frozen=True)
@@ -1419,7 +1713,7 @@ def _plot_one_yield_distribution(
     axis.set_ylim(*shared.ylim)
     axis.set(
         title=(
-            f"Recorded grain-yield distribution — {source_name} "
+            f"Recorded grain-yield distribution — {_legend_label(source_name)} "
             "(t ha⁻¹ basis)"
         ),
         xlabel="Grain yield (t ha⁻¹)",
@@ -1787,12 +2081,12 @@ def _plot_yield_versus_nitrogen_trajectories(
     if lineless:
         note += (
             " That is every series of "
-            + ", ".join(lineless)
+            + ", ".join(_legend_label(name) for name in lineless)
             + ": each record holds one N rate, and its zero-N arm is a paired "
             "column profiled in zero_nitrogen_checks, not a second row."
         )
     spanning = [
-        f"{trajectories.multi_year[name]:,} in {name}"
+        f"{trajectories.multi_year[name]:,} in {_legend_label(name)}"
         for name in names
         if trajectories.multi_year.get(name, 0)
     ]
@@ -2157,7 +2451,7 @@ def _undrawn_source_note(
                 "records no level at least "
                 f"{config.minimum_level_count} times"
             )
-        fragments.append(f"{source.source_name} ({reason})")
+        fragments.append(f"{_legend_label(source.source_name)} ({reason})")
     if not fragments:
         return ""
     return "No bar is drawn for " + "; ".join(fragments) + "."
@@ -2246,7 +2540,8 @@ def _draw_stacked_composition(
         list(tick_labels)
         if tick_labels is not None
         else [
-            f"{bar.context_title}\n{bar.source_name} ({bar.classification})"
+            f"{bar.context_title}\n{_tick_label(bar.source_name)} "
+            f"({bar.classification})"
             for bar in bars
         ],
         fontsize=8,
@@ -2516,7 +2811,7 @@ def _plot_one_context_composition(
         bars=bars,
         config=config,
         title=(
-            f"Context composition of {source.source_name} "
+            f"Context composition of {_legend_label(source.source_name)} "
             f"({source.data_classification}) — "
             f"{observations:,.0f} harmonized observations"
         ),
@@ -2675,7 +2970,7 @@ def _draw_variety_panel(
     axis.set_xlim(0.0, limit)
     axis.set_ylim(len(entries) - 0.4, -0.6)
     axis.set_title(
-        f"{bar.source_name} ({bar.classification})\n"
+        f"{_legend_label(bar.source_name)} ({bar.classification})\n"
         f"{bar.denominator:,.0f} harmonized observations",
         fontsize=9,
     )
@@ -3020,7 +3315,7 @@ def _plot_nitrogen_ladder_geometry(
     axis.legend(fontsize=8, loc="upper right")
     axis.grid(axis="y", alpha=0.2)
     key_note = "; ".join(
-        f"{source.source_name} = "
+        f"{_legend_label(source.source_name)} = "
         + (
             " | ".join(binding.header for binding in source.binding.series)
             or "no series key declared"
