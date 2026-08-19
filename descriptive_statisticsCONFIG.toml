@@ -220,9 +220,23 @@ series = [
 ]
 
 [agronomic.ph_combined_nopt_rcm]
+# The registered schema evidence for this source (sheet_2_notes.csv) names four
+# N treatments per record, each in its own column pair:
+#   FP-N     fp_actual_n_kg_per_ha (58)  / fp_measured_grainyield_dry (103)
+#   RCM-N    rcm_actual_n_kg_per_ha (85) / rcm_measured_grainyield_dry (104)
+#   NOPT-N   nrate (140)                 / full_fert_yield (148)
+#   NOPT-0N  0                           / n0_yield (149)
+# `nitrogen_rate` binds the NOPT-N arm because that is the designed rate the
+# rest of the recipe profiles. The FP-N arm is bound below so the recorded-rate
+# figures can show it; it is the farmer-chosen rate, spans 5-515 kg N ha-1, and
+# is the reason this source's recorded rates are not the 70-150 band alone.
+# RCM-N is deliberately left unbound: it restates the recommended rate the NOPT
+# arm already represents, and a fourth translucent series would be unreadable.
 nitrogen_rate = { position = 140, header = "nrate" }
 yield_t_ha = { position = 148, header = "full_fert_yield" }
 zero_n_yield_t_ha = { position = 149, header = "n0_yield" }
+farmers_practice_n_rate = { position = 58, header = "fp_actual_n_kg_per_ha" }
+farmers_practice_yield_t_ha = { position = 103, header = "fp_measured_grainyield_dry" }
 year = { position = 11, header = "year" }
 context = [
     { position = 13, header = "water_regime", label = "water_regime" },
