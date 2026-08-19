@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 
 from n_response_curve.analysis.values import finite_number
 from n_response_curve.data.config import SUPPORTED_SOURCE_DATASET_OVERLAY_NAMES
+from .source_display_names import display_source_name
 
 _CORE_TRIAL_SOURCE_NAME = "core_trial_data"
 _LTCCE_SOURCE_NAME = "ltcce"
@@ -829,7 +830,7 @@ def _adaptive_style(observation_count: int, trajectory_count: int) -> tuple[floa
     """Scale marker size / marker alpha / line alpha down as data density grows."""
 
     marker_size = max(4.0, min(24.0, 6000.0 / max(observation_count, 1)))
-    marker_alpha = max(0.15, min(0.85, 300.0 / max(observation_count, 1)))
+    marker_alpha = max(0.25, min(0.85, 300.0 / max(observation_count, 1)))
     line_alpha = max(0.05, min(0.35, 20.0 / max(trajectory_count, 1)))
     return marker_size, marker_alpha, line_alpha
 
@@ -888,18 +889,18 @@ def create_source_dataset_overlay_figure(overlay: SourceDatasetOverlay):
 
     if overlay.source_name == _COMBINED_SOURCE_NAME:
         plot_description_lines = (
-            f"source={overlay.source_name} — linked-arm trajectories",
+            f"source={display_source_name(overlay.source_name)} — linked-arm trajectories",
             "comparability is not assumed; connecting lines are visual aids",
             "no pooled curve or fit",
         )
     elif overlay.source_name == _CORE_TRIAL_SOURCE_NAME:
         plot_description_lines = (
-            f"source={overlay.source_name} — independent source observations",
+            f"source={display_source_name(overlay.source_name)} — independent source observations",
             "response-series identity is not inferred from the raw CSV; no connecting lines",
         )
     else:
         plot_description_lines = (
-            f"source={overlay.source_name} — replicate-specific trajectories",
+            f"source={display_source_name(overlay.source_name)} — replicate-specific trajectories",
             "connecting lines are visual aids; no pooled curve or fit",
         )
 
