@@ -123,11 +123,15 @@ _LEGACY_FIGURE_LAYOUTS = frozenset(
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Hash a file through the shared reporting helper.
+
+    Keep the import lazy because this file is also a directly executable script;
+    :func:`main` adds ``modules/`` to ``sys.path`` before the helper is called.
+    """
+
+    from n_response_curve.reporting.source_config_spec import sha256_file
+
+    return sha256_file(path)
 
 
 def _image_metadata(path: Path) -> dict[str, Any]:
