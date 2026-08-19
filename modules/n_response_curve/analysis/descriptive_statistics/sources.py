@@ -103,6 +103,12 @@ class AgronomicBinding:
     yield_t_ha: ColumnBinding
     yield_kg_ha: ColumnBinding | None
     zero_n_yield_t_ha: ColumnBinding | None
+    # A second recorded N treatment carried in sibling columns rather than in
+    # rows, exactly as ``zero_n_yield_t_ha`` is. Bound so a figure that profiles
+    # recorded rates can say what the record actually holds; the harmonized
+    # observation frame still expands neither arm into a row.
+    farmers_practice_n_rate: ColumnBinding | None
+    farmers_practice_yield_t_ha: ColumnBinding | None
     year: ColumnBinding | None
     context: tuple[ColumnBinding, ...]
     grouping: tuple[ColumnBinding, ...]
@@ -371,6 +377,12 @@ def _resolve_agronomic_binding(
         yield_kg_ha=_resolve_binding(ingested, raw, "yield_kg_ha", required=False),
         zero_n_yield_t_ha=_resolve_binding(
             ingested, raw, "zero_n_yield_t_ha", required=False
+        ),
+        farmers_practice_n_rate=_resolve_binding(
+            ingested, raw, "farmers_practice_n_rate", required=False
+        ),
+        farmers_practice_yield_t_ha=_resolve_binding(
+            ingested, raw, "farmers_practice_yield_t_ha", required=False
         ),
         year=_resolve_binding(ingested, raw, "year", required=False),
         context=tuple(
