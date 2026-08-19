@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from n_response_curve.analysis.models import ModelAttempt
 from n_response_curve.analysis.values import finite_number
 from n_response_curve.contracts import SUPPORTED_FIGURE_FORMATS
+from n_response_curve.data.curate import _KNOWN_TREATMENT_LOOKUP_CLASSES
 
 
 _SAFE_FILENAME_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -101,6 +102,12 @@ def _observations(records: Iterable[Mapping[str, Any]], response_series_uid: str
     return tuple(sorted(observations, key=lambda row: (row["n_rate_kg_ha"], row["record_uid"])))
 
 
+_TREATMENT_CLASS_COLORS = {
+    category: f"C{index}"
+    for index, category in enumerate(sorted(_KNOWN_TREATMENT_LOOKUP_CLASSES))
+}
+
+
 def _plot_observations(axes: Any, observations: Sequence[Mapping[str, Any]]) -> None:
     categories = sorted({str(row["treatment_text_class"]) for row in observations})
     for category in categories:
@@ -114,6 +121,7 @@ def _plot_observations(axes: Any, observations: Sequence[Mapping[str, Any]]) -> 
             [row["n_rate_kg_ha"] for row in category_rows],
             [row["yield_t_ha"] for row in category_rows],
             label=observation_label,
+            color=_TREATMENT_CLASS_COLORS[category],
             zorder=3,
         )
 
@@ -284,8 +292,14 @@ def create_source_series_overlay_figure(
     source_name: str,
     *,
     response_series_uids: Sequence[str],
+    display_name: str | None = None,
 ):
-    """Overlay governed observed series without pooling or cross-series inference."""
+    """Overlay governed observed series without pooling or cross-series inference.
+
+    ``display_name`` renames the source only in the drawn title. It defaults to
+    ``source_name``, so release-path callers that omit it render exactly as
+    before; ``source_name`` remains the value that selects rows.
+    """
 
     if not isinstance(source_name, str) or not source_name.strip():
         raise ValueError("A source-series overlay requires a nonempty source name")
@@ -360,7 +374,7 @@ def create_source_series_overlay_figure(
     _finalize_axes(
         axes,
         (
-            f"source={source_name}",
+            f"source={display_name or source_name}",
             "observed-series overlay (descriptive; no pooled curve or fit)",
             f"series={len(selected_series)}; observations={len(combined_observations)}",
             f"N range={min(n_values):g}-{max(n_values):g} kg/ha",
