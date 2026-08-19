@@ -71,6 +71,7 @@ from .grain_yield_response import (  # noqa: E402
     exchange_directories,
     _factor_label,
 )
+from .source_display_names import display_source_name  # noqa: E402
 
 
 SCHEMA_VERSION = "response-curve-modifier-by-dataset-v3"
@@ -103,10 +104,12 @@ _DATASET_COLORS: Mapping[str, str] = {
     POOLED_KEY: "#6b5b95",
 }
 
+# Rendered text only. Every table column, filename and manifest entry keeps
+# the registered source_name; see reporting/source_display_names.py.
 _DATASET_LABELS: Mapping[str, str] = {
-    "core_trial_data": "core_trial_data",
-    "ltcce": "ltcce",
-    "ph_combined_nopt_rcm": "ph_combined_nopt_rcm",
+    "core_trial_data": display_source_name("core_trial_data"),
+    "ltcce": display_source_name("ltcce"),
+    "ph_combined_nopt_rcm": display_source_name("ph_combined_nopt_rcm"),
     POOLED_KEY: "all three pooled",
 }
 
