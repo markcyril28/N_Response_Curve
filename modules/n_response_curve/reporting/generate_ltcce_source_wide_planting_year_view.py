@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import argparse
 import collections
-import hashlib
 import json
 import os
 import shutil
 import textwrap
-import tomllib
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -35,6 +33,10 @@ from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
     TrajectoryContext,
     read_ltcce_contexts,
     subset_overlay,
+)
+from n_response_curve.reporting.source_config_spec import (  # noqa: E402
+    sha256_file as _sha256,
+    load_source_spec as _load_source_spec_for,
 )
 from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
     _adaptive_style,
@@ -81,31 +83,8 @@ class DecadeProfile:
     year_range: tuple[int, int]
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _load_source_spec(config_path: Path) -> tuple[Path, str]:
-    with Path(config_path).open("rb") as handle:
-        config = tomllib.load(handle)
-    sources = config.get("sources")
-    section = sources.get(SOURCE_NAME) if isinstance(sources, dict) else None
-    if not isinstance(section, dict):
-        raise ValueError(f"The configuration is missing [{SOURCE_NAME}] under [sources]")
-    data_path = section.get("data_path")
-    encoding = section.get("encoding")
-    if not isinstance(data_path, str) or not data_path.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].data_path must be a non-empty string")
-    if not isinstance(encoding, str) or not encoding.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].encoding must be a non-empty string")
-    source_path = Path(data_path)
-    if not source_path.is_absolute():
-        source_path = Path(config_path).resolve().parent / source_path
-    return source_path.resolve(), encoding
+    return _load_source_spec_for(config_path, SOURCE_NAME)
 
 
 def _normalize_season(value: str) -> str:
