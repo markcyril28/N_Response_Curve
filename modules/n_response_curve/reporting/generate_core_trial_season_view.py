@@ -31,15 +31,22 @@ if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
 from n_response_curve.analysis.values import finite_number  # noqa: E402
+from n_response_curve.reporting.directory_publication import (  # noqa: E402
+    plain_absolute_path as _plain_absolute_path,
+    publication_lock as _core_overlay_publication_lock,
+    recover_interrupted_directory_publication as _recover_interrupted_directory_publication,  # noqa: E501
+)
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically as _save_governed_figure,
+)
 from n_response_curve.reporting.generate_raw_dataset_overlays import (  # noqa: E402
     DEFAULT_YIELD_THRESHOLD_T_HA,
-    _core_overlay_publication_lock,
     _load_governed_core_inputs,
-    _plain_absolute_path,
-    _recover_interrupted_directory_publication,
-    _save_governed_figure,
 )
 from n_response_curve.reporting.plots import _plot_observations  # noqa: E402
+from n_response_curve.reporting.source_display_names import (  # noqa: E402
+    display_source_name,
+)
 
 SOURCE_NAME = "core_trial_data"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
@@ -313,8 +320,8 @@ def _build_comparison_figure(strata: Mapping[str, SeasonStratum]) -> Any:
             stratum.observation_count for stratum in strata.values()
         )
         figure.suptitle(
-            "source=core_trial_data — governed observed series grouped by recorded "
-            "planting season\n"
+            f"source={display_source_name(SOURCE_NAME)} — governed observed series "
+            "grouped by recorded planting season\n"
             f"series={total_series}; observations={total_observations}; panels share "
             "both axes\n"
             "recorded strata only; no statistical clustering, pooled curve, or fit",
@@ -347,7 +354,7 @@ def _write_individual(stratum: SeasonStratum, destination: Path) -> None:
         axes.set_title(
             "\n".join(
                 (
-                    f"source={SOURCE_NAME}",
+                    f"source={display_source_name(SOURCE_NAME)}",
                     axes.get_title(),
                     "complete governed response series retained within the stratum",
                     "descriptive observed-series overlay; no pooled curve or fit",
