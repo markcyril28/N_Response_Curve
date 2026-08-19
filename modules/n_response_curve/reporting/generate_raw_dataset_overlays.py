@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import re
 import shutil
 import sys
@@ -41,6 +40,19 @@ from n_response_curve.reporting.generate_custom_overlays import (  # noqa: E402
 )
 from n_response_curve.reporting.plots import (  # noqa: E402
     create_source_series_overlay_figure,
+)
+from n_response_curve.reporting.source_display_names import (  # noqa: E402
+    display_source_name,
+)
+from n_response_curve.reporting.directory_publication import (  # noqa: E402
+    copy_preserved_plain_tree as _copy_preserved_plain_tree,
+    plain_absolute_path as _plain_absolute_path,
+    promote_staged_directory as _promote_staged_directory,
+    publication_lock as _core_overlay_publication_lock,
+    recover_interrupted_directory_publication as _recover_interrupted_directory_publication,  # noqa: E501
+)
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically,
 )
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
@@ -77,6 +89,17 @@ class GovernedCoreOverlayInputs:
     selection: YieldThresholdSelection
 
 
+def _preserve_cluster_tree(destination_dir: Path, staging_dir: Path) -> None:
+    preserved = destination_dir / _PRESERVED_SUBDIRECTORY
+    if preserved.is_symlink():
+        raise RuntimeError(f"Preserved cluster tree is a symlink: {preserved}")
+    if not preserved.exists():
+        return
+    if not preserved.is_dir():
+        raise RuntimeError(f"Preserved cluster tree is not a directory: {preserved}")
+    _copy_preserved_plain_tree(preserved, staging_dir / _PRESERVED_SUBDIRECTORY)
+
+
 def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -90,6 +113,7 @@ def _load_governed_core_inputs(
     config_path: Path,
     *,
     yield_threshold_t_ha: float,
+    require_yield_selection: bool = True,
 ) -> GovernedCoreOverlayInputs:
     """Load the exact governed core-series membership used by configured overlays."""
 
@@ -190,7 +214,7 @@ def _load_governed_core_inputs(
         observations_by_series,
         yield_threshold_t_ha=yield_threshold_t_ha,
     )
-    if not selection.response_series_uids:
+    if require_yield_selection and not selection.response_series_uids:
         raise RuntimeError(
             f"No governed core response series has observed yield > {yield_threshold_t_ha:g} t/ha"
         )
@@ -202,17 +226,12 @@ def _load_governed_core_inputs(
 
 
 def _save_governed_figure(figure: Any, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        figure.savefig(temporary, format="jpeg", dpi=150)
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+    """Write one governed figure through the shared atomic save."""
+
+    save_figure_atomically(figure, destination)
 
 
-def _write_governed_core_figures(
+def _write_governed_core_figures_unlocked(
     inputs: GovernedCoreOverlayInputs,
     *,
     source_wide_path: Path,
@@ -242,6 +261,7 @@ def _write_governed_core_figures(
             inputs.records,
             "core_trial_data",
             response_series_uids=inputs.response_series_uids,
+            display_name=display_source_name("core_trial_data"),
         )
         try:
             _save_governed_figure(source_figure, staging_dir / source_wide_path.name)
@@ -252,13 +272,14 @@ def _write_governed_core_figures(
             inputs.records,
             "core_trial_data",
             response_series_uids=inputs.selection.response_series_uids,
+            display_name=display_source_name("core_trial_data"),
         )
         n_range = inputs.selection.n_rate_range_kg_ha
         assert n_range is not None
         selected_axes.set_title(
             "\n".join(
                 (
-                    "source=core_trial_data",
+                    f"source={display_source_name('core_trial_data')}",
                     f"series with any observed grain yield > {yield_threshold_t_ha:g} t/ha",
                     "full series trajectories; descriptive overlay (no pooled curve or fit)",
                     f"series={len(inputs.selection.response_series_uids)}; "
@@ -277,32 +298,48 @@ def _write_governed_core_figures(
         # Same reason the LTCCE branch below carries it: this destination is
         # replaced as a whole snapshot, so the separately generated cluster
         # views beneath it have to be copied into staging or the replacement
-        # silently discards them. `clusters/by_planting_year/` is owned by
-        # `generate_core_trial_planting_year_view.py`, not by this generator.
-        preserved = destination_dir / _PRESERVED_SUBDIRECTORY
-        if preserved.is_dir() and not preserved.is_symlink():
-            shutil.copytree(preserved, staging_dir / _PRESERVED_SUBDIRECTORY)
+        # silently discards them. The core `clusters/` subtree is owned by the
+        # planting-year and recorded-season companion generators, not by this
+        # generator.
+        _preserve_cluster_tree(destination_dir, staging_dir)
 
-        if destination_dir.exists():
-            if not destination_dir.is_dir() or destination_dir.is_symlink():
-                raise RuntimeError("Governed core overlay destination is not a plain directory")
-            os.replace(destination_dir, backup_dir)
-        try:
-            os.replace(staging_dir, destination_dir)
-        except Exception:
-            if backup_dir.exists() and not destination_dir.exists():
-                os.replace(backup_dir, destination_dir)
-            raise
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
+        _promote_staged_directory(staging_dir, destination_dir, backup_dir)
     finally:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
-        if backup_dir.exists() and not destination_dir.exists():
-            os.replace(backup_dir, destination_dir)
 
 
-def _write_ltcce_figures(
+def _write_governed_core_figures(
+    inputs: GovernedCoreOverlayInputs,
+    *,
+    source_wide_path: Path,
+    selected_path: Path,
+    yield_threshold_t_ha: float,
+) -> None:
+    """Write the governed pair while excluding nested cluster publishers."""
+
+    source_wide_path = _plain_absolute_path(
+        source_wide_path,
+        label="Governed core source-wide output",
+    )
+    selected_path = _plain_absolute_path(
+        selected_path,
+        label="Governed core selected-series output",
+    )
+    destination = source_wide_path.parent
+    if selected_path.parent != destination:
+        raise ValueError("Governed core overlay outputs must share one directory")
+    with _core_overlay_publication_lock(destination):
+        _recover_interrupted_directory_publication(destination)
+        _write_governed_core_figures_unlocked(
+            inputs,
+            source_wide_path=source_wide_path,
+            selected_path=selected_path,
+            yield_threshold_t_ha=yield_threshold_t_ha,
+        )
+
+
+def _write_ltcce_figures_unlocked(
     overlay: SourceDatasetOverlay,
     selected: SourceDatasetOverlay,
     zero_n_strata: SourceDatasetZeroNStrata,
@@ -382,26 +419,44 @@ def _write_ltcce_figures(
         # generated cluster views beneath it have to be carried across or they
         # would be discarded. The organized `by_trajectory` and `by_variety`
         # products are owned by their dedicated generators, not by this one.
-        preserved = destination_dir / _PRESERVED_SUBDIRECTORY
-        if preserved.is_dir() and not preserved.is_symlink():
-            shutil.copytree(preserved, staging_dir / _PRESERVED_SUBDIRECTORY)
+        _preserve_cluster_tree(destination_dir, staging_dir)
 
-        if destination_dir.exists():
-            os.replace(destination_dir, backup_dir)
-        try:
-            os.replace(staging_dir, destination_dir)
-        except Exception:
-            if backup_dir.exists() and not destination_dir.exists():
-                os.replace(backup_dir, destination_dir)
-            raise
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
+        _promote_staged_directory(staging_dir, destination_dir, backup_dir)
     finally:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
-        if backup_dir.exists() and not destination_dir.exists():
-            os.replace(backup_dir, destination_dir)
     return len(outputs)
+
+
+def _write_ltcce_figures(
+    overlay: SourceDatasetOverlay,
+    selected: SourceDatasetOverlay,
+    zero_n_strata: SourceDatasetZeroNStrata,
+    *,
+    destination_dir: Path,
+    yield_threshold_t_ha: float,
+    zero_n_yield_threshold_t_ha: float,
+    n_rate_selected: SourceDatasetOverlay | None = None,
+    n_rate_threshold_kg_ha: float = DEFAULT_N_RATE_THRESHOLD_KG_HA,
+) -> int:
+    """Serialize recovery and publication of one complete LTCCE snapshot."""
+
+    destination_dir = _plain_absolute_path(
+        destination_dir,
+        label="LTCCE overlay publication destination",
+    )
+    with _core_overlay_publication_lock(destination_dir):
+        _recover_interrupted_directory_publication(destination_dir)
+        return _write_ltcce_figures_unlocked(
+            overlay,
+            selected,
+            zero_n_strata,
+            destination_dir=destination_dir,
+            yield_threshold_t_ha=yield_threshold_t_ha,
+            zero_n_yield_threshold_t_ha=zero_n_yield_threshold_t_ha,
+            n_rate_selected=n_rate_selected,
+            n_rate_threshold_kg_ha=n_rate_threshold_kg_ha,
+        )
 
 
 def _load_source_specs(config_path: Path) -> dict[str, tuple[Path, str]]:
