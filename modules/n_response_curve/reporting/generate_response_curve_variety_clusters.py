@@ -18,12 +18,10 @@ import collections
 import csv
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
 import sys
-import tomllib
 import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -35,6 +33,13 @@ MODULES_ROOT = PROJECT_ROOT / "modules"
 if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
+from n_response_curve.reporting.figure_axis_frames import (  # noqa: E402
+    padded_limits as _padded_limits,
+)
+from n_response_curve.reporting.source_config_spec import load_source_spec  # noqa: E402
+from n_response_curve.reporting.figure_output import (  # noqa: E402
+    save_figure_atomically as _save_figure,
+)
 from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
     RESPONSE_TYPE_FEATURES,
     format_season_shares,
@@ -67,52 +72,21 @@ _DISCLAIMER = (
     "exploratory diagnostic; variety is confounded with era, season, and N ladder; "
     "no curve is fitted"
 )
-_AXIS_PAD_FRACTION = 0.04
 
 
 def _load_source_spec(config_path: Path) -> tuple[Path, str]:
-    with config_path.open("rb") as handle:
-        config = tomllib.load(handle)
-    sources = config.get("sources")
-    if not isinstance(sources, dict):
-        raise ValueError("The configuration must contain a [sources] table")
-    source = sources.get(SOURCE_NAME)
-    if not isinstance(source, dict):
-        raise ValueError(f"The configuration is missing [sources.{SOURCE_NAME}]")
-    raw_path = source.get("data_path")
-    encoding = source.get("encoding")
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].data_path must be nonempty")
-    if not isinstance(encoding, str) or not encoding.strip():
-        raise ValueError(f"[sources.{SOURCE_NAME}].encoding must be nonempty")
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    return path, encoding
+    return load_source_spec(
+        config_path,
+        SOURCE_NAME,
+        relative_root=PROJECT_ROOT,
+        resolve_path=False,
+        missing_sources_message="The configuration must contain a [sources] table",
+        nonempty_requirement="nonempty",
+    )
 
 
-def _padded_limits(
-    value_range: tuple[float, float] | None,
-) -> tuple[float, float] | None:
-    if value_range is None:
-        return None
-    low, high = value_range
-    if not (math.isfinite(low) and math.isfinite(high)):
-        return None
-    span = high - low
-    pad = span * _AXIS_PAD_FRACTION if span > 0 else max(abs(high), 1.0) * 0.05
-    return low - pad, high + pad
 
 
-def _save_figure(figure: Any, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        figure.savefig(temporary, format="jpeg", dpi=150)
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _plot_overlay(
