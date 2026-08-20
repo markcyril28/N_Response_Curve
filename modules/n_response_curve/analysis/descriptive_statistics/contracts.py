@@ -72,15 +72,19 @@ class FigureSpec:
     #
     # It also files the figure: a single-dataset panel is written to a directory
     # named for its dataset, and the figures that draw every dataset stay at the
-    # root of their semantic group beside that group's tables. Filing on the same
-    # field that carries the
-    # classification means a dataset directory cannot end up holding a figure
-    # classified on some other dataset.
+    # root of their semantic group beside that group's tables. A distinct output
+    # directory name may be declared when the human-facing dataset name differs
+    # from its stable internal source key; classification still follows
+    # ``source_name``.
     source_name: str | None = None
+    output_directory_name: str | None = None
+    output_filename_stem: str | None = None
 
     def relative_path(self, extension: str) -> str:
-        directory = f"{self.source_name}/" if self.source_name else ""
-        return f"{self.group}/{directory}{self.name}.{extension}"
+        directory_name = self.output_directory_name or self.source_name
+        directory = f"{directory_name}/" if directory_name else ""
+        filename_stem = self.output_filename_stem or self.name
+        return f"{self.group}/{directory}{filename_stem}.{extension}"
 
 
 # --------------------------------------------------------------------------
@@ -486,20 +490,48 @@ FIGURE_SPECS: tuple[FigureSpec, ...] = (
     FigureSpec("column_fill_profile", "structure", "Column fill-rate profile per dataset"),
     FigureSpec("numeric_spread_overview", "numeric", "Standardized spread of key numeric columns"),
     FigureSpec("categorical_cardinality", "categorical", "Cardinality and entropy of categorical columns"),
-    FigureSpec("nitrogen_rate_distribution", "agronomic", "Inorganic N-rate distribution per dataset"),
+    FigureSpec(
+        "nitrogen_rate_distribution",
+        "agronomic",
+        "Inorganic N-rate distribution per dataset",
+    ),
+    FigureSpec(
+        "nitrogen_rate_distribution_with_separate_farmers_practice",
+        "agronomic",
+        "Inorganic N-rate distribution with separate Farmer's Practice bars",
+    ),
     FigureSpec("yield_distribution", "agronomic", "Grain-yield distribution per dataset"),
     # One single-dataset panel per profiled source, drawn on axes shared with
     # each other and with the combined figure above, so the three read as a set.
     FigureSpec(
         "yield_distribution_core_trial_data",
         "agronomic",
-        "Grain-yield distribution — core_trial_data",
+        "Grain-yield distribution — Literature Extracted Datasets",
         source_name="core_trial_data",
+        output_directory_name="literature_extracted_datasets",
+        output_filename_stem="yield_distribution_literature_extracted_datasets",
     ),
     FigureSpec(
         "yield_distribution_ph_combined_nopt_rcm",
         "agronomic",
-        "Grain-yield distribution — ph_combined_nopt_rcm",
+        "Grain-yield distribution — ph_combined_nopt_rcm (legacy NOPT-only alias)",
+        source_name="ph_combined_nopt_rcm",
+    ),
+    # The combined PH source records NOPT and Farmer's Practice yields in
+    # sibling columns on the same physical rows. Keep both treatment-arm views
+    # explicit in the artifact contract. The unqualified panel above remains a
+    # path-compatible alias for presentation material that predates these
+    # explicit names; it renders the without-Farmer's-Practice population.
+    FigureSpec(
+        "yield_distribution_ph_combined_nopt_rcm_without_farmers_practice",
+        "agronomic",
+        "Grain-yield distribution — ph_combined_nopt_rcm, NOPT arm without Farmer's Practice",
+        source_name="ph_combined_nopt_rcm",
+    ),
+    FigureSpec(
+        "yield_distribution_ph_combined_nopt_rcm_with_farmers_practice",
+        "agronomic",
+        "Grain-yield distribution — ph_combined_nopt_rcm, Farmer's Practice arm",
         source_name="ph_combined_nopt_rcm",
     ),
     FigureSpec(
@@ -539,13 +571,27 @@ FIGURE_SPECS: tuple[FigureSpec, ...] = (
     FigureSpec(
         "context_composition_core_trial_data",
         "agronomic",
-        "Context composition — core_trial_data",
+        "Context composition — Literature Extracted Datasets",
         source_name="core_trial_data",
+        output_directory_name="literature_extracted_datasets",
+        output_filename_stem="context_composition_literature_extracted_datasets",
     ),
     FigureSpec(
         "context_composition_ph_combined_nopt_rcm",
         "agronomic",
-        "Context composition — ph_combined_nopt_rcm",
+        "Context composition — ph_combined_nopt_rcm (legacy NOPT-only alias)",
+        source_name="ph_combined_nopt_rcm",
+    ),
+    FigureSpec(
+        "context_composition_ph_combined_nopt_rcm_without_farmers_practice",
+        "agronomic",
+        "Context composition — ph_combined_nopt_rcm, NOPT arm without Farmer's Practice",
+        source_name="ph_combined_nopt_rcm",
+    ),
+    FigureSpec(
+        "context_composition_ph_combined_nopt_rcm_with_farmers_practice",
+        "agronomic",
+        "Context composition — ph_combined_nopt_rcm, Farmer's Practice arm",
         source_name="ph_combined_nopt_rcm",
     ),
     FigureSpec(
@@ -583,6 +629,24 @@ for _spec in TABLE_SPECS:
 for _spec in FIGURE_SPECS:
     if _spec.group not in FIGURE_GROUPS:
         raise ProfileContractError(f"Figure {_spec.name!r} declares unknown group {_spec.group!r}")
+    if _spec.output_directory_name is not None:
+        directory = Path(_spec.output_directory_name)
+        if _spec.source_name is None:
+            raise ProfileContractError(
+                f"Figure {_spec.name!r} declares an output directory without a source"
+            )
+        if directory.is_absolute() or len(directory.parts) != 1 or directory.name in {"", ".", ".."}:
+            raise ProfileContractError(
+                f"Figure {_spec.name!r} declares an unsafe output directory: "
+                f"{_spec.output_directory_name!r}"
+            )
+    if _spec.output_filename_stem is not None:
+        filename = Path(_spec.output_filename_stem)
+        if filename.is_absolute() or len(filename.parts) != 1 or filename.name in {"", ".", ".."}:
+            raise ProfileContractError(
+                f"Figure {_spec.name!r} declares an unsafe output filename stem: "
+                f"{_spec.output_filename_stem!r}"
+            )
 
 
 def table_spec(name: str) -> TableSpec:
