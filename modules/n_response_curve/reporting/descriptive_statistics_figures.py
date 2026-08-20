@@ -41,6 +41,11 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 from ..analysis.descriptive_statistics.config import DescriptiveStatisticsConfig
+from ..analysis.descriptive_statistics.agronomic import (
+    APPLIED_N_BAND_CONTEXT,
+    YEAR_BAND_CONTEXT,
+    build_context_composition,
+)
 from ..analysis.descriptive_statistics.contracts import (
     FIGURE_SPECS,
     ProfileContractError,
@@ -69,6 +74,9 @@ _SOURCE_PALETTE: tuple[str, ...] = (
 )
 _NEUTRAL = "#9D9D9D"
 _WITHHELD_GREY = "#BFBFBF"
+_MISSING_GREY = "#C7C7C7"
+_RARE_GREY = "#858585"
+_MINIMUM_MISSING_LABELED_SHARE = 0.05
 
 def _shade_major(name: str, families: int) -> tuple[tuple[float, ...], ...]:
     """A 4x5 qualitative colormap reordered so neighbours differ in hue.
@@ -89,10 +97,10 @@ def _shade_major(name: str, families: int) -> tuple[tuple[float, ...], ...]:
 
 
 # Colour vocabulary for the levels of a categorical context field: tab20 without
-# its two greys, which are reserved for the withheld and pooled segments (a solid
-# grey level segment beside a hatched grey withheld segment invites reading a
-# recorded level as a disclosure control), then tab20b and tab20c — the latter
-# without its fourth family, which is also grey.
+# its two greys, which are reserved for missing, rare, and pooled residual
+# segments. A grey recorded-level segment beside those residuals would invite
+# reading an ordinary category as missing data. The vocabulary continues with
+# tab20b and tab20c — the latter without its fourth family, which is also grey.
 #
 # Sized against one bar, not against the run. Colours are allocated once across
 # every field and dataset so a level keeps its colour between figures, and the
@@ -202,7 +210,7 @@ _DERIVED_CONTEXTS: tuple[tuple[str, str, str], ...] = (
         "The year bands are derived, not recorded: the recorded year is banded "
         "in {span:d}-year steps aligned to multiples of {span:d}, so two "
         "datasets that overlap in time carry the same bands. Rows with no "
-        "recorded year are not banded and fall in the residual.",
+        "recorded year are not banded and are shown as Missing.",
     ),
 )
 
@@ -1062,18 +1070,22 @@ def _plot_categorical_cardinality(
 # than a designed dose ladder, so they join that series rather than reading as
 # rungs of a literature-extracted ladder.
 #
-# One series per dataset either way: the arm replaces its source rather than
-# joining it, so no field is counted twice.
+# The governed NOPT series and the farmer-applied arm are intentionally both
+# present: they are sibling treatments recorded on the same physical rows, not
+# duplicate observations within one treatment. Side-by-side bars keep that
+# treatment distinction explicit.
 #
-# The substitution is local to this figure. ``build_all_observations`` still
-# returns exactly one row per recorded record through the governed binding, so
-# harmonized_observations.csv, nitrogen_rate_profile.csv and
+# The appended arm and the row reassignment are local to this figure.
+# ``build_all_observations`` still returns exactly one row per recorded record
+# through the governed binding, so harmonized_observations.csv,
+# nitrogen_rate_profile.csv and
 # context_composition.csv are unchanged and still report core_trial_data's
 # recorded Type of Experiment mix in full.
 _CORE_TRIAL_SOURCE_NAME = "core_trial_data"
 _CORE_TRIAL_EXPERIMENT_TYPE_LABEL = "experiment_type"
 _CORE_TRIAL_FARMERS_PRACTICE_LEVEL = "Farmer's Practice"
 _FARMERS_PRACTICE_SUFFIX = "_fp"
+_WITH_FARMERS_PRACTICE_FIGURE_SUFFIX = "_with_farmers_practice"
 # The source whose farmer's-practice series adopts core_trial_data's recorded
 # Farmer's Practice rows. Named rather than inferred: a second source binding an
 # arm would get its own series, and the 12 rows would still belong to this one.
@@ -1081,10 +1093,17 @@ _FARMERS_PRACTICE_PARENT_SOURCE = "ph_combined_nopt_rcm"
 _FARMERS_PRACTICE_SERIES_NAME = (
     _FARMERS_PRACTICE_PARENT_SOURCE + _FARMERS_PRACTICE_SUFFIX
 )
-# The two treatments this figure then does not draw. Named in the caption so
-# that one series over a source recording four treatments cannot read as the
-# whole record.
-_UNDRAWN_ARM_NOTE = (
+_FARMERS_PRACTICE_DISPLAY_LABEL = "Farmer's Practice"
+# The parent source records four treatments. The histogram draws NOPT-N and
+# Farmer's Practice separately; this note names the remaining treatment whose
+# N rate is not represented so neither series reads as the source's whole
+# record.
+_PH_COMBINED_TREATMENT_NOTE = (
+    "The separate ph_combined_nopt_rcm bars retain the dataset's NOPT-N binding "
+    "(70-150 kg N ha⁻¹, the recommended rate the rest of the bundle profiles); "
+    "its RCM-N treatment (37-189 kg N ha⁻¹) is not drawn."
+)
+_ORIGINAL_UNDRAWN_ARM_NOTE = (
     "Its NOPT-N binding (70-150 kg N ha⁻¹, the recommended rate the rest of "
     "the bundle profiles) and its RCM-N treatment (37-189 kg N ha⁻¹) are not "
     "drawn here."
@@ -1096,14 +1115,14 @@ class _FarmersPracticeSeries:
     """The farmer's-practice series and an account of what composes it.
 
     Every count travels with the frame so the caption can state the composition
-    rather than let a substitution and a reassignment pass as if the series were
-    the source's own governed rows.
+    rather than let an appended arm and a reassignment pass as if the series
+    were the source's own governed rows.
     """
 
     observations: pd.DataFrame
     relabeled_rows: int
     arm_rows: int
-    replaced_source_names: tuple[str, ...]
+    arm_source_names: tuple[str, ...]
 
     @property
     def exists(self) -> bool:
@@ -1202,15 +1221,43 @@ def _farmers_practice_arm(
     return retained.loc[:, list(OBSERVATION_COLUMNS)].reset_index(drop=True)
 
 
+def _farmers_practice_arm_for_source(
+    loaded: LoadedSources,
+    source_name: str,
+    *,
+    zero_n_tolerance_kg_ha: float,
+) -> tuple[ProfiledSource, pd.DataFrame] | None:
+    """Resolve one declared Farmer's Practice arm without inventing a source."""
+
+    source = next(
+        (candidate for candidate in loaded.sources if candidate.source_name == source_name),
+        None,
+    )
+    if source is None:
+        return None
+    arm = _farmers_practice_arm(
+        source, zero_n_tolerance_kg_ha=zero_n_tolerance_kg_ha
+    )
+    if arm is None or arm.empty:
+        return None
+    return source, arm
+
+
+def _figure_uses_farmers_practice(name: str) -> bool:
+    """Whether a declared figure name selects the Farmer's Practice arm."""
+
+    return name.endswith(_WITH_FARMERS_PRACTICE_FIGURE_SUFFIX)
+
+
 def _farmers_practice_series(
     loaded: LoadedSources,
     observations: pd.DataFrame,
     config: DescriptiveStatisticsConfig,
 ) -> _FarmersPracticeSeries:
-    """Draw every recorded farmer's-practice rate, one series per dataset."""
+    """Append every recorded farmer's-practice rate as a separate series."""
 
     arms: list[pd.DataFrame] = []
-    replaced: list[str] = []
+    arm_source_names: list[str] = []
     for source in loaded.sources:
         arm = _farmers_practice_arm(
             source, zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha
@@ -1218,30 +1265,30 @@ def _farmers_practice_series(
         if arm is None or arm.empty:
             continue
         arms.append(arm)
-        replaced.append(source.source_name)
+        arm_source_names.append(source.source_name)
 
     relabeled = _core_trial_farmers_practice_index(loaded, observations)
-    if _FARMERS_PRACTICE_PARENT_SOURCE not in replaced:
+    if _FARMERS_PRACTICE_PARENT_SOURCE not in arm_source_names:
         # Nothing to adopt the rows; leave them where they were recorded rather
         # than open a series named for an arm this run did not read.
         relabeled = observations.index[:0]
 
     regrouped = observations
-    if len(relabeled) or replaced:
+    if len(relabeled) or arms:
         regrouped = observations.copy()
     if len(relabeled):
         regrouped.loc[relabeled, "source_name"] = _FARMERS_PRACTICE_SERIES_NAME
-    if replaced:
-        # The arm stands in for its source; keeping both would draw one field
-        # twice, under its recommended rate and under the rate it was given.
-        regrouped = regrouped.loc[~regrouped["source_name"].isin(replaced)]
+    if arms:
+        # The governed source rows retain their recommended-rate binding. The
+        # farmer-applied rate is a sibling treatment and is therefore appended
+        # as its own bar series rather than substituted for that source.
         regrouped = pd.concat([regrouped, *arms], ignore_index=True)
 
     return _FarmersPracticeSeries(
         observations=regrouped,
         relabeled_rows=int(len(relabeled)),
         arm_rows=int(sum(len(arm) for arm in arms)),
-        replaced_source_names=tuple(replaced),
+        arm_source_names=tuple(arm_source_names),
     )
 
 
@@ -1282,7 +1329,88 @@ def _share_histogram(
     )
 
 
+def _nitrogen_series_label(source_name: str) -> str:
+    """Reader-facing legend label for a dataset or its derived FP arm."""
+
+    if source_name == _FARMERS_PRACTICE_SERIES_NAME:
+        return _FARMERS_PRACTICE_DISPLAY_LABEL
+    if source_name.endswith(_FARMERS_PRACTICE_SUFFIX):
+        parent = source_name[: -len(_FARMERS_PRACTICE_SUFFIX)]
+        return f"{_legend_label(parent)} — {_FARMERS_PRACTICE_DISPLAY_LABEL}"
+    return _legend_label(source_name)
+
+
 def _plot_nitrogen_rate_distribution(
+    *,
+    tables: Mapping[str, pd.DataFrame],
+    loaded: LoadedSources,
+    config: DescriptiveStatisticsConfig,
+) -> plt.Figure | None:
+    """Preserve the original three-series, overlaid N-rate figure."""
+
+    observations = _observations(loaded, config)
+    if observations.empty:
+        return None
+    farmers_practice = _farmers_practice_series(loaded, observations, config)
+    observations = farmers_practice.observations.loc[
+        ~farmers_practice.observations["source_name"].isin(
+            farmers_practice.arm_source_names
+        )
+    ]
+    names = _nitrogen_series_order(loaded, observations, farmers_practice)
+    if not names:
+        return None
+
+    rates = observations["n_rate_kg_ha"].to_numpy(dtype=float)
+    width = float(config.nitrogen_bin_width_kg_ha)
+    lower = float(np.floor(np.nanmin(rates) / width) * width)
+    upper = float(np.ceil(np.nanmax(rates) / width) * width)
+    edges = np.arange(lower, upper + width / 2.0, width)
+    if edges.size < 2:
+        return None
+
+    colours = _source_colours(loaded)
+    for name in farmers_practice.arm_source_names:
+        if name in colours:
+            colours[name + _FARMERS_PRACTICE_SUFFIX] = colours[name]
+
+    figure, axis = _figure(config, height_inches=7.0)
+    for name in names:
+        values = observations.loc[
+            observations["source_name"] == name, "n_rate_kg_ha"
+        ].to_numpy(dtype=float)
+        if values.size == 0:
+            continue
+        distinct = int(np.unique(np.round(values, 6)).size)
+        _share_histogram(
+            axis,
+            values,
+            edges=edges,
+            colour=colours[name],
+            label=(
+                f"{_legend_label(name)} — "
+                f"{values.size:,} observations, {distinct} distinct rates"
+            ),
+            linestyle="--" if name.endswith(_FARMERS_PRACTICE_SUFFIX) else "-",
+        )
+    axis.set(
+        title=(
+            "Recorded inorganic N-rate distribution per dataset "
+            f"({width:g} kg N ha⁻¹ bins)"
+        ),
+        xlabel="Inorganic N rate (kg N ha⁻¹)",
+        ylabel="Share of the dataset's recorded observations (%)",
+    )
+    axis.legend(fontsize=8)
+    axis.grid(alpha=0.2)
+    _footnote(
+        figure,
+        _original_nitrogen_rate_distribution_caption(farmers_practice),
+    )
+    return figure
+
+
+def _plot_nitrogen_rate_distribution_with_separate_farmers_practice(
     *,
     tables: Mapping[str, pd.DataFrame],
     loaded: LoadedSources,
@@ -1322,20 +1450,19 @@ def _plot_nitrogen_rate_distribution(
             edges=edges,
             colour=colours[name],
             label=(
-                f"{_legend_label(name)} — "
+                f"{_nitrogen_series_label(name)} — "
                 f"{values.size:,} observations, {distinct} distinct rates"
             ),
-            # The one distinction the fills cannot carry: this series is read
-            # from an arm the rest of the bundle does not profile.
             linestyle="--" if name.endswith(_FARMERS_PRACTICE_SUFFIX) else "-",
         )
     axis.set(
         title=(
-            "Recorded inorganic N-rate distribution per dataset "
+            "Recorded inorganic N-rate distribution by dataset "
+            "and Farmer's Practice "
             f"({width:g} kg N ha⁻¹ bins)"
         ),
         xlabel="Inorganic N rate (kg N ha⁻¹)",
-        ylabel="Share of the dataset's recorded observations (%)",
+        ylabel="Share within each recorded series (%)",
     )
     axis.legend(fontsize=8)
     axis.grid(alpha=0.2)
@@ -1348,7 +1475,7 @@ def _nitrogen_series_order(
     observations: pd.DataFrame,
     farmers_practice: _FarmersPracticeSeries,
 ) -> tuple[str, ...]:
-    """Profiling order, with a farmer's-practice series in its source's place.
+    """Profiling order, with a farmer's-practice series after its source.
 
     The derived names are placed by hand rather than through
     ``_ordered_sources``, which walks ``loaded.sources``: a synthetic entry
@@ -1360,32 +1487,30 @@ def _nitrogen_series_order(
     ordered = []
     for source in loaded.sources:
         name = source.source_name
-        if name in farmers_practice.replaced_source_names:
-            name += _FARMERS_PRACTICE_SUFFIX
         if name in present:
             ordered.append(name)
+        arm_name = name + _FARMERS_PRACTICE_SUFFIX
+        if arm_name in present:
+            ordered.append(arm_name)
     return tuple(ordered)
 
 
 def _nitrogen_series_colours(
     loaded: LoadedSources, farmers_practice: _FarmersPracticeSeries
 ) -> dict[str, str]:
-    """Source colours, with each arm keeping the colour of the source it reads.
+    """Source colours plus a distinct colour for each farmer-practice arm.
 
-    A dataset holds one colour across every figure of a run, and the arm is that
-    dataset here — recolouring it would read as a fourth dataset appearing in
-    this panel alone.
+    A dataset holds one colour across every figure of a run. Farmer's Practice
+    is an additional treatment here, so it takes the next unused source-palette
+    colour instead of borrowing its parent's colour and disappearing into it.
     """
 
     colours = _source_colours(loaded)
-    return {
-        **colours,
-        **{
-            name + _FARMERS_PRACTICE_SUFFIX: colours[name]
-            for name in farmers_practice.replaced_source_names
-            if name in colours
-        },
-    }
+    for offset, name in enumerate(farmers_practice.arm_source_names):
+        colours[name + _FARMERS_PRACTICE_SUFFIX] = _SOURCE_PALETTE[
+            (len(loaded.sources) + offset) % len(_SOURCE_PALETTE)
+        ]
+    return colours
 
 
 def _nitrogen_rate_distribution_caption(
@@ -1397,6 +1522,43 @@ def _nitrogen_rate_distribution_caption(
     it is, which rows were moved into it, and which recorded treatments of the
     same source the panel therefore does not show.
     """
+
+    caption = (
+        "Bars are within-series shares because the observation counts differ "
+        "by more than an order of magnitude. The rates are discrete "
+        "experimental ladders, not a sample from a continuous distribution."
+    )
+    if not farmers_practice.exists:
+        return caption
+
+    if farmers_practice.arm_rows:
+        caption += (
+            f" The dashed {_FARMERS_PRACTICE_DISPLAY_LABEL} series separately "
+            f"shows {_FARMERS_PRACTICE_PARENT_SOURCE}'s recorded "
+            "farmer-applied N rate "
+            f"({farmers_practice.arm_rows:,} records carrying both that rate "
+            "and its measured yield), which is farmer-chosen and therefore not "
+            f"an experimental ladder. {_PH_COMBINED_TREATMENT_NOTE}"
+        )
+    if farmers_practice.relabeled_rows:
+        caption += (
+            f" {farmers_practice.relabeled_rows} core_trial_data row"
+            f"{'s' if farmers_practice.relabeled_rows != 1 else ''} recorded as "
+            "Farmer's Practice (Type of Experiment/Study/Trial) are included "
+            "in those bars rather than in the literature-extracted bars."
+        )
+    caption += (
+        " nitrogen_rate_profile.csv and context_composition.csv are unaffected: "
+        "they report every source's recorded rows through its governed rate "
+        "binding, so their per-source counts are the recorded ones."
+    )
+    return caption
+
+
+def _original_nitrogen_rate_distribution_caption(
+    farmers_practice: _FarmersPracticeSeries,
+) -> str:
+    """Caption retained byte-for-byte in wording for the original figure."""
 
     caption = (
         "Bars are within-dataset shares because the observation counts differ "
@@ -1413,7 +1575,7 @@ def _nitrogen_rate_distribution_caption(
             "farmer's-practice arm — the rate the farmer applied "
             f"({farmers_practice.arm_rows:,} records carrying both that rate "
             "and its measured yield), which is farmer-chosen and so is not a "
-            f"ladder at all. {_UNDRAWN_ARM_NOTE}"
+            f"ladder at all. {_ORIGINAL_UNDRAWN_ARM_NOTE}"
         )
     if farmers_practice.relabeled_rows:
         caption += (
@@ -1483,6 +1645,37 @@ def _yield_distribution_axes(
         # the bars.
         ylim=(0.0, tallest / (min(_YIELD_CALLOUT_SLOTS) - _YIELD_CALLOUT_CLEARANCE)),
     )
+
+
+def _yield_axis_population(
+    observations: pd.DataFrame,
+    loaded: LoadedSources,
+    config: DescriptiveStatisticsConfig,
+) -> tuple[pd.DataFrame, tuple[str, ...]]:
+    """All populations that must share bins and limits across yield panels.
+
+    Farmer's Practice is an alternate declared arm rather than a registered
+    source, so it is not drawn in the combined three-dataset panel. It still
+    participates in the shared-axis calculation: the explicit with/without
+    panels must not acquire different scales merely because one reads sibling
+    columns from the same source rows.
+    """
+
+    frames = [observations]
+    names = list(_ordered_sources(loaded, observations["source_name"]))
+    for source in loaded.sources:
+        arm = _farmers_practice_arm(
+            source, zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha
+        )
+        if arm is None or arm.empty:
+            continue
+        frames.append(arm)
+        arm_name = str(arm["source_name"].iloc[0])
+        if arm_name not in names:
+            names.append(arm_name)
+    if len(frames) == 1:
+        return observations, tuple(names)
+    return pd.concat(frames, ignore_index=True), tuple(names)
 
 
 @dataclass(frozen=True)
@@ -1557,7 +1750,12 @@ def _plot_yield_distribution(
     if not names:
         return None
 
-    shared = _yield_distribution_axes(observations, names=names, config=config)
+    axis_observations, axis_names = _yield_axis_population(
+        observations, loaded, config
+    )
+    shared = _yield_distribution_axes(
+        axis_observations, names=axis_names, config=config
+    )
     if shared is None:
         return None
     edges = shared.edges
@@ -1629,6 +1827,7 @@ def _plot_one_yield_distribution(
     tables: Mapping[str, pd.DataFrame],
     loaded: LoadedSources,
     config: DescriptiveStatisticsConfig,
+    farmers_practice: bool = False,
 ) -> plt.Figure | None:
     """One dataset's yield distribution, on the axes the whole set shares.
 
@@ -1644,11 +1843,26 @@ def _plot_one_yield_distribution(
     if source_name not in names:
         return None
 
-    shared = _yield_distribution_axes(observations, names=names, config=config)
+    axis_observations, axis_names = _yield_axis_population(
+        observations, loaded, config
+    )
+    shared = _yield_distribution_axes(
+        axis_observations, names=axis_names, config=config
+    )
     if shared is None:
         return None
 
-    subset = observations.loc[observations["source_name"] == source_name]
+    if farmers_practice:
+        resolved = _farmers_practice_arm_for_source(
+            loaded,
+            source_name,
+            zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha,
+        )
+        if resolved is None:
+            return None
+        _, subset = resolved
+    else:
+        subset = observations.loc[observations["source_name"] == source_name]
     values = subset["yield_t_ha"].to_numpy(dtype=float)
     if values.size == 0:
         return None
@@ -1660,7 +1874,11 @@ def _plot_one_yield_distribution(
         values,
         edges=shared.edges,
         colour=colour,
-        label=f"{_legend_label(source_name)} — {values.size:,} observations",
+        label=(
+            f"{_legend_label(source_name)}"
+            + (" — Farmer's Practice arm" if farmers_practice else "")
+            + f" — {values.size:,} observations"
+        ),
     )
     # Median, mean, and mode, each on its own slot. The three coincide closely
     # in some datasets — core_trial_data puts them inside 0.15 t ha⁻¹ — so the
@@ -1711,11 +1929,20 @@ def _plot_one_yield_distribution(
         )
     axis.set_xlim(*shared.xlim)
     axis.set_ylim(*shared.ylim)
-    axis.set(
-        title=(
+    if source_name == _FARMERS_PRACTICE_PARENT_SOURCE:
+        title = (
+            "PH combined yield — Farmer's Practice arm (t ha⁻¹ basis)"
+            if farmers_practice
+            else "PH combined yield — NOPT arm without Farmer's Practice "
+            "(t ha⁻¹ basis)"
+        )
+    else:
+        title = (
             f"Recorded grain-yield distribution — {_legend_label(source_name)} "
             "(t ha⁻¹ basis)"
-        ),
+        )
+    axis.set(
+        title=title,
         xlabel="Grain yield (t ha⁻¹)",
         ylabel="Share of the dataset's harmonized observations (%)",
     )
@@ -1744,14 +1971,29 @@ def _plot_one_yield_distribution(
             f"({modal.runner_low:.2f}-{modal.runner_high:.2f}) holds "
             f"{modal.runner_share:.1f}%."
         )
+    if source_name != _FARMERS_PRACTICE_PARENT_SOURCE:
+        treatment_clause = ""
+    elif farmers_practice:
+        treatment_clause = (
+            " This version reads the paired Farmer's Practice rate and yield "
+            "columns; rows without both finite values are excluded. The NOPT "
+            "full-fertilizer arm is not pooled into this distribution."
+        )
+    else:
+        treatment_clause = (
+            " This version reads the governed NOPT full-fertilizer rate and "
+            "yield columns and excludes the paired Farmer's Practice arm."
+        )
     _footnote(
         figure,
         "Bars are shares of this dataset's own harmonized observations; the "
         "dashed line marks its median and the dotted line marks its mean."
         f"{modal_clause} "
         "Bins, axis limits, and panel size are shared with the other "
-        "per-dataset panels and with the combined figure, so the four are "
-        f"directly comparable. Unit lineage: {lineage}.",
+        "per-dataset panels, the Farmer's Practice companion, and the combined "
+        "figure, so they are "
+        f"directly comparable. Unit lineage: {lineage}."
+        + treatment_clause,
         minimum_lines=_YIELD_DISTRIBUTION_FOOTNOTE_LINES,
     )
     return figure
@@ -1759,6 +2001,8 @@ def _plot_one_yield_distribution(
 
 def _yield_distribution_builder(
     source_name: str,
+    *,
+    farmers_practice: bool = False,
 ) -> Callable[..., "plt.Figure | None"]:
     """Bind one source name into the shared single-dataset builder."""
 
@@ -1769,7 +2013,11 @@ def _yield_distribution_builder(
         config: DescriptiveStatisticsConfig,
     ) -> plt.Figure | None:
         return _plot_one_yield_distribution(
-            source_name, tables=tables, loaded=loaded, config=config
+            source_name,
+            tables=tables,
+            loaded=loaded,
+            config=config,
+            farmers_practice=farmers_practice,
         )
 
     builder.__name__ = f"_plot_yield_distribution_{source_name}"
@@ -2215,21 +2463,106 @@ class _CompositionBar:
     # ``_level`` / ``_count`` / ``_mean_yield``, count-descending.
     levels: pd.DataFrame
     denominator: float
+    # Separated only when disclosure permits. Restricted sources leave both as
+    # ``None`` so their rare-level count cannot be recovered from the missing
+    # count and the visible total.
+    missing_count: float | None = None
+    rare_count: float | None = None
 
     @property
     def reported_total(self) -> float:
         return float(self.levels["_count"].sum())
 
     @property
-    def withheld_share(self) -> float:
-        """Share in no drawn level: below the threshold, or no value recorded.
-
-        The two are pooled deliberately. Reporting them apart would let a reader
-        recover a withheld level's count by subtraction, which is the disclosure
-        the reporting threshold exists to prevent.
-        """
+    def residual_share(self) -> float:
+        """Share outside the individually reported recorded levels."""
 
         return max(0.0, 1.0 - self.reported_total / self.denominator)
+
+    @property
+    def separates_residual(self) -> bool:
+        return self.missing_count is not None and self.rare_count is not None
+
+    @property
+    def missing_share(self) -> float:
+        if self.missing_count is None:
+            return 0.0
+        return max(0.0, float(self.missing_count) / self.denominator)
+
+    @property
+    def rare_share(self) -> float:
+        if self.rare_count is None:
+            return 0.0
+        return max(0.0, float(self.rare_count) / self.denominator)
+
+    @property
+    def pooled_residual_share(self) -> float:
+        """Unseparated residual retained for disclosure-controlled sources."""
+
+        return 0.0 if self.separates_residual else self.residual_share
+
+
+def _context_residual_counts(
+    source: ProfiledSource,
+    observations: pd.DataFrame,
+    *,
+    context_key: str,
+    denominator: float,
+    reported_total: float,
+) -> tuple[float | None, float | None]:
+    """Return missing and rare counts when they may be disclosed separately.
+
+    A blank source cell and a nonblank level below the reporting threshold are
+    different findings. They remain pooled for restricted sources because
+    publishing the blank count would reveal the withheld rare-level total by
+    subtraction. Literature-derived internal data carry no such constraint.
+    """
+
+    if source.is_restricted or observations.empty:
+        return None, None
+    if not np.isclose(float(len(observations)), denominator):
+        # A treatment-arm override can use a different population from the
+        # ordinary source observations. Without its exact row set, retain the
+        # disclosure-safe pooled remainder rather than misstate missingness.
+        return None, None
+
+    residual = max(0.0, denominator - reported_total)
+    if context_key == APPLIED_N_BAND_CONTEXT:
+        missing = 0.0
+    elif context_key == YEAR_BAND_CONTEXT:
+        missing = float(observations["year"].isna().sum())
+    else:
+        binding = next(
+            (
+                candidate
+                for candidate in source.binding.context
+                if candidate.label.strip().lower() == context_key
+            ),
+            None,
+        )
+        if binding is None:
+            return None, None
+        lookup = pd.Series(
+            np.arange(source.data_row_count),
+            index=pd.Index(source.source_row_numbers),
+        )
+        positions = (
+            observations["source_row_number"].map(lookup).to_numpy(dtype=np.int64)
+        )
+        values = (
+            source.text[binding.raw_column_id]
+            .astype(str)
+            .str.strip()
+            .to_numpy()[positions]
+        )
+        missing = float(np.count_nonzero(values == ""))
+
+    # Every residual observation is either blank or in a recorded level that
+    # fell below the reporting threshold. Clamp against the visible residual to
+    # absorb harmless floating arithmetic without allowing a negative rare mass.
+    missing = min(max(0.0, missing), residual)
+    rare = max(0.0, residual - missing)
+    return missing, rare
 
 
 def _composition_levels(
@@ -2258,6 +2591,7 @@ def _composition_bars(
     config: DescriptiveStatisticsConfig,
     contexts: Sequence[tuple[str, str]],
     source_names: Sequence[str] | None = None,
+    source_totals: Mapping[str, float] | None = None,
 ) -> list[_CompositionBar]:
     """Every (dataset, field) pair with at least one reportable level.
 
@@ -2286,7 +2620,12 @@ def _composition_bars(
     # keeps the bar honest if the producing table counted a wider row set: the
     # withheld segment then shrinks to zero instead of going negative.
     observations = _observations(loaded, config)
-    source_totals = observations["source_name"].value_counts().to_dict()
+    if source_totals is None:
+        resolved_source_totals: Mapping[str, float] = (
+            observations["source_name"].value_counts().to_dict()
+        )
+    else:
+        resolved_source_totals = source_totals
 
     wanted_sources = None if source_names is None else set(source_names)
     bars: list[_CompositionBar] = []
@@ -2308,10 +2647,22 @@ def _composition_bars(
                 ].sum()
             )
             denominator = max(
-                declared_total, float(source_totals.get(source.source_name, 0.0))
+                declared_total,
+                float(resolved_source_totals.get(source.source_name, 0.0)),
             )
             if denominator <= 0:
                 continue
+            source_observations = observations.loc[
+                observations["source_name"] == source.source_name
+            ]
+            reported_total = float(group["_count"].sum())
+            missing_count, rare_count = _context_residual_counts(
+                source,
+                source_observations,
+                context_key=context_key,
+                denominator=denominator,
+                reported_total=reported_total,
+            )
             bars.append(
                 _CompositionBar(
                     source_name=source.source_name,
@@ -2326,6 +2677,8 @@ def _composition_bars(
                     # Re-sorting on count would scramble the ordinal case.
                     levels=group,
                     denominator=denominator,
+                    missing_count=missing_count,
+                    rare_count=rare_count,
                 )
             )
     return bars
@@ -2485,7 +2838,9 @@ def _draw_stacked_composition(
         height_inches=_COMPOSITION_FIXED_INCHES + slots * _COMPOSITION_ROW_INCHES,
     )
     positions = np.arange(len(bars), dtype=float)
-    any_withheld = False
+    any_missing = False
+    any_rare = False
+    any_pooled_residual = False
     for position, bar in zip(positions, bars):
         left = 0.0
         for level, count in zip(bar.levels["_level"], bar.levels["_count"]):
@@ -2523,17 +2878,59 @@ def _draw_stacked_composition(
             left += share
         remainder = max(0.0, 1.0 - left)
         if remainder > 0.0005:
-            any_withheld = True
-            axis.barh(
-                position,
-                remainder * 100.0,
-                left=left * 100.0,
-                height=0.62,
-                color=_WITHHELD_GREY,
-                edgecolor="white",
-                linewidth=0.6,
-                hatch="//",
-            )
+            if bar.separates_residual:
+                missing = min(remainder, bar.missing_share)
+                if missing > 0.0005:
+                    any_missing = True
+                    axis.barh(
+                        position,
+                        missing * 100.0,
+                        left=left * 100.0,
+                        height=0.62,
+                        color=_MISSING_GREY,
+                        edgecolor="white",
+                        linewidth=0.6,
+                        hatch="//",
+                    )
+                    if missing >= _MINIMUM_MISSING_LABELED_SHARE:
+                        axis.text(
+                            (left + missing / 2.0) * 100.0,
+                            position,
+                            f"Missing\n{missing * 100:.0f}%",
+                            ha="center",
+                            va="center",
+                            fontsize=7,
+                        )
+                    left += missing
+
+                rare = min(max(0.0, 1.0 - left), bar.rare_share)
+                if rare > 0.0005:
+                    any_rare = True
+                    axis.barh(
+                        position,
+                        rare * 100.0,
+                        left=left * 100.0,
+                        height=0.62,
+                        color=_RARE_GREY,
+                        edgecolor="white",
+                        linewidth=0.6,
+                        hatch="..",
+                    )
+                    left += rare
+
+            pooled = max(0.0, 1.0 - left)
+            if pooled > 0.0005:
+                any_pooled_residual = True
+                axis.barh(
+                    position,
+                    pooled * 100.0,
+                    left=left * 100.0,
+                    height=0.62,
+                    color=_WITHHELD_GREY,
+                    edgecolor="white",
+                    linewidth=0.6,
+                    hatch="xx",
+                )
 
     axis.set_yticks(positions)
     axis.set_yticklabels(
@@ -2561,19 +2958,43 @@ def _draw_stacked_composition(
         xlabel="Share of the dataset's harmonized observations (%)",
         ylabel=ylabel,
     )
-    if any_withheld:
+    residual_handles: list[Patch] = []
+    if any_missing:
+        residual_handles.append(
+            Patch(
+                facecolor=_MISSING_GREY,
+                edgecolor="white",
+                hatch="//",
+                label="Missing: blank or unrecorded source value",
+            )
+        )
+    if any_rare:
+        residual_handles.append(
+            Patch(
+                facecolor=_RARE_GREY,
+                edgecolor="white",
+                hatch="..",
+                label=(
+                    "Rare: recorded levels with fewer than "
+                    f"{config.minimum_level_count} observations each"
+                ),
+            )
+        )
+    if any_pooled_residual:
+        residual_handles.append(
+            Patch(
+                facecolor=_WITHHELD_GREY,
+                edgecolor="white",
+                hatch="xx",
+                label=(
+                    "Unreported remainder: missing or rare (fewer than "
+                    f"{config.minimum_level_count} observations)"
+                ),
+            )
+        )
+    if residual_handles:
         axis.legend(
-            handles=[
-                Patch(
-                    facecolor=_WITHHELD_GREY,
-                    edgecolor="white",
-                    hatch="//",
-                    label=(
-                        "Not shown: level recorded fewer than "
-                        f"{config.minimum_level_count} times, or no value recorded"
-                    ),
-                )
-            ],
+            handles=residual_handles,
             fontsize=8,
             loc="lower right",
         )
@@ -2583,10 +3004,11 @@ def _draw_stacked_composition(
 
 
 _COMPOSITION_FOOTNOTE = (
-    "Segments narrower than "
+    "Individually reported level segments narrower than "
     f"{_MINIMUM_LABELED_SHARE * 100:.0f}% are drawn but not labeled. Level "
     "vocabularies are dataset-specific and are reported as recorded, not "
-    "mapped onto a common scheme."
+    "mapped onto a common scheme. Missing segments of at least "
+    f"{_MINIMUM_MISSING_LABELED_SHARE * 100:.0f}% are labeled directly."
 )
 
 
@@ -2761,12 +3183,36 @@ def _dataset_context_plan(
     return _prioritize_dataset_contexts(source.source_name, drawable), omitted
 
 
+def _farmers_practice_context_tables(
+    source: ProfiledSource,
+    arm: pd.DataFrame,
+    *,
+    tables: Mapping[str, pd.DataFrame],
+    config: DescriptiveStatisticsConfig,
+) -> dict[str, pd.DataFrame]:
+    """Replace the context table with one computed on the declared FP arm.
+
+    The physical context columns are shared by the paired NOPT and Farmer's
+    Practice measurements. Rebuilding their summaries on the arm's admitted
+    row numbers preserves missing-context differences between the 718 governed
+    NOPT rows and the 647 rows carrying both a finite FP rate and FP yield.
+    """
+
+    composition = build_context_composition(source, arm, config)
+    rate_binding = source.binding.farmers_practice_n_rate
+    if rate_binding is not None and not composition.empty:
+        applied = composition["context_label"] == "applied_n_band"
+        composition.loc[applied, "column_header"] = rate_binding.header
+    return {**tables, "context_composition": composition}
+
+
 def _plot_one_context_composition(
     source_name: str,
     *,
     tables: Mapping[str, pd.DataFrame],
     loaded: LoadedSources,
     config: DescriptiveStatisticsConfig,
+    farmers_practice: bool = False,
 ) -> plt.Figure | None:
     """Every context field of one dataset, on that dataset's own denominator.
 
@@ -2782,15 +3228,33 @@ def _plot_one_context_composition(
     if not matches:
         return None
     source = matches[0]
-    contexts, omitted = _dataset_context_plan(source, tables=tables, config=config)
+    source_totals = None
+    selected_tables = tables
+    if farmers_practice:
+        resolved = _farmers_practice_arm_for_source(
+            loaded,
+            source_name,
+            zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha,
+        )
+        if resolved is None:
+            return None
+        _, arm = resolved
+        selected_tables = _farmers_practice_context_tables(
+            source, arm, tables=tables, config=config
+        )
+        source_totals = {source_name: float(len(arm))}
+    contexts, omitted = _dataset_context_plan(
+        source, tables=selected_tables, config=config
+    )
     if not contexts:
         return None
     bars = _composition_bars(
-        tables=tables,
+        tables=selected_tables,
         loaded=loaded,
         config=config,
         contexts=contexts,
         source_names=(source_name,),
+        source_totals=source_totals,
     )
     if not bars:
         return None
@@ -2807,19 +3271,47 @@ def _plot_one_context_composition(
         for key, _, caption in _DERIVED_CONTEXTS
         if key in drawn
     )
+    if source_name != _FARMERS_PRACTICE_PARENT_SOURCE:
+        arm_title = ""
+        treatment_note = ""
+    elif farmers_practice:
+        arm_title = " — Farmer's Practice arm"
+        treatment_note = (
+            " This version includes only rows carrying both a finite Farmer's "
+            "Practice N rate and its paired measured yield; the applied-N bar "
+            "therefore reads fp_actual_n_kg_per_ha. The NOPT full-fertilizer "
+            "arm is not pooled into these shares."
+        )
+    else:
+        arm_title = " — NOPT arm (Farmer's Practice excluded)"
+        treatment_note = (
+            " This version reads the governed NOPT full-fertilizer population; "
+            "the paired Farmer's Practice arm is excluded."
+        )
+    if source_name == _FARMERS_PRACTICE_PARENT_SOURCE:
+        title = (
+            "PH combined context (restricted) — "
+            + (
+                f"Farmer's Practice arm, n={observations:,.0f}"
+                if farmers_practice
+                else "NOPT arm without Farmer's Practice, "
+                f"n={observations:,.0f}"
+            )
+        )
+    else:
+        title = (
+            f"{_legend_label(source.source_name)} — context composition "
+            f"({source.data_classification}; n={observations:,.0f}){arm_title}"
+        )
     return _draw_stacked_composition(
         bars=bars,
         config=config,
-        title=(
-            f"Context composition of {_legend_label(source.source_name)} "
-            f"({source.data_classification}) — "
-            f"{observations:,.0f} harmonized observations"
-        ),
+        title=title,
         footnote=(
             f"{_COMPOSITION_FOOTNOTE} Every bar is a share of this dataset's "
             "own harmonized observations, so the bars are comparable with each "
             "other and with this dataset's bars in the cross-dataset "
-            f"composition figures.{derivation}{note}"
+            f"composition figures.{derivation}{treatment_note}{note}"
         ),
         # The source column under each field name, except where the recipe
         # bound a field to a column of the same name and the second line would
@@ -2831,12 +3323,16 @@ def _plot_one_context_composition(
             for bar in bars
         ],
         ylabel="Context field, and the column it was read from",
-        level_colours=_composition_level_colours(tables, loaded, config),
+        level_colours=_composition_level_colours(
+            selected_tables, loaded, config
+        ),
     )
 
 
 def _context_composition_builder(
     source_name: str,
+    *,
+    farmers_practice: bool = False,
 ) -> Callable[..., "plt.Figure | None"]:
     """Bind one source name into the shared single-dataset builder."""
 
@@ -2847,7 +3343,11 @@ def _context_composition_builder(
         config: DescriptiveStatisticsConfig,
     ) -> plt.Figure | None:
         return _plot_one_context_composition(
-            source_name, tables=tables, loaded=loaded, config=config
+            source_name,
+            tables=tables,
+            loaded=loaded,
+            config=config,
+            farmers_practice=farmers_practice,
         )
 
     builder.__name__ = f"_plot_context_composition_{source_name}"
@@ -2911,15 +3411,35 @@ def _variety_entries(
                 ),
             )
         )
-    withheld = bar.withheld_share
-    if withheld > 0.0005:
+    if bar.separates_residual and bar.missing_share > 0.0005:
         entries.append(
             (
-                "Rare or unrecorded",
-                withheld,
-                _WITHHELD_GREY,
+                "Missing",
+                bar.missing_share,
+                _MISSING_GREY,
                 "//",
-                f"{withheld * bar.denominator:,.0f} obs",
+                f"{bar.missing_count:,.0f} obs",
+            )
+        )
+    if bar.separates_residual and bar.rare_share > 0.0005:
+        entries.append(
+            (
+                "Rare recorded levels",
+                bar.rare_share,
+                _RARE_GREY,
+                "..",
+                f"{bar.rare_count:,.0f} obs",
+            )
+        )
+    pooled = bar.pooled_residual_share
+    if pooled > 0.0005:
+        entries.append(
+            (
+                "Missing or rare (unreported)",
+                pooled,
+                _WITHHELD_GREY,
+                "xx",
+                f"{pooled * bar.denominator:,.0f} obs",
             )
         )
     return entries
@@ -3343,9 +3863,15 @@ FIGURE_BUILDERS: Mapping[str, Callable[..., "plt.Figure | None"]] = {
     "numeric_spread_overview": _plot_numeric_spread_overview,
     "categorical_cardinality": _plot_categorical_cardinality,
     "nitrogen_rate_distribution": _plot_nitrogen_rate_distribution,
+    "nitrogen_rate_distribution_with_separate_farmers_practice": (
+        _plot_nitrogen_rate_distribution_with_separate_farmers_practice
+    ),
     "yield_distribution": _plot_yield_distribution,
     **{
-        spec.name: _yield_distribution_builder(spec.source_name)
+        spec.name: _yield_distribution_builder(
+            spec.source_name,
+            farmers_practice=_figure_uses_farmers_practice(spec.name),
+        )
         for spec in FIGURE_SPECS
         if spec.name.startswith("yield_distribution_") and spec.source_name
     },
@@ -3358,7 +3884,10 @@ FIGURE_BUILDERS: Mapping[str, Callable[..., "plt.Figure | None"]] = {
     ),
     "context_composition_variety": _plot_context_composition_variety,
     **{
-        spec.name: _context_composition_builder(spec.source_name)
+        spec.name: _context_composition_builder(
+            spec.source_name,
+            farmers_practice=_figure_uses_farmers_practice(spec.name),
+        )
         for spec in FIGURE_SPECS
         if spec.name.startswith("context_composition_") and spec.source_name
     },
