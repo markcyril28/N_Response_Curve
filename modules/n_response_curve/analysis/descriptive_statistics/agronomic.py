@@ -451,6 +451,30 @@ def _context_rows(
     return rows
 
 
+def build_context_composition(
+    source: ProfiledSource,
+    observations: pd.DataFrame,
+    config: DescriptiveStatisticsConfig,
+) -> pd.DataFrame:
+    """Build the complete context table for one observation population.
+
+    The ordinary profile calls this with the source's governed N/yield binding.
+    A reporting variant may call it with a declared sibling treatment arm (for
+    example, Farmer's Practice) so the variant is held to exactly the same
+    banding, disclosure threshold, row alignment, and context rules as the
+    published table rather than reimplementing those rules in plotting code.
+    """
+
+    rows = [
+        *_applied_n_band_rows(source, observations, config),
+        *_year_band_rows(source, observations, config),
+        *_context_rows(source, observations, config),
+    ]
+    return contracts.conform_table(
+        "context_composition", _frame("context_composition", rows)
+    )
+
+
 # The context label under which the derived applied-N bands are filed. Derived,
 # not bound: no source records a band column, and the recorded rate is a
 # quantity rather than a level — the long-running trials carry thirty distinct
@@ -685,13 +709,9 @@ def analyze_agronomic(
         )
         collected["temporal_coverage"].extend(_temporal_rows(source, observations))
         collected["context_composition"].extend(
-            _applied_n_band_rows(source, observations, config)
-        )
-        collected["context_composition"].extend(
-            _year_band_rows(source, observations, config)
-        )
-        collected["context_composition"].extend(
-            _context_rows(source, observations, config)
+            build_context_composition(source, observations, config).to_dict(
+                orient="records"
+            )
         )
         collected["zero_nitrogen_checks"].extend(
             _zero_nitrogen_rows(source, observations)
