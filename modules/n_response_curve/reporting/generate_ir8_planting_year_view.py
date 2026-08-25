@@ -8,7 +8,7 @@ level carrying 88 trajectories, 1968-1990. That figure pools every planting
 year of IR8 into one panel; this script splits it back out, one panel per
 year, on the same shared axis frame the season module uses. It also draws a
 companion annual-trend line chart, in the same spirit as
-`by_season/ds/by_planting_year/annual_trend.jpeg`, restricted to IR8 alone.
+`by_season/ds/by_planting_year/annotated/annual_trend.jpeg`, restricted to IR8.
 
 IR8 turns out to carry exactly four replicate trajectories in every recorded
 DS planting year from 1968 to 1990 except 1984 (unrecorded), all from the same
@@ -128,7 +128,7 @@ SOURCE_NAME = "ltcce"
 
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset/ltcce"
+    / "WF/04_Response_Curves/z_n_response_full/ltcce"
     / "clusters/by_season/ds/by_variety/ir8_by_planting_year"
 )
 
@@ -474,7 +474,7 @@ def _split_calendar_runs(records: Sequence[AnnualRecord]) -> list[list[AnnualRec
     return _contiguous_runs(records, year=lambda record: record.year, presorted=True)
 
 
-# The reference sheet (`by_planting_year/decades_and_trend.jpeg`) is 34in wide
+# The reference sheet (`by_planting_year/annotated/decades_and_trend.jpeg`) is 34in wide
 # for the whole DS season's 6 decades (1960s-2010s, 60 calendar years). Reusing
 # that inches-per-year density here, rather than the fixed 34in, keeps IR8's
 # 4-decade sheet proportioned the same way instead of stretching thin insets
@@ -498,7 +498,8 @@ def _write_decades_and_trend(
 ) -> None:
     """IR8's decade insets drawn on the stretch of its own yield trend.
 
-    The IR8-scoped analogue of `../../by_planting_year/decades_and_trend.jpeg`:
+    The IR8-scoped analogue of
+    `../../by_planting_year/annotated/decades_and_trend.jpeg`:
     same pairing (each decade's response-curve cloud sitting on the exact
     calendar stretch of the per-year trend it came from, one shared
     inches-per-t/ha between the two trend panels), rebuilt from IR8's own
@@ -1064,7 +1065,7 @@ def _write_readme(
         "axis its trajectories came from and drawn as wide as that stretch, so "
         "a panel and its shaded band are the same interval of calendar time "
         "read two ways -- the IR8-only analogue of "
-        "`../../by_planting_year/decades_and_trend.jpeg`.",
+        "`../../by_planting_year/annotated/decades_and_trend.jpeg`.",
         "- `decades_and_trend_matched_colours.jpeg` -- the same sheet with "
         "colour spent on the quantity instead of the applied-N era: orange "
         "for yield at zero N, blue for response above zero N, matching each "
