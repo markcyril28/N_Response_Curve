@@ -23,10 +23,12 @@
 # the pooled panel. Everything here is descriptive: no causal claim, no
 # fertilizer recommendation, no agronomic optimum, no N-by-factor interaction.
 
+# --- Execution settings ---
 [run]
 mode = "full" # full is the only supported mode; the recipe fits nothing stochastic
 overwrite = true # replace the bundle in place on re-run
 
+# --- Population contract ---
 [population]
 # Matches the released recipe's [population] tolerances so the core_trial_data
 # panel reproduces the promoted screen rather than a near-copy of it.
@@ -34,6 +36,7 @@ zero_n_tolerance_kg_ha = 0.00000001
 n_level_tolerance_kg_ha = 0.0
 minimum_modifier_series = 4 # below this a covariate is reported insufficient_series, not fitted
 
+# --- Mixed model setup ---
 [mixed_model]
 # The released figure's dashed reference line is lme4's random intercept-slope
 # correlation. The same random-intercept/random-slope model is fitted here on
@@ -51,11 +54,13 @@ r_stage = "modules/n_response_curve/analysis/stages/grain_yield_response_mixed_m
 minimum_observations_per_series = 3 # mirrors the R stage's own gate
 minimum_distinct_n_levels = 3 # mirrors the R stage's own gate
 
+# --- Output formats ---
 [outputs]
 figure_dpi = 220
 figure_width_inches = 10.0
 figure_height_inches = 6.4
 
+# --- Package extension ---
 [package_extension]
 # The canonical output_root below is this exact host placement. Keeping this
 # enabled records the placement contract in run_manifest.json and refuses any
@@ -67,6 +72,7 @@ enabled = true
 host_package = "WF/03_Quality_Control/grain_yield_response_diagnostics"
 placement = "factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
 
+# --- Paths ---
 [paths]
 base_config = "scriptCONFIG.toml"
 release_package = "WF/06_Reports/n_response_full"
@@ -78,6 +84,7 @@ output_root = "WF/03_Quality_Control/grain_yield_response_diagnostics/factors/re
 # only the N rate varies, and that basis differs by dataset.
 # ---------------------------------------------------------------------------
 
+# --- Dataset profile: core_trial_data ---
 [datasets.core_trial_data]
 governance = "governed_release_overlay"
 data_classification = "internal"
@@ -86,6 +93,7 @@ note = """Read through the release manifest's series_uids_by_source membership a
 the package analysis_eligibility_ledger.csv, so this panel is the same 21 series \
 the promoted grain_yield_response_diagnostics bundle screened."""
 
+# --- Dataset profile: ltcce ---
 [datasets.ltcce]
 governance = "ungoverned_raw_source_read"
 data_classification = "restricted"
@@ -98,6 +106,7 @@ constant within every series and serves as the study identifier. The N ladder \
 encodes season and era, so ladder-geometry covariates are design properties of \
 the series rather than agronomic factors."""
 
+# --- Dataset profile: ph_combined_nopt_rcm ---
 [datasets.ph_combined_nopt_rcm]
 governance = "ungoverned_raw_source_read"
 data_classification = "restricted"
