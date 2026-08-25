@@ -65,6 +65,7 @@ _SOURCE_NAMES = (
     "ltcce",
     "ph_combined_nopt_rcm",
 )
+_CORE_OUTPUT_DIRECTORY_NAME = "literature_extracted_dataset"
 # Owned by the trajectory- and variety-cluster generators. Tolerated in the
 # LTCCE destination and carried across this generator's snapshot replacement.
 _PRESERVED_SUBDIRECTORY = "clusters"
@@ -646,7 +647,7 @@ def main() -> int:
             )
         prepared.append((source_name, overlay, selected, n_rate_selected))
 
-    core_dir = args.output_dir / "overlay" / "source_dataset" / "core_trial_data"
+    core_dir = args.output_dir / _CORE_OUTPUT_DIRECTORY_NAME
     _write_governed_core_figures(
         governed_core,
         source_wide_path=core_dir / "core_trial_data_source_wide.jpeg",
@@ -664,7 +665,7 @@ def main() -> int:
     print(_core_n_rate_report(governed_core, threshold_kg_ha=args.n_rate_threshold))
 
     for source_name, overlay, selected, n_rate_selected in prepared:
-        source_dir = args.output_dir / "overlay" / "source_dataset" / source_name
+        source_dir = args.output_dir / source_name
         if source_name == "ltcce":
             assert ltcce_zero_n_strata is not None
             written_figure_count += _write_ltcce_figures(
