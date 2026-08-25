@@ -15,8 +15,9 @@ transaction commits.
 Each view target carries its own ``WORKSPACE_VIEW_MANIFEST.json`` and
 ``CHECKSUMS.sha256`` binding the managed projection to the source release path,
 run identity, and checksum ledger. The curves view may additionally carry the
-separately produced ``overlay/source_dataset`` subtree; its exact boundary and
-filesystem safety are verified, while its bytes remain owned by those producers.
+three separately produced dataset directories at its root; their exact boundary
+and filesystem safety are verified, while their bytes remain owned by those
+producers.
 """
 
 from __future__ import annotations
@@ -46,8 +47,16 @@ class WorkspaceOutputError(ReportingError):
 
 WORKSPACE_VIEW_MANIFEST_NAME = "WORKSPACE_VIEW_MANIFEST.json"
 WORKSPACE_CHECKSUMS_NAME = "CHECKSUMS.sha256"
-WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v2"
-_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v1"
+WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION = "workspace-view-manifest-v4"
+_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V3 = "workspace-view-manifest-v3"
+_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2 = "workspace-view-manifest-v2"
+_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1 = "workspace-view-manifest-v1"
+_STANDALONE_EXTENSION_ROOTS_V4 = (
+    "literature_extracted_dataset",
+    "ltcce",
+    "ph_combined_nopt_rcm",
+)
+_SOURCE_DATASET_EXTENSION_V3 = "source_dataset"
 _SOURCE_DATASET_EXTENSION_V2 = "overlay/source_dataset"
 _SOURCE_DATASET_EXTENSION_V1 = "figures/overlay/source_dataset"
 
@@ -118,7 +127,7 @@ _PREFIX_RULES = (
     ("tables/derived/", "analysis_ready", "derived/"),
     ("tables/quality/", "qc", "quality/"),
     ("tables/curves/", "curves", ""),
-    ("figures/overlay/", "curves", "overlay/configured/"),
+    ("figures/overlay/", "curves", "configured/"),
     ("figures/", "curves", ""),
 )
 
@@ -565,16 +574,22 @@ def _declared_directory_closure(relatives: Iterable[str]) -> set[str]:
     return closure
 
 
-def _standalone_extension_prefix(category: str, schema_version: Any) -> str | None:
-    """Return the separately owned source-dataset subtree for one curves schema."""
+def _standalone_extension_prefixes(
+    category: str, schema_version: Any
+) -> tuple[str, ...]:
+    """Return the separately owned dataset roots for one curves schema."""
 
     if category != "curves":
-        return None
+        return ()
     if schema_version == WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
-        return _SOURCE_DATASET_EXTENSION_V2
-    if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
-        return _SOURCE_DATASET_EXTENSION_V1
-    return None
+        return _STANDALONE_EXTENSION_ROOTS_V4
+    if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V3:
+        return (_SOURCE_DATASET_EXTENSION_V3,)
+    if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2:
+        return (_SOURCE_DATASET_EXTENSION_V2,)
+    if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1:
+        return (_SOURCE_DATASET_EXTENSION_V1,)
+    return ()
 
 
 def _extension_inventory(
@@ -584,17 +599,19 @@ def _extension_inventory(
     category: str,
     schema_version: Any,
 ) -> tuple[set[str], set[str]]:
-    """Select only entries below the exact separately owned extension root."""
+    """Select only entries below the exact separately owned extension roots."""
 
-    prefix = _standalone_extension_prefix(category, schema_version)
-    if prefix is None:
+    prefixes = _standalone_extension_prefixes(category, schema_version)
+    if not prefixes:
         return set(), set()
-    child_prefix = prefix + "/"
-    extension_files = {relative for relative in files if relative.startswith(child_prefix)}
+    child_prefixes = tuple(prefix + "/" for prefix in prefixes)
+    extension_files = {
+        relative for relative in files if relative.startswith(child_prefixes)
+    }
     extension_directories = {
         relative
         for relative in directories
-        if relative == prefix or relative.startswith(child_prefix)
+        if relative in prefixes or relative.startswith(child_prefixes)
     }
     return extension_files, extension_directories
 
@@ -1244,8 +1261,8 @@ def _structural_ownership(
     both accounting fields, a well-formed artifact list on safe unique paths, a
     checksum ledger whose inventory is exactly those artifacts plus the manifest,
     and a ledger entry for the manifest matching the manifest's own bytes. Curves
-    views may also carry the exact separately owned source-dataset subtree; every
-    entry there is recursively lstat-validated but is not claimed by this ledger.
+    views may also carry the exact separately owned dataset roots; every entry
+    there is recursively lstat-validated but is not claimed by this ledger.
 
     With an expected plan, every declared digest and every current artifact byte
     must match that verified package. Drift is accepted only through a separately
@@ -1258,7 +1275,9 @@ def _structural_ownership(
         accepted_schema_versions=frozenset(
             {
                 WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
-                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V3,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1,
             }
         ),
     )
@@ -1328,7 +1347,7 @@ def _structural_ownership(
             raise WorkspaceOutputError(
                 "Workspace ownership metadata contains an artifact from another view"
             )
-        if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
+        if schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1:
             if category == "curves":
                 if source_relative.startswith("tables/curves/"):
                     legacy_relative = "tables/" + source_relative[
@@ -1350,6 +1369,20 @@ def _structural_ownership(
             if relative != legacy_relative:
                 raise WorkspaceOutputError(
                     "Legacy workspace ownership metadata does not match the exact v1 "
+                    f"layout: {relative}"
+                )
+        elif (
+            schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2
+            and category == "curves"
+            and source_relative.startswith("figures/overlay/")
+        ):
+            legacy_relative = (
+                "overlay/configured/"
+                + source_relative[len("figures/overlay/") :]
+            )
+            if relative != legacy_relative:
+                raise WorkspaceOutputError(
+                    "Legacy workspace ownership metadata does not match the exact v2 "
                     f"layout: {relative}"
                 )
         elif relative != classified[1]:
@@ -1933,7 +1966,9 @@ def _recovery_source_package(
                     accepted_schema_versions=frozenset(
                         {
                             WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
-                            _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                            _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V3,
+                            _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2,
+                            _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1,
                         }
                     ),
                 )
@@ -2105,20 +2140,22 @@ def _recover_workspace_transaction(
 
 
 def _copy_standalone_extension(source_view: Path, stage: Path) -> None:
-    """Carry the validated standalone subtree into a newly generated curves stage."""
+    """Carry the validated standalone dataset roots into a new curves stage."""
 
     manifest = _read_view_manifest(
         source_view,
         accepted_schema_versions=frozenset(
             {
                 WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
-                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V3,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2,
+                _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1,
             }
         ),
     )
     schema_version = manifest.get("schema_version")
-    source_prefix = _standalone_extension_prefix("curves", schema_version)
-    assert source_prefix is not None
+    source_prefixes = _standalone_extension_prefixes("curves", schema_version)
+    assert source_prefixes
     files, directories = _walk_view_entries(source_view)
     extension_files, extension_directories = _extension_inventory(
         files,
@@ -2136,21 +2173,47 @@ def _copy_standalone_extension(source_view: Path, stage: Path) -> None:
         }
     except OSError as exc:
         raise WorkspaceOutputError(
-            "Standalone source-dataset extension changed while it was inventoried"
+            "Standalone dataset directories changed while they were inventoried"
         ) from exc
 
-    def destination_relative(relative: str) -> Path:
+    def destination_relative(relative: str) -> Path | None:
+        if schema_version == WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
+            return Path(relative)
+        source_prefix = next(
+            prefix
+            for prefix in source_prefixes
+            if relative == prefix or relative.startswith(prefix + "/")
+        )
         suffix = Path(relative).relative_to(source_prefix)
-        return Path(_SOURCE_DATASET_EXTENSION_V2) / suffix
+        if not suffix.parts:
+            return None
+        parts = list(suffix.parts)
+        if parts[0] == "core_trial_data":
+            parts[0] = "literature_extracted_dataset"
+        if parts[0] not in _STANDALONE_EXTENSION_ROOTS_V4:
+            raise WorkspaceOutputError(
+                "Legacy standalone extension contains an unrecognized dataset "
+                f"directory: {parts[0]}"
+            )
+        return Path(*parts)
 
     for relative in sorted(
         extension_directories, key=lambda item: (len(Path(item).parts), item)
     ):
-        (stage / destination_relative(relative)).mkdir(exist_ok=True)
+        destination_relative_path = destination_relative(relative)
+        if destination_relative_path is not None:
+            (stage / destination_relative_path).mkdir(exist_ok=True)
     for relative in sorted(extension_files):
         source = source_view / relative
-        destination = stage / destination_relative(relative)
+        destination_relative_path = destination_relative(relative)
+        assert destination_relative_path is not None
+        destination = stage / destination_relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() or destination.is_symlink():
+            raise WorkspaceOutputError(
+                "Standalone extension migration would overwrite another file: "
+                f"{destination}"
+            )
         try:
             info = os.lstat(source)
         except OSError as exc:
@@ -2185,7 +2248,7 @@ def _copy_standalone_extension(source_view: Path, stage: Path) -> None:
         }
     except OSError as exc:
         raise WorkspaceOutputError(
-            "Standalone source-dataset extension changed during copy"
+            "Standalone dataset directories changed during copy"
         ) from exc
     if (
         after_extension_files != extension_files
@@ -2193,7 +2256,7 @@ def _copy_standalone_extension(source_view: Path, stage: Path) -> None:
         or after != before
     ):
         raise WorkspaceOutputError(
-            "Standalone source-dataset extension changed during copy"
+            "Standalone dataset directories changed during copy"
         )
 
 
@@ -2603,10 +2666,13 @@ def _prepare_legacy_curves_migration(
     manifest = _read_view_manifest(
         historical,
         accepted_schema_versions=frozenset(
-            {_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION}
+            {_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1}
         ),
     )
-    if manifest.get("schema_version") != _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION:
+    if (
+        manifest.get("schema_version")
+        != _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1
+    ):
         raise WorkspaceOutputError(
             f"Historical curves workspace target is not an exact v1 view: {historical}"
         )
