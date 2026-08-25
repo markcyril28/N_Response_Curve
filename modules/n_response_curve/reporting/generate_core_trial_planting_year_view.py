@@ -2,7 +2,7 @@
 """Write a by-planting-year `decades_and_trend` sheet for `core_trial_data`.
 
 The core-trial analogue of LTCCE's
-`clusters/by_season/ds/by_planting_year/decades_and_trend_matched_colours.jpeg`:
+`clusters/by_season/ds/by_planting_year/annotated/decades_and_trend_matched_colours.jpeg`:
 each planting decade's response-curve cloud drawn as an inset sitting on the
 exact calendar stretch of the per-year yield trend it came from, with colour
 spent on the quantity (yield at zero N versus response above zero N) rather
@@ -148,8 +148,8 @@ NOTES_FILENAME = "decades_and_trend_notes.md"
 
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset"
-    / SOURCE_NAME
+    / "WF/04_Response_Curves/z_n_response_full"
+    / "literature_extracted_dataset"
     / "clusters/by_planting_year"
 )
 
@@ -194,7 +194,7 @@ def _copy_preserved_plain_entry(source: Path, destination: Path) -> None:
         os.close(descriptor)
 
 
-# The sheet reproduces LTCCE's `decades_and_trend_matched_colours.jpeg`, whose
+# The sheet reproduces LTCCE's `annotated/decades_and_trend_matched_colours.jpeg`, whose
 # 34 inches carry six decades. Reusing that inches-per-year density rather than
 # the fixed width keeps three core-trial decades proportioned the same way
 # instead of stretching three insets across a sheet sized for twice as many.
@@ -1373,7 +1373,7 @@ def _write_readme(
         "## The same figure in two forms",
         "",
         "Both are the core-trial analogue of LTCCE's",
-        "`ltcce/clusters/by_season/ds/by_planting_year/"
+        "`ltcce/clusters/by_season/ds/by_planting_year/annotated/"
         "decades_and_trend_matched_colours.jpeg`: each planting decade's",
         "response-curve cloud drawn as an inset sitting on the calendar stretch",
         "of the per-year trend it came from, with colour spent on the quantity",
