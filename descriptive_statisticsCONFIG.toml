@@ -47,6 +47,7 @@
 # columns named in [privacy].suppressed_headers are excluded from every emitted
 # table — no level frequency, example value, or row-level export may carry them.
 
+# --- Execution settings ---
 [run]
 mode = "full" # validate | test | full
 # Replace an existing bundle, but only after it verifies against its own
@@ -63,12 +64,14 @@ fail_fast = true
 # are included when true; the table is classification-labeled in the manifest.
 include_row_level_observations = true
 
+# --- Input sources ---
 [sources]
 # Profiled datasets. Each name must be an enabled source in the base config; the
 # path, encoding, adapter, and data classification are read from there rather
 # than restated here, so this recipe cannot drift from the registered contract.
 profiled = ["core_trial_data", "ph_combined_nopt_rcm", "ltcce"]
 
+# --- Privacy suppression ---
 [privacy]
 # Matched on exact header text. Their cells are blanked before any profile sees
 # them, so no value from these columns reaches any emitted table: they carry no
@@ -111,6 +114,7 @@ suppressed_headers = [
     "longitude",
 ]
 
+# --- Structure profiling rules ---
 [structure]
 # A column is treated as numeric when at least this share of its nonblank cells
 # parse as finite numbers; otherwise it is profiled as categorical.
@@ -120,18 +124,21 @@ numeric_parse_threshold = 0.80
 maximum_categorical_cardinality = 60
 example_values_per_column = 3
 
+# --- Numeric profiling rules ---
 [numeric]
 outlier_iqr_multipliers = [1.5, 3.0]
 quantiles = [0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]
 histogram_bins = 24
 minimum_observations = 3
 
+# --- Categorical profiling rules ---
 [categorical]
 # A level is written to the frequency table only at or above this count, so rare
 # levels of restricted context fields cannot become de facto row identifiers.
 minimum_level_count = 3
 maximum_levels_reported = 40
 
+# --- Agronomic profiling rules ---
 [agronomic]
 # Tuning shared by every dataset's agronomic profile.
 nitrogen_bin_width_kg_ha = 30.0
@@ -158,6 +165,7 @@ minimum_group_observations = 3
 # stylistic: the core extract carries seven duplicated and sixteen blank header
 # names, so header text does not identify a column there.
 
+# --- Source bindings: core_trial_data ---
 [agronomic.core_trial_data]
 nitrogen_rate = { position = 131, header = "Inorganic N_rate (kg N ha-1)" }
 yield_t_ha = { position = 283, header = "Grain Yield (t ha-1)" }
@@ -219,6 +227,7 @@ series = [
     { position = 7, header = "Trial ID", label = "trial" },
 ]
 
+# --- Source bindings: ph_combined_nopt_rcm ---
 [agronomic.ph_combined_nopt_rcm]
 # The registered schema evidence for this source (sheet_2_notes.csv) names four
 # N treatments per record, each in its own column pair:
@@ -292,6 +301,7 @@ series = [
     { position = 2, header = "nopt_reference", label = "trial" },
 ]
 
+# --- Source bindings: ltcce ---
 [agronomic.ltcce]
 nitrogen_rate = { position = 10, header = "Nfert" }
 yield_t_ha = { position = 12, header = "GYtha" }
@@ -340,6 +350,7 @@ series = [
     { position = 8, header = "Variety", label = "variety" },
 ]
 
+# --- Output formats ---
 [outputs]
 table_formats = ["csv"]
 figure_formats = ["jpeg"]
@@ -347,6 +358,7 @@ figure_dpi = 220
 figure_width_inches = 10.0
 figure_height_inches = 6.4
 
+# --- Input integrity checks ---
 [expected_inputs]
 # The three registered intake CSVs are pinned: they are stable provenance copies,
 # and a change to any of them invalidates this profile.
@@ -360,6 +372,7 @@ core_trial_data_sha256 = "88e492add192621382d9e198af7558882de4d666b6934ceefc1cd6
 ph_combined_nopt_rcm_sha256 = "2f9b05914f50b3935ad52b4d3ee2444a6d9fbd43fcf2f52719ea595e33ac9076"
 ltcce_sha256 = "f8ab7c50ca51f95c596d15e5d01ba23749dce085da050db56956efb803330ef8"
 
+# --- Paths ---
 [paths]
 base_config = "scriptCONFIG.toml"
 output_root = "WF/03_Quality_Control/descriptive_statistics"
