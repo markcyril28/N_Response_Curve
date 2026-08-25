@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """The descriptive-statistics N-yield scatter, redrawn with fitted curves.
 
-Same point cloud as the governed
-``figures/agronomic/yield_versus_nitrogen.jpeg`` panel — same loader, same
-harmonized rows, same colours, same opacity rule — with one fitted curve per
-dataset drawn over it.
+The governed ``figures/agronomic/yield_versus_nitrogen.jpeg`` point cloud is
+augmented with every declared Farmer's Practice (FP) observation. The PH NOPT
+rows, paired PH FP arm, and literature rows explicitly classified as FP are
+drawn as one group named ``ph_combined_nopt_rcm_fp``. The same loader, colours,
+and opacity rule are retained, with fitted curves drawn over the augmented
+cloud. ``--exclude-farmers-practice`` produces the corresponding no-FP panel:
+the paired PH FP arm is not appended and the explicitly classified literature
+rows are removed, while the PH NOPT arm is retained.
 
 Why this is a separate script rather than a new builder in
 ``descriptive_statistics_figures.py``: that module's own contract is "Nothing
@@ -26,11 +30,11 @@ Three project conventions are honoured deliberately:
 
 ``--scope`` chooses whether the fit is per dataset (default), one line across
 all datasets stacked, or both. A pooled line is not the default because 13,653
-of the 15,558 rows are ltcce, whose N ladder is confounded with season and era:
-one line over the three summarizes coverage, not a response.
+of the 16,205 rows are ltcce, whose N ladder is confounded with season and era:
+one line over the three plotted groups summarizes coverage, not a response.
 
 ``--weight`` chooses what the least squares is over. The recorded cloud is
-severely unbalanced across N — 3,697 rows at zero, four at the top rate — so
+severely unbalanced across N — 3,697 rows at zero, one at the top rate — so
 ``row`` (the default) is decided by where rows pile up, while ``level`` weights
 every recorded rate equally and lets the sparse high-N end steer the curve. The
 two answer different questions and neither is a correction of the other.
@@ -72,12 +76,14 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "descriptive_statisticsCONFIG.toml"
 # contents against CHECKSUMS, and a stray figure under its tree fails that check.
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "WF/03_Quality_Control/descriptive_statistics_fits"
 
-# Datasets whose recorded rows carry no zero-N arm in this observation basis.
-# ph_combined_nopt_rcm holds its zero-N yield as a sibling column (``n0_yield``)
-# which ``build_observation_frame`` deliberately does not expand into a second
-# row, so its cloud starts at 70 kg N/ha. A curve fitted there describes the
-# fertilized window only and cannot speak to response from zero.
+# The governed PH NOPT rows carry no zero-N arm in this observation basis:
+# ``n0_yield`` is a sibling column that ``build_observation_frame`` deliberately
+# does not expand. The FP-inclusive plotted group can nevertheless reach zero
+# through a literature row explicitly classified as Farmer's Practice. That
+# mixed group is a coverage summary, not evidence of a PH response from zero.
 _POOLED_LABEL = "all datasets pooled"
+_PH_COMBINED_SOURCE_NAME = "ph_combined_nopt_rcm"
+_PH_COMBINED_WITH_FP_NAME = "ph_combined_nopt_rcm_fp"
 
 # Curve resolution. 200 points is smooth at this canvas width and keeps the
 # encoded JPEG small.
@@ -168,6 +174,154 @@ class _Fit:
     notes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _FarmersPracticeMerge:
+    """The augmented observation cloud and an explicit account of its FP rows."""
+
+    observations: pd.DataFrame
+    ph_nopt_rows: int
+    paired_ph_fp_rows: int
+    relabeled_core_fp_rows: int
+
+    @property
+    def merged_rows(self) -> int:
+        return (
+            self.ph_nopt_rows
+            + self.paired_ph_fp_rows
+            + self.relabeled_core_fp_rows
+        )
+
+
+@dataclass(frozen=True)
+class _FarmersPracticeExclusion:
+    """The no-FP cloud and an explicit account of the omitted FP rows."""
+
+    observations: pd.DataFrame
+    ph_nopt_rows: int
+    omitted_paired_ph_fp_rows: int
+    removed_core_fp_rows: int
+
+
+def _merge_farmers_practice(
+    observations: pd.DataFrame,
+    loaded,
+    config,
+) -> _FarmersPracticeMerge:
+    """Merge every declared FP observation into the plotted PH dataset group.
+
+    ``_farmers_practice_series`` is the descriptive-statistics recipe's single
+    composition rule: it appends the paired PH FP rate/yield columns and moves
+    core rows explicitly classified as Farmer's Practice into that derived
+    series. This plot then combines the derived series with the PH NOPT rows,
+    because its legend is by dataset group rather than by treatment arm.
+
+    Fail loudly if the promised arm disappears from the configuration. The two
+    FP bindings are optional at schema level, so silently retaining the old
+    three-series cloud would otherwise recreate the omission this plot is meant
+    to fix.
+    """
+
+    composition = dsf._farmers_practice_series(loaded, observations, config)
+    if (
+        _PH_COMBINED_SOURCE_NAME not in composition.arm_source_names
+        or composition.arm_rows <= 0
+    ):
+        raise ValueError(
+            "No finite Farmer's Practice N-rate/yield pairs were loaded for "
+            f"{_PH_COMBINED_SOURCE_NAME}"
+        )
+
+    merged = composition.observations.copy()
+    ph_nopt_rows = int(
+        (merged["source_name"] == _PH_COMBINED_SOURCE_NAME).sum()
+    )
+    fp_series_name = dsf._FARMERS_PRACTICE_SERIES_NAME
+    merge_mask = merged["source_name"].isin(
+        (_PH_COMBINED_SOURCE_NAME, fp_series_name)
+    )
+    merged.loc[merge_mask, "source_name"] = _PH_COMBINED_WITH_FP_NAME
+    return _FarmersPracticeMerge(
+        observations=merged,
+        ph_nopt_rows=ph_nopt_rows,
+        paired_ph_fp_rows=composition.arm_rows,
+        relabeled_core_fp_rows=composition.relabeled_rows,
+    )
+
+
+def _exclude_farmers_practice(
+    observations: pd.DataFrame,
+    loaded,
+    config,
+) -> _FarmersPracticeExclusion:
+    """Remove explicit literature FP rows and omit every paired PH FP row."""
+
+    composition = dsf._farmers_practice_series(loaded, observations, config)
+    fp_index = dsf._core_trial_farmers_practice_index(loaded, observations)
+    if fp_index.empty and composition.arm_rows <= 0:
+        raise ValueError("No Farmer's Practice observations were found")
+
+    retained = observations.drop(index=fp_index).reset_index(drop=True)
+    ph_nopt_rows = int(
+        (retained["source_name"] == _PH_COMBINED_SOURCE_NAME).sum()
+    )
+    return _FarmersPracticeExclusion(
+        observations=retained,
+        ph_nopt_rows=ph_nopt_rows,
+        omitted_paired_ph_fp_rows=composition.arm_rows,
+        removed_core_fp_rows=int(len(fp_index)),
+    )
+
+
+def _fit_source_name(
+    source_name: str, *, include_farmers_practice: bool
+) -> str:
+    """Map the PH source to the FP-inclusive name only for that variant."""
+
+    if include_farmers_practice and source_name == _PH_COMBINED_SOURCE_NAME:
+        return _PH_COMBINED_WITH_FP_NAME
+    return source_name
+
+
+def _ordered_sources(
+    loaded, present, *, include_farmers_practice: bool
+) -> tuple[str, ...]:
+    """Registered source order, translated when the plotted group includes FP."""
+
+    available = set(present)
+    return tuple(
+        plotted_name
+        for source in loaded.sources
+        if (
+            plotted_name := _fit_source_name(
+                source.source_name,
+                include_farmers_practice=include_farmers_practice,
+            )
+        )
+        in available
+    )
+
+
+def _source_colours(loaded, *, include_farmers_practice: bool) -> dict[str, str]:
+    """Keep the registered PH colour when its plotted name gains the FP suffix."""
+
+    registered = dsf._source_colours(loaded)
+    return {
+        _fit_source_name(
+            source_name,
+            include_farmers_practice=include_farmers_practice,
+        ): colour
+        for source_name, colour in registered.items()
+    }
+
+
+def _legend_label(source_name: str, *, include_farmers_practice: bool) -> str:
+    """Reader-facing label, including the explicit suffix on the merged group."""
+
+    if include_farmers_practice and source_name == _PH_COMBINED_WITH_FP_NAME:
+        return source_name
+    return dsf._legend_label(source_name)
+
+
 def _r_squared(
     observed: np.ndarray, predicted: np.ndarray, weights: np.ndarray
 ) -> float:
@@ -182,7 +336,7 @@ def _r_squared(
 def _level_weights(x: np.ndarray, *, tolerance_kg_ha: float) -> np.ndarray:
     """One unit of weight per recorded N level, split among its rows.
 
-    The recorded cloud is not balanced across N: 3,697 rows sit at zero and four
+    The recorded cloud is not balanced across N: 3,697 rows sit at zero and one
     sit at the top rate, so an unweighted fit is decided almost entirely by where
     the rows happen to pile up. Weighting each row by the reciprocal of its
     level's row count makes every recorded rate count once — the fit then follows
@@ -448,9 +602,26 @@ def _build_figure(
     weighting: str,
     loess_overlay: bool,
     mark_vertex: bool,
+    farmers_practice_merge: _FarmersPracticeMerge | None,
+    farmers_practice_exclusion: _FarmersPracticeExclusion | None,
+    show_description: bool,
 ) -> tuple[plt.Figure, list[_Fit]]:
-    names = dsf._ordered_sources(loaded, observations["source_name"])
-    colours = dsf._source_colours(loaded)
+    include_farmers_practice = farmers_practice_merge is not None
+    if include_farmers_practice == (farmers_practice_exclusion is not None):
+        raise ValueError(
+            "Exactly one Farmer's Practice inclusion/exclusion summary is required"
+        )
+    names = _ordered_sources(
+        loaded,
+        observations["source_name"],
+        include_farmers_practice=include_farmers_practice,
+    )
+    colours = _source_colours(
+        loaded, include_farmers_practice=include_farmers_practice
+    )
+    legend_label = lambda name: _legend_label(  # noqa: E731
+        name, include_farmers_practice=include_farmers_practice
+    )
     counts = observations["source_name"].value_counts()
     figure, axis = dsf._figure(config)
 
@@ -517,7 +688,7 @@ def _build_figure(
                 markerfacecolor=colours[name],
                 markeredgecolor="none",
                 markersize=7,
-                label=f"{dsf._legend_label(name)} — {int(counts.get(name, 0)):,} observations",
+                label=f"{legend_label(name)} — {int(counts.get(name, 0)):,} observations",
             )
         )
     for fit in fits:
@@ -563,6 +734,37 @@ def _build_figure(
                 markeredgecolor="white",
                 markeredgewidth=1.0,
                 zorder=5,
+            )
+            # Put the numerical result beside the marker so the reader does not
+            # have to estimate it from the axes or open the companion CSV. Keep
+            # the box on the inward side when a turning point sits in the right
+            # half of its fitted range, which prevents an edge vertex from
+            # pushing the callout beyond the axes.
+            label_to_left = fit.vertex_n > (fit.n_min + fit.n_max) / 2.0
+            axis.annotate(
+                "Turning point\n"
+                f"N = {fit.vertex_n:.1f} kg N ha⁻¹\n"
+                f"Yield = {fit.vertex_yield:.2f} t ha⁻¹",
+                xy=(fit.vertex_n, fit.vertex_yield),
+                xytext=(-12 if label_to_left else 12, 16),
+                textcoords="offset points",
+                ha="right" if label_to_left else "left",
+                va="bottom",
+                fontsize=8,
+                color=colour,
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "facecolor": "white",
+                    "edgecolor": colour,
+                    "alpha": 0.92,
+                    "linewidth": 0.9,
+                },
+                arrowprops={
+                    "arrowstyle": "-",
+                    "color": colour,
+                    "linewidth": 0.9,
+                },
+                zorder=6,
             )
 
     if loess_overlay and form != "loess":
@@ -614,18 +816,18 @@ def _build_figure(
         else "ordinary least squares on the recorded rows"
     )
     if pooled_alone:
-        # A single line over three stacked datasets is dominated by whichever one
-        # is largest, so the panel prints the composition rather than leaving the
-        # reader to infer it from the legend counts.
+        # A single line over three stacked groups is dominated by whichever one
+        # is largest, so the panel prints the composition rather than leaving
+        # the reader to infer it from the legend counts.
         composition = ", ".join(
-            f"{dsf._legend_label(name)} "
+            f"{legend_label(name)} "
             f"{100.0 * int(counts.get(name, 0)) / len(observations):.0f}%"
             for name in sorted(
                 names, key=lambda name: int(counts.get(name, 0)), reverse=True
             )
         )
         caveat_parts = [
-            f"One {_FORM_LABEL[form]} across all three datasets stacked "
+            f"One {_FORM_LABEL[form]} across all three plotted groups stacked "
             f"({len(observations):,} rows: {composition}), {squares}, drawn only "
             "across the observed N range."
         ]
@@ -647,8 +849,12 @@ def _build_figure(
         # only one of the three usually gets there, and an unattributed count
         # reads as if the warning applied to every curve on the panel.
         reaching = ", ".join(
-            dsf._legend_label(name)
-            for name in dsf._ordered_sources(loaded, tail["source_name"].unique())
+            legend_label(name)
+            for name in _ordered_sources(
+                loaded,
+                tail["source_name"].unique(),
+                include_farmers_practice=include_farmers_practice,
+            )
         )
         caveat_parts.append(
             f"Above {top_quarter:.0f} kg N/ha the cloud holds {len(tail):,} "
@@ -659,9 +865,7 @@ def _build_figure(
     # Each caveat names only the datasets it is true of. Reusing one sentence for
     # every dataset carrying any note would tell the reader, for instance, that
     # ltcce records no zero-N row when it records 3,421 of them.
-    unanchored = [
-        dsf._legend_label(fit.source_name) for fit in fits if fit.n_min > 0.0
-    ]
+    unanchored = [legend_label(fit.source_name) for fit in fits if fit.n_min > 0.0]
     if unanchored:
         caveat_parts.append(
             f"{', '.join(unanchored)}: no recorded zero-N row in this basis, so "
@@ -685,21 +889,43 @@ def _build_figure(
         )
     if mark_vertex:
         caveat_parts.append(
-            "Markers show a curve's turning point; one outside the observed range "
-            "is not reported at all."
+            "Markers and adjacent labels show a curve's turning point; one "
+            "outside the observed range is not reported at all."
         )
     # The standing disclaimer closes the caption: it is identical on every
     # variant, so it reads last, after the facts specific to this panel.
-    caveat_parts.append(
-        "Each point is one harmonized row carrying both a finite N rate and a "
-        "finite yield — the same rows as the descriptive-statistics "
-        "yield_versus_nitrogen panel. The fitted curves are added here and are "
-        "not part of that governed bundle. They fit recorded yield on recorded N "
-        "alone, with no term for dataset, series, site, season, year, or "
-        "variety, and the datasets differ in design, era, and site — so a curve "
-        "summarizes coverage of the recorded cloud. It is not a causal N "
-        "response and carries no fertilizer recommendation."
-    )
+    if farmers_practice_exclusion is not None:
+        caveat_parts.append(
+            "Farmer's Practice (FP) is excluded: "
+            f"{farmers_practice_exclusion.removed_core_fp_rows:,} "
+            "literature-extracted FP observations were removed, and "
+            f"{farmers_practice_exclusion.omitted_paired_ph_fp_rows:,} paired "
+            "PH FP observations were not appended. The ph_combined_nopt_rcm "
+            f"group contains only its {farmers_practice_exclusion.ph_nopt_rows:,} "
+            "PH NOPT rows. Each retained point carries both a finite N rate and "
+            "a finite yield. The fitted curve is added here and is not part of "
+            "the governed descriptive-statistics bundle. It fits recorded "
+            "yield on recorded N alone, with no term for dataset, series, site, "
+            "season, year, or variety, and the datasets differ in design, era, "
+            "and site — so the curve summarizes coverage of the retained "
+            "recorded cloud. It is not a causal N response and carries no "
+            "fertilizer recommendation."
+        )
+    else:
+        assert farmers_practice_merge is not None
+        caveat_parts.append(
+            f"The {_PH_COMBINED_WITH_FP_NAME} group contains "
+            f"{farmers_practice_merge.ph_nopt_rows:,} PH NOPT rows, "
+            f"{farmers_practice_merge.paired_ph_fp_rows:,} paired PH FP rows, and "
+            f"{farmers_practice_merge.relabeled_core_fp_rows:,} literature rows "
+            "explicitly classified as Farmer's Practice. Each point carries both a "
+            "finite N rate and a finite yield. The fitted curves are added here and "
+            "are not part of the governed descriptive-statistics bundle. They fit "
+            "recorded yield on recorded N alone, with no term for dataset, series, "
+            "site, season, year, or variety, and the datasets differ in design, era, "
+            "and site — so a curve summarizes coverage of the recorded cloud. It is "
+            "not a causal N response and carries no fertilizer recommendation."
+        )
 
     # Headroom for the legend, which now carries a fit entry per dataset on top
     # of the scatter entries and would otherwise sit on the highest yields.
@@ -717,13 +943,17 @@ def _build_figure(
                 else f"with a {_FORM_LABEL[form]} per dataset"
             )
             + (", every N level weighted equally" if weighting == "level" else "")
+            + ("\nFarmer's Practice excluded" if not include_farmers_practice else "")
         ),
         xlabel="Inorganic N rate (kg N ha⁻¹)",
         ylabel="Grain yield (t ha⁻¹)",
     )
     axis.legend(handles=handles, fontsize=8, loc="upper right")
     axis.grid(alpha=0.2)
-    _caption(figure, caveat_parts)
+    if show_description:
+        _caption(figure, caveat_parts)
+    else:
+        figure.tight_layout()
     return figure, fits
 
 
@@ -780,8 +1010,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("per-dataset", "pooled", "both"),
         default="per-dataset",
         help="Whether to fit each dataset separately (default), fit one line "
-        "across all datasets stacked, or draw both. 88%% of the rows are ltcce, "
-        "so any pooled line is labeled a coverage summary.",
+        "across all datasets stacked, or draw both. Most rows are ltcce, so any "
+        "pooled line is labeled a coverage summary.",
     )
     parser.add_argument(
         "--weight",
@@ -795,14 +1025,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mark-vertex",
         action="store_true",
-        help="Mark each curve's turning point when it falls inside the observed "
-        "N range",
+        help="Mark and label each curve's turning point when it falls inside "
+        "the observed N range",
     )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
         "--no-table",
         action="store_true",
         help="Skip the companion fit-parameter CSV",
+    )
+    parser.add_argument(
+        "--no-description",
+        action="store_true",
+        help="Render the figure without the qualifying caption below the axes",
+    )
+    parser.add_argument(
+        "--exclude-farmers-practice",
+        action="store_true",
+        help="Omit the paired PH Farmer's Practice arm and remove literature "
+        "rows explicitly classified as Farmer's Practice",
     )
     return parser.parse_args(argv)
 
@@ -825,6 +1066,10 @@ def _output_paths(args: argparse.Namespace) -> tuple[Path, Path]:
         slug += "_level_weighted"
     if args.mark_vertex:
         slug += "_vertex"
+    if args.exclude_farmers_practice:
+        slug += "_excluding_farmers_practice"
+    if args.no_description:
+        slug += "_no_description"
 
     if args.output is not None:
         figure_path = args.output
@@ -845,11 +1090,23 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_recipe_config(args.config, project_root=PROJECT_ROOT)
     loaded = load_profiled_sources(config)
-    observations = build_all_observations(
+    governed_observations = build_all_observations(
         loaded, zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha
     )
-    if observations.empty:
+    if governed_observations.empty:
         raise SystemExit("No harmonized observations were produced")
+    farmers_practice_merge: _FarmersPracticeMerge | None = None
+    farmers_practice_exclusion: _FarmersPracticeExclusion | None = None
+    if args.exclude_farmers_practice:
+        farmers_practice_exclusion = _exclude_farmers_practice(
+            governed_observations, loaded, config
+        )
+        observations = farmers_practice_exclusion.observations
+    else:
+        farmers_practice_merge = _merge_farmers_practice(
+            governed_observations, loaded, config
+        )
+        observations = farmers_practice_merge.observations
 
     figure, fits = _build_figure(
         observations,
@@ -861,6 +1118,9 @@ def main(argv: list[str] | None = None) -> int:
         weighting=args.weight,
         loess_overlay=args.loess_overlay,
         mark_vertex=args.mark_vertex,
+        farmers_practice_merge=farmers_practice_merge,
+        farmers_practice_exclusion=farmers_practice_exclusion,
+        show_description=not args.no_description,
     )
     if not fits:
         plt.close(figure)
