@@ -18,6 +18,7 @@
 # {population,pooled,heterogeneity,factors} — with run_manifest.json and
 # CHECKSUMS.sha256 binding every member.
 
+# --- Execution settings ---
 [run]
 mode = "full" # validate | test | full
 overwrite = true # replace only after the existing companion bundle verifies
@@ -31,6 +32,7 @@ mixed_model_required = true
 # change to "required" after the parent release lineage is repaired.
 release_verification_policy = "record_failure"
 
+# --- Population contract ---
 [population]
 source_name = "core_trial_data"
 analysis_population = "governed_overlay"
@@ -40,6 +42,7 @@ minimum_distinct_n_levels = 3
 n_level_tolerance_kg_ha = 0.01
 zero_n_tolerance_kg_ha = 0.00000001
 
+# --- Diagnostics suite ---
 [diagnostics]
 fit_pooled_linear = true
 fit_pooled_quadratic = true
@@ -48,11 +51,13 @@ fit_zero_n_delta = true
 fit_series_linear = true
 leave_one_series_out = true
 
+# --- Grouping keys ---
 [grouping]
 series_key = "response_series_uid"
 study_key = "study_uid"
 trial_key = "trial_uid"
 
+# --- Factor screening ---
 [factors]
 # Operator-declared ledger columns screened as candidate predictors. In the
 # current population every one of these is constant within each response series,
@@ -66,6 +71,7 @@ numeric = ["p_rate_kg_p2o5_ha", "k_rate_kg_k2o_ha"]
 minimum_level_observations = 3
 minimum_modifier_series = 4
 
+# --- Output formats ---
 [outputs]
 table_formats = ["csv"]
 figure_formats = ["jpeg"]
@@ -73,6 +79,7 @@ figure_dpi = 220
 figure_width_inches = 10.0
 figure_height_inches = 6.4
 
+# --- Input integrity checks ---
 [expected_inputs]
 base_config_sha256 = "ecdc077cef97b2826e7add4f0cd0bba7f9093a82f9fc4d8ffaf2d34569ef3b3a"
 source_sha256 = "88e492add192621382d9e198af7558882de4d666b6934ceefc1cd688e076d5de"
@@ -80,6 +87,7 @@ release_manifest_sha256 = "468c02cd5da5932f1e481a983d42200843c969e0a5da46dbba755
 release_ledger_sha256 = "96865dd4bde6ea034e8ca6a5832de795fb9195f905da0333a32bd572efcd62e9"
 release_checksums_sha256 = "a1239ee59e1b0fef25d5432e18fe3abc804ad47b8fa5d9daacddb58ff10d04d1"
 
+# --- Paths ---
 [paths]
 base_config = "scriptCONFIG.toml"
 release_package = "WF/06_Reports/n_response_full"
