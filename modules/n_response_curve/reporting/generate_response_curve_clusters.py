@@ -75,7 +75,7 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 # in parallel subdirectories makes ownership and regeneration unambiguous.
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset/ltcce/clusters/by_trajectory"
+    / "WF/04_Response_Curves/z_n_response_full/ltcce/clusters/by_trajectory"
 )
 SOURCE_NAME = "ltcce"
 
@@ -663,7 +663,7 @@ def _write_cluster_root_readme(destination: Path) -> None:
         "`by_variety/` above, which clusters varieties themselves rather than "
         "listing them. `by_planting_year/` bands the recorded year into decades, "
         "because no single year is large enough to be a stratum, and carries "
-        "`annual_trend.jpeg` for the unbanded year-by-year view.\n\n"
+        "`annotated/annual_trend.jpeg` for the unbanded year-by-year view.\n\n"
         "These products are descriptive diagnostics rather than governed analyses. "
         "Each carries a JSON summary of its method and interpretation limits "
         "(`by_trajectory/clustering_summary.json`); `by_variety/` and `by_season/` "
