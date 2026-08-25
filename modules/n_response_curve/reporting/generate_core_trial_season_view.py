@@ -52,8 +52,8 @@ SOURCE_NAME = "core_trial_data"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset"
-    / "core_trial_data/clusters/by_season"
+    / "WF/04_Response_Curves/z_n_response_full"
+    / "literature_extracted_dataset/clusters/by_season"
 )
 
 _SEASON_ORDER = ("dry", "wet")
