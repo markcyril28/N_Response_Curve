@@ -28,8 +28,16 @@ from n_response_curve.reporting.source_config_spec import load_source_spec  # no
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset"
+    / "WF/04_Response_Curves/z_n_response_full"
 )
+
+
+def _output_directory_name(source_name: str) -> str:
+    return (
+        "literature_extracted_dataset"
+        if source_name == "core_trial_data"
+        else source_name
+    )
 
 
 def _load_source_spec(config_path: Path, source_name: str) -> tuple[Path, str]:
@@ -104,7 +112,7 @@ def main() -> int:
     if destination is None:
         destination = (
             DEFAULT_OUTPUT_DIR
-            / args.source_name
+            / _output_directory_name(args.source_name)
             / f"{args.source_name}_source_wide_no_{_slug(excluded_classes)}.jpeg"
         )
 
