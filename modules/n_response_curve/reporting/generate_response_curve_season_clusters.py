@@ -121,6 +121,7 @@ from n_response_curve.reporting.response_curve_season_clusters import (  # noqa:
     MIN_SEASON_SIZE,
     MIN_SUBCLUSTERED_FACTOR_STRATUM,
     MIN_SUBCLUSTERED_SUBSTRATUM,
+    SEASON_LABELS,
     VARIETY_RELEASE_YEAR_SOURCE,
     AnnualRecord,
     ClusterSubstructure,
@@ -160,7 +161,7 @@ from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/overlay/source_dataset/ltcce/clusters/by_season"
+    / "WF/04_Response_Curves/z_n_response_full/ltcce/clusters/by_season"
 )
 SOURCE_NAME = "ltcce"
 
@@ -177,6 +178,15 @@ _LOCAL_LABEL_NOTE = "cluster numbering is local to this season and is not compar
 # as six near-identical blocks.
 SEPARATED_NOTES_FILENAME = "separated_figure_notes.md"
 _SEPARATED_FIGURE_SUFFIX = "_figure.jpeg"
+PLANTING_YEAR_ANNOTATED_DIRNAME = "annotated"
+PLANTING_YEAR_FIGURE_ONLY_DIRNAME = "figure_only"
+PLANTING_YEAR_REPLICATE_DIRNAME = "by_replicate"
+COMPACT_DESIGN_FIGURE_FILENAME = (
+    "decades_designs_and_trend_figure_no_description.jpeg"
+)
+COMPACT_DESIGN_DESCRIPTION_FILENAME = (
+    "decades_designs_and_trend_figure_description.md"
+)
 
 # The disclosure discipline here costs title lines: a cluster figure carries up
 # to nine, including two long ladder/season caveats. On the 10x7 inch canvas
@@ -854,6 +864,37 @@ def _factor_directory(season: str, substructure: FactorSubstructure) -> Path:
     return Path(_season_token(season)) / substructure.definition.directory
 
 
+def _season_adjective(season: str) -> str:
+    """`DS` -> `dry-season`: the season name as a prose modifier.
+
+    Hyphenated because it is only ever used attributively, in front of the
+    noun it qualifies.
+    """
+
+    described = SEASON_LABELS.get(season.strip().upper())
+    return described.replace(" ", "-") if described else "per-season"
+
+
+def _factor_output_directories(
+    season: str,
+    substructure: FactorSubstructure,
+) -> tuple[Path, Path]:
+    """Return the annotated and figure-only destinations for one factor.
+
+    Planting-year output is large enough to need two presentation tiers. Every
+    other factor retains its established flat directory because it does not
+    emit paired annotated/plates-only families.
+    """
+
+    directory = _factor_directory(season, substructure)
+    if substructure.definition.key != FACTOR_PLANTING_YEAR:
+        return directory, directory
+    return (
+        directory / PLANTING_YEAR_ANNOTATED_DIRNAME,
+        directory / PLANTING_YEAR_FIGURE_ONLY_DIRNAME,
+    )
+
+
 
 
 
@@ -899,8 +940,9 @@ def _write_separated_notes(
         "These notes belong to the `*_figure.jpeg` plates in this folder. Each of",
         "those carries its identity and its own measurements and nothing else;",
         "everything about how to read them, and what not to conclude from them,",
-        "is here. Every figure also exists in an annotated form that sets the same",
-        "text on its own face, for when a plate has to travel alone.",
+        "is here. Every figure also exists under `../annotated/` in an annotated",
+        "form that sets the same text on its own face, for when a plate has to",
+        "travel alone.",
         "",
     ]
 
@@ -939,7 +981,7 @@ def _write_separated_notes(
             f"## The {len(stratum_rows)} `<level>{_SEPARATED_FIGURE_SUFFIX}` plates",
             "",
             "One recorded stratum each, on the shared frame every figure in this",
-            "folder uses. The annotated form of each is `<level>.jpeg`.",
+            "folder uses. The annotated form of each is `../annotated/<level>.jpeg`.",
             "",
             "| Plate | Level | Trajectories | Years | Varieties | Applied-N ladders "
             "| Mean zero-N (t/ha) | Mean response (t/ha) | Mean peak (% of top rate) |",
@@ -963,13 +1005,39 @@ def _write_separated_notes(
     lines += [
         "## Regenerating",
         "",
-        "Written by `generate_response_curve_season_clusters.py` alongside the",
-        "annotated figures; `--no-separate-notes` suppresses this file and every",
-        "`*_figure.jpeg` beside it.",
+        "Written by `generate_response_curve_season_clusters.py` as the",
+        "`figure_only/` companion to `../annotated/`; `--no-separate-notes`",
+        "suppresses this file and every `*_figure.jpeg` beside it.",
         "",
     ]
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_compact_design_description(destination: Path, *, season: str) -> None:
+    """Write the companion note for the description-free design sheet."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        "\n".join(
+            (
+                f"# LTCCE decades, designs, and trend — {season_label(season)}",
+                "",
+                f"Figure: `{COMPACT_DESIGN_FIGURE_FILENAME}`",
+                "",
+                "This compact plate intentionally omits the on-canvas description. "
+                f"Read `{SEPARATED_NOTES_FILENAME}` in this folder for every "
+                "interpretive disclosure, and use "
+                f"`../{PLANTING_YEAR_ANNOTATED_DIRNAME}/"
+                "decades_designs_and_trend.jpeg` when the figure must travel "
+                "with its explanation attached.",
+                "",
+                f"{_DISCLAIMER[0].upper()}{_DISCLAIMER[1:]}.",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
 
 
 def _separated_footer_line() -> str:
@@ -1005,6 +1073,10 @@ def _write_factor_stratum_views(
     season = substructure.season
     definition = substructure.definition
     directory = _factor_directory(season, substructure)
+    annotated_directory, figure_only_directory = _factor_output_directories(
+        season,
+        substructure,
+    )
     agreement_lines = _factor_agreement_lines(substructure)
     written: list[str] = []
     figure_by_trajectory: dict[str, str] = {}
@@ -1021,7 +1093,7 @@ def _write_factor_stratum_views(
         year_text = f"{years[0]}-{years[1]}" if years else "years unknown"
         centroid = centroid_summary(ids, result.features)
 
-        relative = directory / f"{stem}.jpeg"
+        relative = annotated_directory / f"{stem}.jpeg"
         overview_lines = [
             f"source={SOURCE_NAME} — {season_label(season)}, "
             f"{definition.level_title(stratum.level)}",
@@ -1054,7 +1126,9 @@ def _write_factor_stratum_views(
             # numbers sit in in-panel cards. What moves to the notes is the
             # interpretive half: what the level is, what it is confounded with,
             # and what the agreement statistics say about it.
-            figure_relative = directory / f"{stem}{_SEPARATED_FIGURE_SUFFIX}"
+            figure_relative = (
+                figure_only_directory / f"{stem}{_SEPARATED_FIGURE_SUFFIX}"
+            )
             _titled_figure(
                 subset_overlay(overlay, ids),
                 staging / figure_relative,
@@ -1100,7 +1174,9 @@ def _write_factor_stratum_views(
             inner_year_text = (
                 f"{inner_years[0]}-{inner_years[1]}" if inner_years else "years unknown"
             )
-            inner_relative = directory / f"{stem}_cluster_{inner_id + 1}.jpeg"
+            inner_relative = (
+                annotated_directory / f"{stem}_cluster_{inner_id + 1}.jpeg"
+            )
             inner_lines = [
                 f"source={SOURCE_NAME} — {season_label(season)}, "
                 f"{definition.level_title(stratum.level)}: sub-cluster "
@@ -1143,7 +1219,7 @@ def _write_factor_stratum_views(
 
     minor_ids = substructure.minor_level_trajectory_ids
     if minor_ids:
-        relative = directory / "minor_levels.jpeg"
+        relative = annotated_directory / "minor_levels.jpeg"
         years = cluster_year_range(minor_ids, result.contexts)
         year_text = f"{years[0]}-{years[1]}" if years else "years unknown"
         _titled_figure(
@@ -1176,7 +1252,7 @@ def _write_factor_stratum_views(
 
     unrecorded_ids = substructure.unrecorded_trajectory_ids
     if unrecorded_ids:
-        relative = directory / "unrecorded_level.jpeg"
+        relative = annotated_directory / "unrecorded_level.jpeg"
         _titled_figure(
             subset_overlay(overlay, unrecorded_ids),
             staging / relative,
@@ -1197,14 +1273,16 @@ def _write_factor_stratum_views(
             figure_by_trajectory[trajectory_id] = relative.as_posix()
 
     if len(substructure.strata) > 1:
-        panel_relative = directory / "level_comparison.jpeg"
+        panel_relative = annotated_directory / "level_comparison.jpeg"
         _write_factor_panel(
             result, overlay, substructure, staging / panel_relative, limits
         )
         written.append(panel_relative.as_posix())
 
     if write_composition:
-        composition_relative = directory / f"{definition.key}_composition.jpeg"
+        composition_relative = (
+            annotated_directory / f"{definition.key}_composition.jpeg"
+        )
         _write_factor_composition(result, substructure, staging / composition_relative)
         written.append(composition_relative.as_posix())
 
@@ -1212,7 +1290,7 @@ def _write_factor_stratum_views(
     # the reader the axis itself: one panel carrying every planting year.
     annual_records: tuple[AnnualRecord, ...] = ()
     if definition.key == FACTOR_PLANTING_YEAR:
-        trend_relative = directory / "annual_trend.jpeg"
+        trend_relative = annotated_directory / "annual_trend.jpeg"
         annual_records = _write_annual_trend(
             result, season, staging / trend_relative
         )
@@ -1222,7 +1300,7 @@ def _write_factor_stratum_views(
         # replacing either: the panel grid and the trend are each read on their
         # own, and the combined sheet is read when the question is how they
         # line up.
-        combined_relative = directory / "decades_and_trend.jpeg"
+        combined_relative = annotated_directory / "decades_and_trend.jpeg"
         if _write_decades_and_trend(
             result, overlay, substructure, staging / combined_relative, limits
         ):
@@ -1231,7 +1309,9 @@ def _write_factor_stratum_views(
         # the plain one: spending colour on the quantity costs the era its own
         # hue, and adding the design row costs a third of the sheet's height, so
         # which sheet answers the question depends on the question.
-        matched_relative = directory / "decades_and_trend_matched_colours.jpeg"
+        matched_relative = (
+            annotated_directory / "decades_and_trend_matched_colours.jpeg"
+        )
         if _write_decades_and_trend(
             result,
             overlay,
@@ -1242,7 +1322,9 @@ def _write_factor_stratum_views(
         ):
             written.append(matched_relative.as_posix())
         design_substructure = build_factor_substructure(result, season, FACTOR_DESIGN)
-        designs_relative = directory / "decades_designs_and_trend.jpeg"
+        designs_relative = (
+            annotated_directory / "decades_designs_and_trend.jpeg"
+        )
         if _write_decades_and_trend(
             result,
             overlay,
@@ -1283,7 +1365,7 @@ def _write_factor_stratum_views(
                 sink: dict[str, Any] = {}
                 stem = annotated_name.removesuffix(".jpeg")
                 separated_relative = (
-                    directory / f"{stem}{_SEPARATED_FIGURE_SUFFIX}"
+                    figure_only_directory / f"{stem}{_SEPARATED_FIGURE_SUFFIX}"
                 )
                 if not _write_decades_and_trend(
                     result,
@@ -1300,14 +1382,17 @@ def _write_factor_stratum_views(
                 separated_sheets.append(
                     {
                         "figure": separated_relative.name,
-                        "annotated": annotated_name,
+                        "annotated": (
+                            f"../{PLANTING_YEAR_ANNOTATED_DIRNAME}/"
+                            f"{annotated_name}"
+                        ),
                         "variant": variant,
                         "headline": sink["headline"],
                         "disclosures": sink["disclosures"],
                     }
                 )
             if separated_sheets:
-                notes_relative = directory / SEPARATED_NOTES_FILENAME
+                notes_relative = figure_only_directory / SEPARATED_NOTES_FILENAME
                 _write_separated_notes(
                     staging / notes_relative,
                     season=season,
@@ -1317,6 +1402,30 @@ def _write_factor_stratum_views(
                     shared_prose=shared_prose,
                 )
                 written.append(notes_relative.as_posix())
+
+                compact_relative = (
+                    figure_only_directory / COMPACT_DESIGN_FIGURE_FILENAME
+                )
+                if _write_decades_and_trend(
+                    result,
+                    overlay,
+                    substructure,
+                    staging / compact_relative,
+                    limits,
+                    matched_colours=True,
+                    design_substructure=design_substructure,
+                    omit_description=True,
+                ):
+                    written.append(compact_relative.as_posix())
+                    compact_description_relative = (
+                        figure_only_directory
+                        / COMPACT_DESIGN_DESCRIPTION_FILENAME
+                    )
+                    _write_compact_design_description(
+                        staging / compact_description_relative,
+                        season=season,
+                    )
+                    written.append(compact_description_relative.as_posix())
 
     readme_relative = directory / "README.md"
     _write_factor_readme(
@@ -1805,6 +1914,8 @@ def _write_decades_and_trend(
     design_substructure: FactorSubstructure | None = None,
     separate_notes: bool = False,
     notes_sink: dict[str, Any] | None = None,
+    headline_context: str = "",
+    omit_description: bool = False,
 ) -> tuple[AnnualRecord, ...]:
     """Each decade's response curve drawn on the trend segment it came from.
 
@@ -1822,7 +1933,8 @@ def _write_decades_and_trend(
 
     Nothing is fitted and nothing is aggregated across the join: the insets are
     the same recorded strata drawn everywhere else in this folder, and the
-    trend is the same context-weighted per-year means as `annual_trend.jpeg`.
+    trend is the same context-weighted per-year means as
+    `annotated/annual_trend.jpeg`.
 
     Two variations, each written as its own file rather than replacing the
     plain sheet:
@@ -1841,6 +1953,16 @@ def _write_decades_and_trend(
     without — the headline that identifies it, the ANA-11 disclaimer, and a
     pointer to the notes file. The in-panel read-out cards are untouched, so the
     plates keep every number they carried.
+
+    `headline_context` adds a short scope label after the season name. It is
+    used by additive subset recipes (for example, one recorded replicate) so a
+    detached sheet cannot be mistaken for the all-replicate source view.
+
+    `omit_description` is the compact plates-only layout: neither disclosure
+    bullets nor the notes pointer is drawn, and their vertical strip is removed
+    from the canvas. The headline and all in-panel read-outs remain. This is
+    intentionally separate from `separate_notes`, whose notes pointer is part
+    of its figure contract.
 
     `design_substructure` adds a row of panels above the insets, one per
     recorded plot design, positioned on the same year-to-inches mapping. Unlike
@@ -1928,8 +2050,11 @@ def _write_decades_and_trend(
     )
 
     mixed = [record.year for record in records if record.ladder_is_mixed]
+    scope_label = season_label(season)
+    if headline_context.strip():
+        scope_label = f"{scope_label}, {headline_context.strip()}"
     headline = (
-        f"source={SOURCE_NAME} — {season_label(season)}: each planting "
+        f"source={SOURCE_NAME} — {scope_label}: each planting "
         "decade's response curves drawn on the stretch of the yield trend "
         "they came from"
         + (
@@ -2038,7 +2163,7 @@ def _write_decades_and_trend(
     # column uses a third of a 34-inch sheet.
     bullets = (
         []
-        if separate_notes
+        if separate_notes or omit_description
         else [
             textwrap.fill(
                 entry,
@@ -2083,11 +2208,16 @@ def _write_decades_and_trend(
     caption_line_in = _text_inches(_CAPTION_FONT_SIZE, spacing=_CAPTION_LINE_SPACING)
     paragraph_gap_in = caption_line_in * _CAPTION_PARAGRAPH_GAP_LINES
     caption_block_in = (
-        (footer.count("\n") + 1) * footer_line_in + 0.14
-        if separate_notes
-        else max(
-            sum(column) * caption_line_in + max(len(column) - 1, 0) * paragraph_gap_in
-            for column in caption_counts
+        0.0
+        if omit_description
+        else (
+            (footer.count("\n") + 1) * footer_line_in + 0.14
+            if separate_notes
+            else max(
+                sum(column) * caption_line_in
+                + max(len(column) - 1, 0) * paragraph_gap_in
+                for column in caption_counts
+            )
         )
     )
     headline_strip_in = _text_inches(_HEADLINE_FONT_SIZE) + 0.24
@@ -2503,7 +2633,7 @@ def _write_decades_and_trend(
             color="0.10",
         )
         caption_top = headline_top - headline_strip_in / height
-        if separate_notes:
+        if separate_notes and not omit_description:
             figure.text(
                 0.5,
                 caption_top,
@@ -2612,6 +2742,13 @@ def _write_factor_readme(
     season = substructure.season
     definition = substructure.definition
     partition = result.partitions.get(season)
+    is_planting_year = definition.key == FACTOR_PLANTING_YEAR
+    annotated_prefix = (
+        f"{PLANTING_YEAR_ANNOTATED_DIRNAME}/" if is_planting_year else ""
+    )
+    figure_only_prefix = (
+        f"{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/" if is_planting_year else ""
+    )
 
     lines: list[str] = [
         f"# {season_label(season)} — decomposed by {definition.title}\n\n",
@@ -2687,7 +2824,7 @@ def _write_factor_readme(
             "pool the entire season into `minor_levels.jpeg` and show nothing. "
             "The strata are therefore calendar decades.\n\n"
             "Nothing about the individual years is lost by that: "
-            "`annual_trend.jpeg` carries every one of them, as "
+            f"`{annotated_prefix}annual_trend.jpeg` carries every one of them, as "
             "context-weighted means with the standard error across each year's "
             "experimental contexts.\n\n"
             "### Applied-N eras behind the decades\n\n"
@@ -2747,7 +2884,7 @@ def _write_factor_readme(
         "but not partitioned. "
         + (
             "Below the first threshold a level is pooled into "
-            "`minor_levels.jpeg`.\n\n"
+            f"`{annotated_prefix}minor_levels.jpeg`.\n\n"
             if substructure.minor_levels
             else "No level here falls below the first threshold, so every "
             "trajectory in this season is in one of the figures above.\n\n"
@@ -2853,7 +2990,8 @@ def _write_factor_readme(
             "is a negative one."
             + (
                 " Read `"
-                f"{definition.key}_composition.jpeg`: every level's bar has "
+                f"{annotated_prefix}{definition.key}_composition.jpeg`: every "
+                "level's bar has "
                 "close to the same colour profile as the whole-season row "
                 "beneath it."
                 if write_composition
@@ -2864,16 +3002,32 @@ def _write_factor_readme(
         )
     elif partition is not None and write_composition:
         lines.append(
-            f"Read `{definition.key}_composition.jpeg` for the shape of that "
+            f"Read `{annotated_prefix}{definition.key}_composition.jpeg` for the "
+            "shape of that "
             "second number: it puts each level's response-cluster mix directly "
             "above the whole-season mix, so the size of the lean is visible "
             "rather than only its index.\n\n"
         )
 
     lines.append("## What is in this folder\n\n")
+    if is_planting_year:
+        lines.append(
+            f"- `{PLANTING_YEAR_ANNOTATED_DIRNAME}/` — self-explaining figures "
+            "whose interpretation travels on the canvas.\n"
+            f"- `{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/` — document-ready plates "
+            f"and `{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/"
+            f"{SEPARATED_NOTES_FILENAME}`, the shared prose for those plates.\n"
+        )
+        lines.append(
+            f"- `{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/"
+            f"{PLANTING_YEAR_REPLICATE_DIRNAME}/` — optional additive "
+            f"{_season_adjective(season)} sheets split by the source's "
+            "recorded `Rep` value.\n"
+        )
     level_stem = "<year>_<level>" if definition.release_years else "<level>"
     lines.append(
-        f"- `{level_stem}.jpeg` — every cluster-eligible trajectory "
+        f"- `{annotated_prefix}{level_stem}.jpeg` — every cluster-eligible "
+        "trajectory "
         + (
             f"whose `{definition.source_column}` falls in that band"
             if definition.level_binner is not None
@@ -2891,25 +3045,30 @@ def _write_factor_readme(
     )
     if write_subcluster_figures:
         lines.append(
-            f"- `{level_stem}_cluster_<m>.jpeg` — the k-means sub-partition "
+            f"- `{annotated_prefix}{level_stem}_cluster_<m>.jpeg` — the k-means "
+            "sub-partition "
             "inside that level, where the level is large enough to support "
             "one.\n"
         )
     if write_composition:
         lines.append(
-            f"- `{definition.key}_composition.jpeg` — how each level distributes "
+            f"- `{annotated_prefix}{definition.key}_composition.jpeg` — how each "
+            "level distributes "
             "across the season's own response clusters.\n"
         )
     lines.append(
-        "- `level_comparison.jpeg` — the levels side by side on one shared "
+        f"- `{annotated_prefix}level_comparison.jpeg` — the levels side by side "
+        "on one shared "
         "frame.\n"
     )
     if definition.key == FACTOR_PLANTING_YEAR and annual_records:
         lines.append(
-            "- `annual_trend.jpeg` — every planting year individually: zero-N "
+            f"- `{annotated_prefix}annual_trend.jpeg` — every planting year "
+            "individually: zero-N "
             "yield and response above zero N against the year, with the line "
             "broken at each applied-N era boundary.\n"
-            "- `decades_and_trend.jpeg` — both of the above on one sheet, with "
+            f"- `{annotated_prefix}decades_and_trend.jpeg` — both of the above "
+            "on one sheet, with "
             "each decade's response-curve panel set over its own decade of the "
             "year axis, so a panel and its shaded band are the same interval "
             "of calendar time read two ways. The axis runs whole decade to "
@@ -2920,14 +3079,16 @@ def _write_factor_readme(
             "where the line stops. Both trend panels share one y range "
             "and one inches-per-t/ha, so a change of a given size has the same "
             "slope in each.\n"
-            "- `decades_and_trend_matched_colours.jpeg` — the same sheet with "
+            f"- `{annotated_prefix}decades_and_trend_matched_colours.jpeg` — the "
+            "same sheet with "
             "colour spent on the quantity instead of the applied-N era, so "
             "each trend panel carries the colour its own points already have "
             "in every inset: orange for yield at zero N, blue for the response "
             "above it. The era keeps its broken lines and dashed boundaries "
             "and gains a marker shape, so nothing that colour used to say is "
             "lost.\n"
-            "- `decades_designs_and_trend.jpeg` — the matched-colour sheet with "
+            f"- `{annotated_prefix}decades_designs_and_trend.jpeg` — the "
+            "matched-colour sheet with "
             "a row of plot-design panels added above the decade insets, on the "
             "same year axis. A design panel is as wide as the stretch the "
             "design ran for rather than equalized, and the gap between panels "
@@ -2937,8 +3098,9 @@ def _write_factor_readme(
         )
         if separate_notes:
             lines.append(
-                f"- `<name>{_SEPARATED_FIGURE_SUFFIX}` and "
-                f"`{SEPARATED_NOTES_FILENAME}` — the same figures with the prose "
+                f"- `{figure_only_prefix}<name>{_SEPARATED_FIGURE_SUFFIX}` and "
+                f"`{figure_only_prefix}{SEPARATED_NOTES_FILENAME}` — the same "
+                "figures with the prose "
                 "separated from the plates. A `_figure.jpeg` keeps its identity, "
                 "its own read-outs and the ANA-11 disclaimer, and nothing else; "
                 "the notes file carries every disclosure for all of them, drawn "
@@ -2946,21 +3108,30 @@ def _write_factor_readme(
                 "faces, so the two cannot disagree. Use the annotated figure "
                 "when a plate has to travel alone, and this pair when it goes "
                 "into a document that carries its own prose.\n"
+                f"- `{figure_only_prefix}{COMPACT_DESIGN_FIGURE_FILENAME}` and "
+                f"`{figure_only_prefix}{COMPACT_DESIGN_DESCRIPTION_FILENAME}` — "
+                "the compact design/decade/trend plate with no on-canvas "
+                "description, plus its companion note.\n"
             )
     if not write_subcluster_figures:
         lines.append(
             "\nThe per-sub-cluster figures are not drawn. The sub-partitions "
             "themselves still run: their k, silhouette and dominant axis are in "
-            "the `Sub-clusters` column above, on the `level_comparison.jpeg` "
+            "the `Sub-clusters` column above, on the "
+            f"`{annotated_prefix}level_comparison.jpeg` "
             "panel titles, and in the summary JSON, and every trajectory's "
             "sub-cluster id is in `../../season_cluster_assignments.csv`. Pass "
             "`--write-subcluster-figures` to the generator to draw them.\n"
         )
     if substructure.minor_levels:
-        lines.append("- `minor_levels.jpeg` — the undersized levels, pooled.\n")
+        lines.append(
+            f"- `{annotated_prefix}minor_levels.jpeg` — the undersized levels, "
+            "pooled.\n"
+        )
     if substructure.unrecorded_trajectory_ids:
         lines.append(
-            f"- `unrecorded_level.jpeg` — trajectories with no usable "
+            f"- `{annotated_prefix}unrecorded_level.jpeg` — trajectories with no "
+            "usable "
             f"`{definition.source_column}` value.\n"
         )
     lines.append("\n## How the sub-clusters were built\n\n")
@@ -3675,6 +3846,26 @@ def _factor_substructure_record(
         "source_column": definition.source_column,
         "factor_description": definition.title,
         "directory": definition.directory,
+        **(
+            {
+                "artifact_directories": {
+                    "annotated": PLANTING_YEAR_ANNOTATED_DIRNAME,
+                    "figure_only": PLANTING_YEAR_FIGURE_ONLY_DIRNAME,
+                    **(
+                        {
+                            "replicate_sheets": (
+                                f"{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/"
+                                f"{PLANTING_YEAR_REPLICATE_DIRNAME}"
+                            )
+                        }
+                        if substructure.season.strip().upper() == "DS"
+                        else {}
+                    ),
+                }
+            }
+            if substructure.factor == FACTOR_PLANTING_YEAR
+            else {}
+        ),
         "identity_caveat": definition.identity_caveat,
         "member_count": substructure.member_count,
         "distinct_level_count": substructure.distinct_level_count,
@@ -3722,7 +3913,7 @@ def _annual_trend_record(
     result: SeasonClusteringResult,
     season: str,
 ) -> dict[str, Any]:
-    """The numbers behind `annual_trend.jpeg`, so the figure is auditable.
+    """The numbers behind `annotated/annual_trend.jpeg`, so it is auditable.
 
     The decade strata are a banding of a continuous axis; carrying the
     unbanded per-year values here is what keeps that banding a presentational
@@ -4378,8 +4569,9 @@ def _factor_readme_section(
             "- `<level>_cluster_<m>.jpeg` is a **k-means partition** — but on "
             if write_subcluster_figures
             else "- the **k-means sub-partition** inside each level, reported on "
-            "the `level_comparison.jpeg` panel titles and in the summary JSON "
-            "rather than drawn as its own figure, runs on "
+            "the factor folder's `level_comparison.jpeg` panel titles "
+            "(`annotated/level_comparison.jpeg` for planting year) and in the "
+            "summary JSON rather than drawn as its own figure, runs on "
         )
         + "the standardized ladder-invariant features, *not* on the raw yield "
         "vector the applied-N sub-strata use. A factor level generally spans "
@@ -4725,9 +4917,10 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "In by_planting_year/, also write a plates-only `<name>_figure.jpeg` "
-            f"beside each annotated figure plus one {SEPARATED_NOTES_FILENAME} "
-            "carrying their prose. `--no-separate-notes` writes neither."
+            "In by_planting_year/, write self-explaining plots under annotated/ "
+            "and plates-only `<name>_figure.jpeg` files under figure_only/ with "
+            f"one {SEPARATED_NOTES_FILENAME} carrying their prose. "
+            "`--no-separate-notes` suppresses the figure_only family."
         ),
     )
     parser.add_argument(
