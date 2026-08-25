@@ -1,6 +1,7 @@
 # Operator controls first; source, schema, and path registries follow. Comment
 # or uncomment list members to disable/enable them; dependency-bound lists say
 # when all members must move together.
+# --- Pipeline execution ---
 [run]
 # Phases 2-5 form one dependency chain; keep all four for a normal run. Comment
 # all four to reuse a verified completed release instead. Partial lists are
@@ -39,6 +40,7 @@ max_parallel_r_jobs = 12
 r_stage_timeout_seconds = 1800
 r_termination_grace_seconds = 15
 cpu_detection = "affinity"
+# --- Selection and scope ---
 [selection]
 # Parsed memberships are authoritative; comment a row to disable it.
 scope_countries = ["PH"]
@@ -105,6 +107,7 @@ treatment_classes = [
 ]
 
 # Eligibility and curve-fitting controls
+# --- Eligibility controls ---
 [eligibility]
 minimum_distinct_n_levels = 3
 minimum_complete_n_yield = 3
@@ -129,6 +132,7 @@ critical_error_codes = [
 ]
 
 # Model fitting controls
+# --- Modeling controls ---
 [modeling]
 no_extrapolation = true
 minimum_residual_df = 1
@@ -154,6 +158,7 @@ uncertainty_method = "deferred_until_evidence_gate"
 allow_baseline_response_metrics = false
 
 # Output and logging controls
+# --- Output settings ---
 [outputs]
 atomic_writes = true
 allow_source_targets = false
@@ -165,6 +170,7 @@ collision_policy = "replace_only_with_overwrite"
 # reuse, forbidden in validate mode, never enable during a concurrent run.
 clear_output_root_before_run = false
 
+# --- Logging settings ---
 [logging]
 level = "INFO"
 # Must stay false in validate mode. Launcher logs under N_RESPONSE_LOG_ROOT are
@@ -175,6 +181,7 @@ write_logs_in_validate = false
 clear_log_root_before_run = false
 
 # Runtime and engine controls
+# --- Engine controls ---
 [engines]
 python_command = "python"
 rscript_command = "Rscript"
@@ -185,6 +192,7 @@ allow_runtime_r_package_install = false
 allow_automatic_engine_fallback = false
 r_use_vanilla_session = true
 
+# --- Engine assignments ---
 [engines.assignments]
 data_pipeline = "python"
 per_series_curve_fitting = "python"
@@ -201,10 +209,12 @@ final_reporting = "python"
 marginal_contrasts = "r"
 
 # Analysis candidate controls
+# --- Analysis hypotheses ---
 [analysis_hypotheses]
 # Empty: no bounded confirmatory hypothesis set authorized.
 specifications = []
 
+# --- Analysis matrix ---
 [analysis_matrix]
 dataset_versions = [
   "D00_inventory_all",
@@ -308,6 +318,7 @@ multiple_testing_method = "benjamini_hochberg"
 # Configured descriptive overlay figures generated inside Phase 5 release
 # staging (no-op in validate). Declared by the v3 manifest and covered by the
 # main release ledger, with nested manifests/checksums for focused verification.
+# --- Overlay outputs ---
 [custom_overlays]
 enabled = true
 # One transactional release promotion owns this diagnostic set. Unknown extras,
@@ -329,6 +340,7 @@ package_path = "WF/06_Reports/n_response_full"
 # inside the full report container, outside its governed manifest and checksum
 # inventory. Outputs are organized under figures/overlay/<source_name>/, and the
 # whole container remains restricted/not for release.
+# --- Source dataset overlays ---
 [source_dataset_overlays]
 # Disabled by the selected SRC-09 Option C storage boundary. Re-enable only after
 # a replacement A/B storage policy and its filesystem controls are approved.
@@ -348,6 +360,7 @@ output_root = "WF/06_Reports/n_response_full/restricted_diagnostics/source_datas
 
 # Registered source/schema contract. Edit only when a source is added or its
 # evidence changes; path bindings stay with provenance metadata.
+# --- Source registry: core_trial_data ---
 [sources.core_trial_data]
 source_type = "literature"
 country_code = "PH"
@@ -362,6 +375,7 @@ availability = "available"
 confirmation_status = "verified"
 shape_adapter_version = "core-trial-csv-v1"
 
+# --- Source registry: ph_combined_nopt_rcm ---
 [sources.ph_combined_nopt_rcm]
 source_type = "combined_nopt_rcm"
 country_code = "PH"
@@ -379,6 +393,7 @@ availability = "available"
 confirmation_status = "verified"
 shape_adapter_version = "combined-nopt-rcm-csv-v1"
 
+# --- Source registry: ltcce ---
 [sources.ltcce]
 source_type = "ltcce"
 country_code = "PH"
@@ -395,9 +410,11 @@ availability = "available"
 confirmation_status = "verified"
 shape_adapter_version = "ltcce-long-csv-v1"
 
+# --- Schema contract ---
 [schema]
 expected_physical_columns = 302
 # Positions are 1-based physical CSV positions; duplicate names are never used as keys.
+# --- Schema fields ---
 [schema.fields]
 study_id = { header = "Study_ID", position = 1 }
 trial_id = { header = "Trial ID", position = 7 }
@@ -418,6 +435,7 @@ biofertilizer = { header = "Biofertilizer Organism", position = 280 }
 yield_kg_ha = { header = "Grain Yield (kg ha-1)", position = 282 }
 yield_t_ha = { header = "Grain Yield (t ha-1)", position = 283 }
 
+# --- Normalization: water_regime ---
 [schema.normalization.water_regime]
 irrigated = [
   "Irrigated",
@@ -439,6 +457,7 @@ upland = [
   "upland",
 ]
 
+# --- Normalization: season ---
 [schema.normalization.season]
 dry = [
   "Dry",
@@ -456,6 +475,7 @@ wet = [
   "Very Wet",
 ]
 
+# --- Normalization: treatment_class ---
 [schema.normalization.treatment_class]
 absolute_control = ["absolute control"]
 zero_n = ["zero N", "0 N", "control"]
@@ -464,6 +484,7 @@ RCM = ["RCM", "recommended crop management"]
 FP = ["FP", "farmer practice"]
 NOPT_NPK = ["NOPT", "NOPT NPK"]
 
+# --- Schema units ---
 [schema.units]
 n_rate = "kg N ha-1"
 p_rate = "kg P2O5 ha-1"
@@ -471,6 +492,7 @@ k_rate = "kg K2O ha-1"
 yield_mass = "kg ha-1"
 yield_curve = "t ha-1"
 
+# --- Missing-value taxonomy ---
 [missing_values]
 blank = "blank"
 not_stated = "not stated"
@@ -484,6 +506,7 @@ invalid_numeric = [
 ]
 
 # Project-relative paths. Keep the central path registry last.
+# --- Paths ---
 [paths]
 core_source_csv = "WF/01_Curated_Dataset/01_Core_Trial_Data/Nutrient_Management_Literature_Data_Extraction_Template_Nutrient_Management_Data.csv"
 source_workbook = "WF/01_Curated_Dataset/00_Source_Workbook/Nutrient_Management_Literature_Data_Extraction_Template.xlsx"
