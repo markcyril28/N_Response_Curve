@@ -82,16 +82,20 @@ class DescriptiveStatisticsConfig:
     profiled_sources: tuple[str, ...]
     # [privacy]
     suppressed_headers: frozenset[str]
-    # [structure]
+    # [structure] — column classification applied by the loader; the structural
+    # profile these once fed was retired with its analysis module.
     numeric_parse_threshold: float
     maximum_categorical_cardinality: int
     example_values_per_column: int
-    # [numeric]
+    # [numeric] — only histogram_bins still acts, on the agronomic yield
+    # distribution. The rest are accepted but inert, so a config written before
+    # the retirement is not rejected for declaring them.
     outlier_iqr_multipliers: tuple[float, ...]
     quantiles: tuple[float, ...]
     histogram_bins: int
     minimum_numeric_observations: int
-    # [categorical]
+    # [categorical] — minimum_level_count is the floor the agronomic context
+    # composition draws a level at; maximum_levels_reported is inert.
     minimum_level_count: int
     maximum_levels_reported: int
     # [agronomic]
@@ -389,7 +393,9 @@ def load_recipe_config(
         raise RecipeConfigError(
             "[numeric].quantiles must include "
             + ", ".join(f"{value:g}" for value in sorted(required_quantiles))
-            + " because numeric_summary declares those columns"
+            + " — the ladder the retired numeric_summary table declared. The"
+            " key shapes nothing today; the requirement is kept so the pinned"
+            " ladder cannot drift while the key is still accepted"
         )
     histogram_bins = _integer(numeric, "histogram_bins", "[numeric]", minimum=2)
     minimum_numeric_observations = _integer(

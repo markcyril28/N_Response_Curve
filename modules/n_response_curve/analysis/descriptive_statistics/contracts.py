@@ -10,7 +10,7 @@ what is declared here. Nothing else may invent an artifact path.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
 import pandas as pd
@@ -22,8 +22,12 @@ MANIFEST_NAME = "run_manifest.json"
 CHECKSUMS_NAME = "CHECKSUMS.sha256"
 SUMMARY_NAME = "summary.md"
 
-TABLE_GROUPS = ("structure", "numeric", "categorical", "agronomic", "crosscut")
-FIGURE_GROUPS = ("structure", "numeric", "categorical", "agronomic", "crosscut")
+# The recipe emits the agronomic profile only. The structure, numeric,
+# categorical, and cross-cut groups were retired with their analysis modules:
+# the recipe no longer profiles physical column shape, generic column
+# statistics, or the datasets side by side.
+TABLE_GROUPS = ("agronomic",)
+FIGURE_GROUPS = ("agronomic",)
 
 RESERVED_PATHS = frozenset({MANIFEST_NAME, CHECKSUMS_NAME, SUMMARY_NAME})
 
@@ -96,191 +100,6 @@ _COLUMN_KEYS = _SOURCE_KEYS + ("position", "raw_column_id", "header_label")
 
 
 TABLE_SPECS: tuple[TableSpec, ...] = (
-    # ---------------- structure ----------------
-    TableSpec(
-        name="source_inventory",
-        group="structure",
-        title="Registered dataset inventory",
-        columns=_SOURCE_KEYS
-        + (
-            "source_type",
-            "source_family",
-            "country_code",
-            "shape_adapter_version",
-            "source_encoding",
-            "representation_basis",
-            "representation_basis_status",
-            "restricted_access_status",
-            "source_sha256",
-            "source_relative_path",
-            "physical_column_count",
-            "data_row_count",
-            "blank_row_count",
-            "named_header_count",
-            "blank_header_count",
-            "duplicated_header_count",
-            "numeric_column_count",
-            "categorical_column_count",
-            "identifier_column_count",
-            "empty_column_count",
-            "suppressed_column_count",
-            "total_cells",
-            "populated_cells",
-            "overall_fill_rate",
-        ),
-    ),
-    TableSpec(
-        name="column_inventory",
-        group="structure",
-        title="Physical column inventory by position",
-        columns=_COLUMN_KEYS
-        + (
-            "header_raw",
-            "header_status",
-            "duplicate_group_size",
-            "value_kind",
-            "suppressed",
-            "suppression_reason",
-            "nonblank_count",
-            "blank_count",
-            "fill_rate",
-            "distinct_nonblank_count",
-            "numeric_parse_rate",
-            "example_values",
-        ),
-    ),
-    TableSpec(
-        name="missingness_profile",
-        group="structure",
-        title="Per-column missingness ranked worst first",
-        columns=_COLUMN_KEYS
-        + (
-            "value_kind",
-            "blank_count",
-            "nonblank_count",
-            "missing_rate",
-            "fill_rate",
-            "is_wholly_empty",
-        ),
-    ),
-    TableSpec(
-        name="row_completeness",
-        group="structure",
-        title="Distribution of per-row completeness",
-        columns=_SOURCE_KEYS
-        + (
-            "statistic",
-            "populated_columns",
-            "populated_share",
-        ),
-    ),
-    TableSpec(
-        name="header_anomalies",
-        group="structure",
-        title="Blank and duplicated physical headers",
-        columns=_COLUMN_KEYS
-        + (
-            "header_raw",
-            "anomaly",
-            "duplicate_group_size",
-            "duplicate_positions",
-        ),
-    ),
-    # ---------------- numeric ----------------
-    TableSpec(
-        name="numeric_summary",
-        group="numeric",
-        title="Descriptive statistics for numeric columns",
-        columns=_COLUMN_KEYS
-        + (
-            "count",
-            "missing_count",
-            "unparsed_count",
-            "mean",
-            "std_dev",
-            "coefficient_of_variation",
-            "minimum",
-            "p01",
-            "p05",
-            "q1",
-            "median",
-            "q3",
-            "p95",
-            "p99",
-            "maximum",
-            "range",
-            "iqr",
-            "median_absolute_deviation",
-            "skewness",
-            "excess_kurtosis",
-            "zero_count",
-            "negative_count",
-            "distinct_count",
-            "sum",
-        ),
-    ),
-    TableSpec(
-        name="numeric_outlier_audit",
-        group="numeric",
-        title="Tukey fence outlier counts per numeric column",
-        columns=_COLUMN_KEYS
-        + (
-            "iqr_multiplier",
-            "lower_fence",
-            "upper_fence",
-            "below_fence_count",
-            "above_fence_count",
-            "outlier_count",
-            "outlier_rate",
-        ),
-    ),
-    TableSpec(
-        name="numeric_distribution_bins",
-        group="numeric",
-        title="Histogram bins for profiled agronomic numeric columns",
-        columns=_COLUMN_KEYS
-        + (
-            "bin_index",
-            "bin_lower",
-            "bin_upper",
-            "count",
-            "share",
-        ),
-    ),
-    # ---------------- categorical ----------------
-    TableSpec(
-        name="categorical_summary",
-        group="categorical",
-        title="Descriptive statistics for categorical columns",
-        columns=_COLUMN_KEYS
-        + (
-            "nonblank_count",
-            "blank_count",
-            "distinct_count",
-            "is_identifier_like",
-            "mode_value",
-            "mode_count",
-            "mode_share",
-            "singleton_level_count",
-            "shannon_entropy_bits",
-            "normalized_entropy",
-            "levels_reported",
-            "levels_withheld_below_threshold",
-        ),
-    ),
-    TableSpec(
-        name="categorical_levels",
-        group="categorical",
-        title="Level frequencies at or above the reporting threshold",
-        columns=_COLUMN_KEYS
-        + (
-            "level_rank",
-            "level_value",
-            "count",
-            "share",
-            "cumulative_share",
-        ),
-    ),
     # ---------------- agronomic ----------------
     TableSpec(
         name="nitrogen_rate_profile",
@@ -392,115 +211,44 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
             "maximum_yield_t_ha",
         ),
     ),
-    # ---------------- crosscut ----------------
-    TableSpec(
-        name="source_comparability",
-        group="crosscut",
-        title="The three datasets side by side",
-        scope="crosscut",
-        columns=(
-            "source_name",
-            "data_classification",
-            "representation_basis",
-            "harmonized_observation_count",
-            "grouping_series_count",
-            "n_rate_min_kg_ha",
-            "n_rate_max_kg_ha",
-            "distinct_n_rate_count",
-            "yield_min_t_ha",
-            "yield_median_t_ha",
-            "yield_max_t_ha",
-            "year_min",
-            "year_max",
-            "year_span",
-            "yield_unit_lineage",
-            "n_rate_unit_lineage",
-            "series_key_basis",
-            "dropped_row_count",
-            "comparability_note",
-        ),
-    ),
-    TableSpec(
-        name="nitrogen_ladder_geometry",
-        group="crosscut",
-        title="N-ladder geometry of grouping series",
-        scope="crosscut",
-        columns=(
-            "source_name",
-            "data_classification",
-            "series_count",
-            "median_levels_per_series",
-            "minimum_levels_per_series",
-            "maximum_levels_per_series",
-            "series_with_zero_n_count",
-            "series_with_zero_n_share",
-            "median_span_kg_ha",
-            "median_step_kg_ha",
-            "balanced_ladder_series_count",
-            "single_level_series_count",
-            "resolved_observation_count",
-            "unresolved_series_observation_count",
-            "series_key_basis",
-        ),
-    ),
-    TableSpec(
-        name="unit_lineage_audit",
-        group="crosscut",
-        title="How each reported quantity reached its common unit",
-        scope="crosscut",
-        columns=(
-            "source_name",
-            "data_classification",
-            "quantity",
-            "source_column_header",
-            "source_unit",
-            "target_unit",
-            "conversion",
-            "converted_observation_count",
-            "native_observation_count",
-            "note",
-        ),
-    ),
-    TableSpec(
-        name="harmonized_observations",
-        group="crosscut",
-        title="Row-level harmonized N-yield observations across datasets",
-        scope="crosscut",
-        optional=True,
-        columns=(
-            "source_name",
-            "data_classification",
-            "source_row_number",
-            "study_key",
-            "trial_key",
-            "series_key",
-            "year",
-            "n_rate_kg_ha",
-            "yield_t_ha",
-            "yield_unit_lineage",
-            "is_zero_n",
-            "is_series_resolved",
-        ),
-    ),
 )
 
 
+# Filename markers for a panel that varies a declared figure by which
+# farmer's-practice evidence it draws. Owned here, beside the declared paths
+# they extend, so a published name and the variants rendered beside it cannot
+# drift apart: rename a figure through ``output_filename_stem`` and every
+# variant filename derived from it follows.
+WITH_FARMERS_PRACTICE_SUFFIX = "_with_farmers_practice"
+EXCLUDING_FARMERS_PRACTICE_SUFFIX = "_excluding_farmers_practice"
+
+
 FIGURE_SPECS: tuple[FigureSpec, ...] = (
-    FigureSpec("dataset_scale", "structure", "Rows and physical columns per dataset"),
-    FigureSpec("column_fill_profile", "structure", "Column fill-rate profile per dataset"),
-    FigureSpec("numeric_spread_overview", "numeric", "Standardized spread of key numeric columns"),
-    FigureSpec("categorical_cardinality", "categorical", "Cardinality and entropy of categorical columns"),
+    # The published filename carries an operator-chosen ``_full`` qualifier that
+    # distinguishes this all-evidence panel from the Farmer's-Practice variants
+    # rendered beside it; the registry name stays the contract key the builder
+    # map, the manifest, and the presentation derivatives are written against.
     FigureSpec(
         "nitrogen_rate_distribution",
         "agronomic",
         "Inorganic N-rate distribution per dataset",
+        output_filename_stem="nitrogen_rate_distribution_full",
     ),
     FigureSpec(
         "nitrogen_rate_distribution_with_separate_farmers_practice",
         "agronomic",
         "Inorganic N-rate distribution with separate Farmer's Practice bars",
     ),
-    FigureSpec("yield_distribution", "agronomic", "Grain-yield distribution per dataset"),
+    # Draws the declared farmer's-practice arm as a fourth series, so the
+    # published filename says so. The registry name stays the contract key the
+    # builder map, the manifest, and the presentation derivatives are written
+    # against; only the filename carries the qualifier.
+    FigureSpec(
+        "yield_distribution",
+        "agronomic",
+        "Grain-yield distribution per dataset and Farmer's Practice",
+        output_filename_stem=f"yield_distribution{WITH_FARMERS_PRACTICE_SUFFIX}",
+    ),
     # One single-dataset panel per profiled source, drawn on axes shared with
     # each other and with the combined figure above, so the three read as a set.
     FigureSpec(
@@ -546,7 +294,14 @@ FIGURE_SPECS: tuple[FigureSpec, ...] = (
         "agronomic",
         "Observed grain yield against N rate, joined within each N-rate series",
     ),
-    FigureSpec("temporal_coverage", "agronomic", "Observations by recorded year"),
+    # Farmer's Practice is stacked as a fourth series here too; same rule as
+    # ``yield_distribution`` above — the filename qualifies, the key does not.
+    FigureSpec(
+        "temporal_coverage",
+        "agronomic",
+        "Observations by recorded year, Farmer's Practice included",
+        output_filename_stem=f"temporal_coverage{WITH_FARMERS_PRACTICE_SUFFIX}",
+    ),
     FigureSpec("context_composition", "agronomic", "Season and water-regime composition"),
     # The remaining declared context fields, split off rather than added as more
     # bars to the figure above: a stacked share bar can only label a segment it
@@ -600,8 +355,6 @@ FIGURE_SPECS: tuple[FigureSpec, ...] = (
         "Context composition — ltcce",
         source_name="ltcce",
     ),
-    FigureSpec("source_comparability", "crosscut", "Datasets compared on common axes"),
-    FigureSpec("nitrogen_ladder_geometry", "crosscut", "N-ladder geometry across datasets"),
 )
 
 
@@ -669,6 +422,33 @@ def table_relative_path(name: str) -> str:
 
 def figure_relative_path(name: str, extension: str) -> str:
     return figure_spec(name).relative_path(extension)
+
+
+def variant_figure_relative_path(name: str, suffix: str, extension: str) -> str:
+    """The declared path of *name*, carrying *suffix* as its population marker.
+
+    Standalone variants render a declared figure over a different population
+    and publish beside it. Deriving their path from the declared one keeps the
+    pair named consistently through any rename of the figure they vary, which a
+    literal repeated in each script would not.
+
+    The two farmer's-practice markers are mutually exclusive descriptions of
+    one population, so an existing marker is replaced rather than appended to:
+    a panel published as ``..._with_farmers_practice`` yields
+    ``..._excluding_farmers_practice`` here, never a filename claiming both.
+    Any other qualifier in the stem — an operator rename, say — is preserved.
+    """
+
+    relative = PurePosixPath(figure_relative_path(name, extension))
+    stem = relative.stem
+    for marker in (
+        WITH_FARMERS_PRACTICE_SUFFIX,
+        EXCLUDING_FARMERS_PRACTICE_SUFFIX,
+    ):
+        if stem.endswith(marker):
+            stem = stem[: -len(marker)]
+            break
+    return str(relative.with_name(f"{stem}{suffix}{relative.suffix}"))
 
 
 def conform_table(name: str, frame: pd.DataFrame) -> pd.DataFrame:
