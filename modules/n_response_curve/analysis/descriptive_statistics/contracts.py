@@ -371,8 +371,36 @@ def _require_unique(specs: Sequence[object], attribute: str, label: str) -> None
         seen.add(value)
 
 
+def _require_unique_figure_paths() -> None:
+    """Prove no two declared figures resolve to one file.
+
+    Unique registry names are not enough. A figure's path is built from its
+    group, its ``output_directory_name``/``source_name``, and its
+    ``output_filename_stem`` -- so two specs that differ only in name can be
+    published to the same file, and the second write would silently replace the
+    first. The bundle would then verify: the manifest and the checksum ledger
+    both describe whatever landed last, and only the artifact count would be
+    short. Checking the derived path is what actually enforces this module's
+    invariant that every artifact a run may emit is declared exactly once.
+
+    Any extension exposes the collision, because only the suffix varies with it.
+    """
+
+    seen: dict[str, str] = {}
+    for spec in FIGURE_SPECS:
+        path = spec.relative_path("png")
+        collision = seen.get(path)
+        if collision is not None:
+            raise ProfileContractError(
+                f"Figures {collision!r} and {spec.name!r} declare one output path: "
+                f"{path!r}"
+            )
+        seen[path] = spec.name
+
+
 _require_unique(TABLE_SPECS, "name", "table name")
 _require_unique(FIGURE_SPECS, "name", "figure name")
+_require_unique_figure_paths()
 
 for _spec in TABLE_SPECS:
     if _spec.group not in TABLE_GROUPS:
