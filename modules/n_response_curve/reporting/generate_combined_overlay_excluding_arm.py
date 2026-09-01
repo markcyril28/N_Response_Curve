@@ -90,6 +90,18 @@ def _parse_args() -> argparse.Namespace:
         help="Treatment class to drop (repeatable); defaults to 'NOPT NPK'",
     )
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--fp-variant",
+        choices=sdo.COMBINED_SOURCE_VARIANTS,
+        default=sdo.COMBINED_VARIANT_WITH_FP,
+        help=(
+            "Which file of the PH combined source to read. The default reads "
+            "the registered CSV, where Farmer's Practice is present and can be "
+            "dropped in memory with --exclude-treatment-class FP. 'no_fp' reads "
+            "the sibling file that has no fp_* columns at all, so the arm is "
+            "absent in the input rather than filtered out of it"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -97,7 +109,19 @@ def main() -> int:
     args = _parse_args()
     excluded_classes = set(args.exclude_treatment_class or ["NOPT NPK"])
     source_path, encoding = _load_source_spec(args.config, args.source_name)
-    overlay = sdo.read_source_dataset_overlay(source_path, args.source_name, encoding=encoding)
+    if args.fp_variant != sdo.COMBINED_VARIANT_WITH_FP:
+        source_path = sdo.combined_variant_source_path(source_path, args.fp_variant)
+        if not source_path.is_file():
+            raise ValueError(
+                f"Source '{args.source_name}' variant {args.fp_variant!r} expects "
+                f"{source_path}, which does not exist"
+            )
+    overlay = sdo.read_source_dataset_overlay(
+        source_path,
+        args.source_name,
+        encoding=encoding,
+        variant=args.fp_variant,
+    )
 
     unknown = excluded_classes - set(overlay.summary.treatment_classes)
     if unknown:
@@ -110,23 +134,35 @@ def main() -> int:
 
     destination = args.output
     if destination is None:
+        variant_token = (
+            ""
+            if args.fp_variant == sdo.COMBINED_VARIANT_WITH_FP
+            else f"_{args.fp_variant}_source"
+        )
         destination = (
             DEFAULT_OUTPUT_DIR
             / _output_directory_name(args.source_name)
-            / f"{args.source_name}_source_wide_no_{_slug(excluded_classes)}.jpeg"
+            / (
+                f"{args.source_name}_source_wide{variant_token}"
+                f"_no_{_slug(excluded_classes)}.jpeg"
+            )
         )
 
     figure, axes = sdo.create_source_dataset_overlay_figure(filtered)
     try:
-        axes.set_title(
+        title = (
             axes.get_title()
             + f"\nexcluded treatment class(es): {', '.join(sorted(excluded_classes))}"
         )
+        if args.fp_variant != sdo.COMBINED_VARIANT_WITH_FP:
+            title += f"; source file variant: {args.fp_variant}"
+        axes.set_title(title)
         destination.parent.mkdir(parents=True, exist_ok=True)
         figure.savefig(destination, format="jpeg", dpi=150)
     finally:
         plt.close(figure)
 
+    print(f"{args.source_name}: source variant={args.fp_variant}; file={source_path.name}")
     print(
         f"{args.source_name}: trajectories={filtered.summary.trajectory_count}/"
         f"{overlay.summary.trajectory_count}; observations="
