@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -67,6 +66,20 @@ _REPRESENTATION_DATA_TYPE_ALIASES = {
 _REPRESENTATION_ROLE_ALIASES = {
     "contextual_explanatory": "candidate_explanatory",
 }
+
+
+def _normalized_token(value: object) -> str | None:
+    """Fold a recorded label onto the lowercase underscore token vocabulary.
+
+    Used by the reviewed ``normalized_token`` transformation and by the
+    ``recommendation_scope`` default mapping below, which normalize the same way
+    for the same reason: a scope typed as "Site Specific" and one typed as
+    "site-specific" name one stratum, and comparing them raw would split it.
+    Kept as one function so the two cannot fold differently.
+    """
+
+    token = re.sub(r"[^a-z0-9]+", "_", str(value).strip().casefold()).strip("_")
+    return token or None
 
 
 def _missing(value: object, data_type: str) -> bool:
@@ -175,12 +188,7 @@ def _reviewed_factor_value(
     if transformation == "normalized_token":
         if len(raw_values) != 1 or raw_values[0] is None:
             return None
-        token = re.sub(
-            r"[^a-z0-9]+",
-            "_",
-            str(raw_values[0]).strip().casefold(),
-        ).strip("_")
-        return token or None
+        return _normalized_token(raw_values[0])
     raise ValueError(
         f"Reviewed factor representation uses unsupported transformation: {transformation!r}"
     )
@@ -218,8 +226,7 @@ def factor_value(
         raw_scope = record.get("recommendation_scope")
         if raw_scope is None:
             return None
-        normalized_scope = re.sub(r"[^a-z0-9]+", "_", str(raw_scope).strip().casefold()).strip("_")
-        return normalized_scope or None
+        return _normalized_token(raw_scope)
     for field in metadata["fields"]:
         if field in record and record[field] is not None:
             return record[field]
