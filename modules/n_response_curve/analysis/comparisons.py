@@ -114,12 +114,18 @@ def _summary(
 
 
 def _grouped_summaries(
-    rows: Sequence[Mapping[str, Any]],
     *,
     comparison_type: str,
     outcome_name: str,
     labels: Iterable[tuple[str, Mapping[str, Any]]],
 ) -> list[DescriptiveComparison]:
+    """Summarize one grouping, given each row already paired with its label.
+
+    Every group is built from ``labels`` alone. A row that a caller's label
+    expression skips is absent from this grouping by construction, so there is
+    no separate row sequence to reconcile against.
+    """
+
     groups: dict[str, list[Mapping[str, Any]]] = {}
     for label, row in labels:
         groups.setdefault(label, []).append(row)
@@ -145,7 +151,6 @@ def build_descriptive_comparisons(
     summaries: list[DescriptiveComparison] = []
     summaries.extend(
         _grouped_summaries(
-            rows,
             comparison_type="source_family",
             outcome_name=outcome_name,
             labels=((str(row.get("source_name") or "<missing>"), row) for row in rows),
@@ -153,7 +158,6 @@ def build_descriptive_comparisons(
     )
     summaries.extend(
         _grouped_summaries(
-            rows,
             comparison_type="recommendation_class",
             outcome_name=outcome_name,
             labels=((str(row.get("treatment_text_class") or "<missing>"), row) for row in rows),
@@ -166,7 +170,6 @@ def build_descriptive_comparisons(
         seen_factors.add(entry.factor_name)
         summaries.extend(
             _grouped_summaries(
-                rows,
                 comparison_type=f"factor_stratum:{entry.factor_name}",
                 outcome_name=outcome_name,
                 labels=(
