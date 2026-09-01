@@ -376,12 +376,17 @@ def _require_unique_figure_paths() -> None:
 
     Unique registry names are not enough. A figure's path is built from its
     group, its ``output_directory_name``/``source_name``, and its
-    ``output_filename_stem`` -- so two specs that differ only in name can be
-    published to the same file, and the second write would silently replace the
-    first. The bundle would then verify: the manifest and the checksum ledger
-    both describe whatever landed last, and only the artifact count would be
-    short. Checking the derived path is what actually enforces this module's
-    invariant that every artifact a run may emit is declared exactly once.
+    ``output_filename_stem`` -- so two specs that differ only in name resolve to
+    one file, and the second render silently replaces the first.
+
+    Nothing downstream reports that clearly. Both specs still produce a manifest
+    entry and a checksum entry, so the recipe fails late in
+    ``verify_profile_bundle`` with ``Duplicate checksum entry``, which names the
+    path but neither of the two specs that claimed it -- and only when the two
+    renders differ. Render them byte-identical and the ledger deduplicates, the
+    bundle verifies, and ``artifact_count`` simply overstates the files on disk.
+    Checking the derived path here turns both outcomes into one declaration-time
+    error that names both specs, before the recipe does any work.
 
     Any extension exposes the collision, because only the suffix varies with it.
     """
