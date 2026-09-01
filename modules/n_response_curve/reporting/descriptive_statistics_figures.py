@@ -44,11 +44,14 @@ from ..analysis.descriptive_statistics.config import DescriptiveStatisticsConfig
 from ..analysis.descriptive_statistics.agronomic import (
     APPLIED_N_BAND_CONTEXT,
     YEAR_BAND_CONTEXT,
+    _temporal_rows,
     build_context_composition,
 )
 from ..analysis.descriptive_statistics.contracts import (
     FIGURE_SPECS,
+    WITH_FARMERS_PRACTICE_SUFFIX,
     ProfileContractError,
+    conform_table,
 )
 from ..analysis.descriptive_statistics.sources import (
     NATIVE_T_HA,
@@ -152,16 +155,6 @@ def _oversized_field_colours(level_count: int) -> tuple[tuple[float, ...], ...]:
     )
 
 _ANNOTATION_BOX = {"boxstyle": "round", "facecolor": "white", "alpha": 0.88}
-
-# Agronomically bound quantities profiled by ``numeric_spread_overview``. The
-# ``year`` binding is deliberately absent: it is a temporal coordinate, and its
-# standardized "spread" would describe the calendar, not a measurement.
-_SPREAD_QUANTITIES: tuple[tuple[str, str], ...] = (
-    ("nitrogen_rate", "Inorganic N rate"),
-    ("yield_t_ha", "Grain yield (t ha⁻¹)"),
-    ("yield_kg_ha", "Grain yield (kg ha⁻¹)"),
-    ("zero_n_yield_t_ha", "Zero-N check yield"),
-)
 
 # ``context_composition`` carries every declared context field. Three figures
 # divide them, because one stacked bar cannot carry all of them legibly — the
@@ -412,6 +405,24 @@ _YIELD_CALLOUT_SLOTS: tuple[float, ...] = (0.96, 0.885, 0.81)
 _YIELD_CALLOUT_CLEARANCE = 0.03
 
 
+def _extended_callout_slots(count: int) -> tuple[float, ...]:
+    """The callout ladder continued at its own step, for a derived series.
+
+    Only a panel that draws a derived arm beside the recorded datasets calls
+    this. The governed panels keep ``_YIELD_CALLOUT_SLOTS`` unextended, so a
+    fourth *registered* source still raises there rather than acquiring a slot
+    nothing reviewed.
+    """
+
+    slots = list(_YIELD_CALLOUT_SLOTS)
+    if len(slots) < 2:
+        return tuple(slots)
+    step = slots[0] - slots[1]
+    while len(slots) < count:
+        slots.append(slots[-1] - step)
+    return tuple(slots)
+
+
 def _footnote(
     figure: plt.Figure,
     text: str,
@@ -468,19 +479,6 @@ def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce")
 
 
-def _boolean_column(frame: pd.DataFrame, column: str) -> pd.Series:
-    if column not in frame.columns:
-        return pd.Series(False, index=frame.index)
-    values = frame[column]
-    if values.dtype == bool:
-        return values
-    return values.map(
-        lambda value: bool(value)
-        if isinstance(value, (bool, np.bool_))
-        else str(value).strip().lower() in _TRUE_TEXT
-    ).astype(bool)
-
-
 def _text_column(frame: pd.DataFrame, column: str) -> pd.Series:
     if column not in frame.columns:
         return pd.Series("", index=frame.index, dtype=object)
@@ -527,17 +525,6 @@ def _ordered_sources(
     )
 
 
-def _suppressed_column_ids(loaded: LoadedSources) -> set[tuple[str, str]]:
-    """(source, raw_column_id) pairs that may never appear in a figure."""
-
-    return {
-        (source.source_name, spec.raw_column_id)
-        for source in loaded.sources
-        for spec in source.columns
-        if spec.suppressed
-    }
-
-
 def _observations(
     loaded: LoadedSources, config: DescriptiveStatisticsConfig
 ) -> pd.DataFrame:
@@ -554,505 +541,6 @@ def _observations(
 
 def _binding_for(source: ProfiledSource, attribute: str) -> ColumnBinding | None:
     return getattr(source.binding, attribute, None)
-
-
-def _distinct_level_counts(
-    frame: pd.DataFrame, *, tolerance_kg_ha: float
-) -> pd.Series:
-    """Distinct N levels per series, with rates equal within the tolerance fused.
-
-    Recorded ladders repeat a rate as ``100`` and ``100.0``; snapping to the
-    configured tolerance grid before counting keeps those one level instead of
-    two.
-    """
-
-    working = frame.loc[:, ["series_key", "n_rate_kg_ha"]].copy()
-    if tolerance_kg_ha > 0:
-        snapped = np.round(
-            working["n_rate_kg_ha"].to_numpy(dtype=float) / tolerance_kg_ha
-        )
-    else:
-        snapped = working["n_rate_kg_ha"].to_numpy(dtype=float)
-    working["level"] = snapped
-    return working.groupby("series_key")["level"].nunique()
-
-
-# --------------------------------------------------------------------------
-# structure
-# --------------------------------------------------------------------------
-
-
-def _plot_dataset_scale(
-    *,
-    tables: Mapping[str, pd.DataFrame],
-    loaded: LoadedSources,
-    config: DescriptiveStatisticsConfig,
-) -> plt.Figure | None:
-    inventory = _table(tables, "source_inventory")
-    if inventory is None:
-        return None
-    names = _ordered_sources(loaded, _text_column(inventory, "source_name"))
-    if not names:
-        return None
-    indexed = inventory.set_index(_text_column(inventory, "source_name"))
-    rows = _numeric_column(indexed, "data_row_count").reindex(names)
-    columns = _numeric_column(indexed, "physical_column_count").reindex(names)
-    if not (rows.notna().any() and columns.notna().any()):
-        return None
-
-    colours = _source_colours(loaded)
-    figure, axis = _figure(config)
-    positions = np.arange(len(names), dtype=float)
-    width = 0.36
-    for offset, values, hatch, alpha in (
-        (-width / 2, rows, None, 0.95),
-        (width / 2, columns, "//", 0.45),
-    ):
-        for index, name in enumerate(names):
-            value = float(values.iloc[index])
-            if not np.isfinite(value) or value <= 0:
-                continue
-            axis.bar(
-                positions[index] + offset,
-                value,
-                width=width,
-                color=colours[name],
-                alpha=alpha,
-                hatch=hatch,
-                edgecolor=colours[name],
-                linewidth=0.8,
-            )
-            axis.annotate(
-                f"{int(round(value)):,}",
-                xy=(positions[index] + offset, value),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-            )
-
-    # The counts span three orders of magnitude (13,952 rows against 12
-    # columns); on a linear axis every bar but the tallest collapses onto the
-    # baseline, so the axis is logarithmic and each bar carries its literal
-    # value.
-    axis.set_yscale("log")
-    finite = np.concatenate(
-        [
-            rows.to_numpy(dtype=float)[np.isfinite(rows.to_numpy(dtype=float))],
-            columns.to_numpy(dtype=float)[np.isfinite(columns.to_numpy(dtype=float))],
-        ]
-    )
-    axis.set_ylim(1.0, float(np.max(finite)) * 6.0)
-    axis.set_xticks(positions)
-    axis.set_xticklabels(
-        [_tick_label(name) for name in names],
-        fontsize=9,
-    )
-    axis.set(
-        title="Dataset scale: recorded data rows and physical columns",
-        xlabel="Registered source dataset",
-        ylabel="Count (logarithmic scale)",
-    )
-    axis.legend(
-        handles=[
-            Patch(facecolor=_NEUTRAL, edgecolor=_NEUTRAL, label="Data rows"),
-            Patch(
-                facecolor=_NEUTRAL,
-                edgecolor=_NEUTRAL,
-                alpha=0.45,
-                hatch="//",
-                label="Physical columns",
-            ),
-        ],
-        fontsize=8,
-    )
-    axis.grid(axis="y", alpha=0.2, which="both")
-    _footnote(
-        figure,
-        "Logarithmic axis: row and column counts differ by about three orders "
-        "of magnitude. Physical columns include wholly empty and policy-"
-        "suppressed columns, so the totals reconcile with the source files.",
-    )
-    return figure
-
-
-def _plot_column_fill_profile(
-    *,
-    tables: Mapping[str, pd.DataFrame],
-    loaded: LoadedSources,
-    config: DescriptiveStatisticsConfig,
-) -> plt.Figure | None:
-    inventory = _table(tables, "column_inventory")
-    if inventory is None:
-        return None
-    frame = inventory.copy()
-    frame["_source"] = _text_column(frame, "source_name")
-    frame["_fill"] = _numeric_column(frame, "fill_rate")
-    frame["_column_id"] = _text_column(frame, "raw_column_id")
-    # A suppressed column reads as 0% filled because policy blanked its cells,
-    # not because the source left them empty. Plotting it would overstate
-    # missingness in exactly the restricted dataset the suppression protects.
-    suppressed = _suppressed_column_ids(loaded)
-    declared_suppressed = _boolean_column(frame, "suppressed")
-    is_suppressed = declared_suppressed | pd.Series(
-        [
-            (source, column_id) in suppressed
-            for source, column_id in zip(frame["_source"], frame["_column_id"])
-        ],
-        index=frame.index,
-    )
-    excluded = (
-        is_suppressed.groupby(frame["_source"]).sum().astype(int).to_dict()
-    )
-    frame = frame.loc[~is_suppressed & frame["_fill"].notna()]
-    names = _ordered_sources(loaded, frame["_source"])
-    if not names:
-        return None
-
-    colours = _source_colours(loaded)
-    figure, axis = _figure(config)
-    empty_notes: list[str] = []
-    for name in names:
-        values = (
-            frame.loc[frame["_source"] == name, "_fill"]
-            .to_numpy(dtype=float)
-            .copy()
-        )
-        if values.size == 0:
-            continue
-        values.sort()
-        values = values[::-1]
-        # Rank is expressed as a percentage of each dataset's own columns so a
-        # 302-column extract and a 12-column table share one x axis.
-        rank = (np.arange(values.size, dtype=float) + 1.0) / values.size * 100.0
-        axis.plot(
-            rank,
-            values * 100.0,
-            color=colours[name],
-            linewidth=1.9,
-            marker="o" if values.size <= 20 else None,
-            markersize=3.5,
-            # Short label deliberately: a legend wide enough to carry the column
-            # counts would cover the steep part of the middle curve. The counts
-            # are in the caption instead.
-            label=_legend_label(name),
-        )
-        empty_notes.append(
-            f"{_legend_label(name)}: {int(np.sum(values <= 0.0))} of {values.size}"
-        )
-
-    axis.set_ylim(-2.0, 104.0)
-    axis.set_xlim(0.0, 100.0)
-    axis.set(
-        title="Column fill-rate profile: physical columns sorted from most to least populated",
-        xlabel="Physical columns, ranked by fill rate (percent of the dataset's profiled columns)",
-        ylabel="Fill rate (percent of data rows carrying a value)",
-    )
-    # Centre-right is the only region all three curves leave empty: two of them
-    # sit on the 100% ceiling and the third on the 0% floor by mid-rank.
-    axis.legend(fontsize=8, loc="center right")
-    axis.grid(alpha=0.2)
-    suppression_note = ", ".join(
-        f"{_legend_label(name)}: {excluded.get(name, 0)}" for name in names
-    )
-    _footnote(
-        figure,
-        "Policy-suppressed identifier columns are excluded because their cells "
-        "are blanked by governance, not missing in the source "
-        f"(excluded — {suppression_note}). Wholly empty columns, of those "
-        f"profiled — {', '.join(empty_notes)}.",
-    )
-    return figure
-
-
-# --------------------------------------------------------------------------
-# numeric
-# --------------------------------------------------------------------------
-
-
-def _plot_numeric_spread_overview(
-    *,
-    tables: Mapping[str, pd.DataFrame],
-    loaded: LoadedSources,
-    config: DescriptiveStatisticsConfig,
-) -> plt.Figure | None:
-    summary = _table(tables, "numeric_summary")
-    if summary is None:
-        return None
-    frame = summary.copy()
-    frame["_source"] = _text_column(frame, "source_name")
-    frame["_column_id"] = _text_column(frame, "raw_column_id")
-    # Keyed on (source, raw_column_id) and never on header text: the core
-    # extract carries seven duplicated and sixteen blank header names.
-    indexed = frame.set_index(["_source", "_column_id"])
-
-    boxes: list[_BoxSummary] = []
-    for source in loaded.sources:
-        for attribute, label in _SPREAD_QUANTITIES:
-            binding = _binding_for(source, attribute)
-            if binding is None:
-                continue
-            key = (source.source_name, binding.raw_column_id)
-            if key not in indexed.index:
-                continue
-            row = indexed.loc[key]
-            if isinstance(row, pd.DataFrame):  # duplicated summary row
-                row = row.iloc[0]
-            mean = pd.to_numeric(pd.Series([row.get("mean")]), errors="coerce").iloc[0]
-            deviation = pd.to_numeric(
-                pd.Series([row.get("std_dev")]), errors="coerce"
-            ).iloc[0]
-            # Standardizing by the median and IQR would force every box to unit
-            # width and erase the comparison; mean/SD keeps the box width, the
-            # whisker asymmetry, and the tail reach informative.
-            if not np.isfinite(mean) or not np.isfinite(deviation) or deviation <= 0:
-                continue
-            quantiles = {
-                name: pd.to_numeric(
-                    pd.Series([row.get(name)]), errors="coerce"
-                ).iloc[0]
-                for name in ("p05", "q1", "median", "q3", "p95", "minimum", "maximum")
-            }
-            if any(not np.isfinite(value) for value in quantiles.values()):
-                continue
-            standardized = {
-                name: (value - mean) / deviation for name, value in quantiles.items()
-            }
-            count = pd.to_numeric(pd.Series([row.get("count")]), errors="coerce").iloc[0]
-            boxes.append(
-                _BoxSummary(
-                    source_name=source.source_name,
-                    label=label,
-                    observations=int(count) if np.isfinite(count) else 0,
-                    q1=float(standardized["q1"]),
-                    median=float(standardized["median"]),
-                    q3=float(standardized["q3"]),
-                    low_whisker=float(standardized["p05"]),
-                    high_whisker=float(standardized["p95"]),
-                    minimum=float(standardized["minimum"]),
-                    maximum=float(standardized["maximum"]),
-                )
-            )
-    if len(boxes) < 2:
-        return None
-
-    colours = _source_colours(loaded)
-    figure, axis = _figure(config)
-    # The tick label names its own dataset, so no colour legend is needed — and
-    # none is drawn, because any in-axes legend would cover the extreme ticks it
-    # would have to sit beside.
-    stats = [
-        {
-            "label": (
-                f"{box.label}\n{_tick_label(box.source_name)} "
-                f"(n={box.observations:,})"
-            ),
-            "med": box.median,
-            "q1": box.q1,
-            "q3": box.q3,
-            "whislo": box.low_whisker,
-            "whishi": box.high_whisker,
-            "fliers": [],
-        }
-        for box in boxes
-    ]
-    positions = np.arange(len(boxes), dtype=float) + 1.0
-    artists = axis.bxp(
-        stats,
-        positions=positions,
-        widths=0.6,
-        orientation="horizontal",
-        patch_artist=True,
-        showfliers=False,
-        medianprops={"color": "black", "linewidth": 1.6},
-        whiskerprops={"color": _NEUTRAL, "linewidth": 1.2},
-        capprops={"color": _NEUTRAL, "linewidth": 1.2},
-    )
-    for patch, box in zip(artists["boxes"], boxes):
-        patch.set_facecolor(colours[box.source_name])
-        patch.set_alpha(0.65)
-        patch.set_edgecolor(colours[box.source_name])
-    axis.scatter(
-        [box.minimum for box in boxes] + [box.maximum for box in boxes],
-        np.concatenate([positions, positions]),
-        marker="|",
-        s=90,
-        color=_NEUTRAL,
-        linewidths=1.1,
-        zorder=4,
-    )
-    axis.axvline(0.0, color="black", linewidth=0.8, linestyle="--")
-    axis.set_yticklabels(
-        [stat["label"] for stat in stats],
-        fontsize=8,
-    )
-    axis.set(
-        title="Standardized spread of the agronomically bound numeric columns",
-        xlabel="Standardized value ((x − mean) ÷ standard deviation)",
-        ylabel="Bound quantity and dataset",
-    )
-    axis.grid(axis="x", alpha=0.2)
-    _footnote(
-        figure,
-        "Boxes span Q1–Q3 around the median, whiskers reach the 5th and 95th "
-        "percentiles, and grey ticks mark the recorded minimum and maximum. "
-        "Each column is standardized on its own mean and SD, so shapes are "
-        "comparable and absolute magnitudes are not.",
-    )
-    return figure
-
-
-# --------------------------------------------------------------------------
-# categorical
-# --------------------------------------------------------------------------
-
-
-def _plot_categorical_cardinality(
-    *,
-    tables: Mapping[str, pd.DataFrame],
-    loaded: LoadedSources,
-    config: DescriptiveStatisticsConfig,
-) -> plt.Figure | None:
-    summary = _table(tables, "categorical_summary")
-    if summary is None:
-        return None
-    frame = summary.copy()
-    frame["_source"] = _text_column(frame, "source_name")
-    frame["_column_id"] = _text_column(frame, "raw_column_id")
-    frame["_distinct"] = _numeric_column(frame, "distinct_count")
-    frame["_entropy"] = _numeric_column(frame, "normalized_entropy")
-    frame["_identifier"] = _boolean_column(frame, "is_identifier_like")
-    # Defensive: a suppressed column classifies as value_kind="suppressed" and
-    # should never reach this table, but this is the one figure that labels
-    # individual columns by name, so the cross-check is worth its cost.
-    suppressed = _suppressed_column_ids(loaded)
-    keep = ~pd.Series(
-        [
-            (source, column_id) in suppressed
-            for source, column_id in zip(frame["_source"], frame["_column_id"])
-        ],
-        index=frame.index,
-    )
-    frame = frame.loc[keep & frame["_distinct"].notna() & frame["_entropy"].notna()]
-    frame = frame.loc[frame["_distinct"] > 0]
-    names = _ordered_sources(loaded, frame["_source"])
-    if frame.empty or not names:
-        return None
-
-    colours = _source_colours(loaded)
-    figure, axis = _figure(config)
-    for name in names:
-        subset = frame.loc[frame["_source"] == name]
-        for identifier_like, marker, face in (
-            (False, "o", colours[name]),
-            (True, "^", "none"),
-        ):
-            points = subset.loc[subset["_identifier"] == identifier_like]
-            if points.empty:
-                continue
-            axis.scatter(
-                points["_distinct"],
-                points["_entropy"],
-                s=44,
-                marker=marker,
-                facecolor=face,
-                edgecolor=colours[name],
-                linewidth=1.0,
-                alpha=0.85,
-                zorder=3,
-            )
-
-    # Only the extremes are labeled: the highest-cardinality and the
-    # lowest-entropy column per dataset. Labeling every point would render the
-    # panel unreadable at 302 columns.
-    labeled: set[tuple[str, str]] = set()
-    anchors: list[tuple[float, float]] = []
-    log_span = float(
-        np.log10(frame["_distinct"].max()) - np.log10(frame["_distinct"].min())
-    )
-    for name in names:
-        subset = frame.loc[frame["_source"] == name]
-        for index in (subset["_distinct"].idxmax(), subset["_entropy"].idxmin()):
-            row = frame.loc[index]
-            key = (str(row["_source"]), str(row["_column_id"]))
-            if key in labeled:
-                continue
-            labeled.add(key)
-            header = str(row.get("header_label", "")).strip() or "(blank header)"
-            if len(header) > 26:
-                header = header[:25] + "…"
-            cardinality = float(row["_distinct"])
-            entropy = float(row["_entropy"])
-            # Every dataset's lowest-entropy column sits at (small k, 0.0), so
-            # the extreme labels pile onto the same point. Stack each new label
-            # a row higher than the ones already anchored near it.
-            collisions = sum(
-                1
-                for x, y in anchors
-                if abs(np.log10(cardinality) - np.log10(x)) < 0.12
-                and abs(entropy - y) < 0.08
-            )
-            anchors.append((cardinality, entropy))
-            # A label on a right-edge point would run off the axes, so those
-            # are written back towards the interior instead.
-            on_right_edge = log_span > 0 and (
-                np.log10(cardinality) - np.log10(frame["_distinct"].min())
-            ) / log_span > 0.72
-            axis.annotate(
-                f"pos {int(_numeric_column(frame, 'position').loc[index])} · {header}",
-                xy=(cardinality, entropy),
-                xytext=(-8 if on_right_edge else 8, 6 + 13 * collisions),
-                textcoords="offset points",
-                ha="right" if on_right_edge else "left",
-                fontsize=7,
-                color=colours[name],
-            )
-
-    axis.set_xscale("log")
-    axis.set_ylim(-0.04, 1.12)
-    axis.set(
-        title="Categorical columns: cardinality against normalized entropy",
-        xlabel="Distinct nonblank levels in the column (count, logarithmic scale)",
-        ylabel="Normalized entropy (0 = one level dominates, 1 = levels are uniform)",
-    )
-    handles: list[Line2D] = [
-        Line2D(
-            [],
-            [],
-            linestyle="none",
-            marker="o",
-            markerfacecolor=colours[name],
-            markeredgecolor=colours[name],
-            markersize=7,
-            label=_legend_label(name),
-        )
-        for name in names
-    ]
-    if bool(frame["_identifier"].any()):
-        handles.append(
-            Line2D(
-                [],
-                [],
-                linestyle="none",
-                marker="^",
-                markerfacecolor="none",
-                markeredgecolor=_NEUTRAL,
-                markersize=7,
-                label="Identifier-like column",
-            )
-        )
-    # Lower right: the low-entropy columns cluster at low cardinality, so the
-    # bottom-left corner is exactly where the labeled extremes live.
-    axis.legend(handles=handles, fontsize=8, loc="lower right")
-    axis.grid(alpha=0.2, which="both")
-    _footnote(
-        figure,
-        "One point per physical column. Only the highest-cardinality and the "
-        "lowest-entropy column of each dataset is labeled, by physical position "
-        "and header text. Policy-suppressed columns are excluded entirely.",
-    )
-    return figure
 
 
 # --------------------------------------------------------------------------
@@ -1077,15 +565,17 @@ def _plot_categorical_cardinality(
 #
 # The appended arm and the row reassignment are local to this figure.
 # ``build_all_observations`` still returns exactly one row per recorded record
-# through the governed binding, so harmonized_observations.csv,
-# nitrogen_rate_profile.csv and
+# through the governed binding, so nitrogen_rate_profile.csv and
 # context_composition.csv are unchanged and still report core_trial_data's
 # recorded Type of Experiment mix in full.
 _CORE_TRIAL_SOURCE_NAME = "core_trial_data"
 _CORE_TRIAL_EXPERIMENT_TYPE_LABEL = "experiment_type"
 _CORE_TRIAL_FARMERS_PRACTICE_LEVEL = "Farmer's Practice"
 _FARMERS_PRACTICE_SUFFIX = "_fp"
-_WITH_FARMERS_PRACTICE_FIGURE_SUFFIX = "_with_farmers_practice"
+# Owned by the contract, which uses the same token in the published filenames
+# of the panels that draw the arm. One definition, so a figure name and the
+# filename beside it cannot disagree about what "with FP" is called.
+_WITH_FARMERS_PRACTICE_FIGURE_SUFFIX = WITH_FARMERS_PRACTICE_SUFFIX
 # The source whose farmer's-practice series adopts core_trial_data's recorded
 # Farmer's Practice rows. Named rather than inferred: a second source binding an
 # arm would get its own series, and the 12 rows would still belong to this one.
@@ -1098,11 +588,23 @@ _FARMERS_PRACTICE_DISPLAY_LABEL = "Farmer's Practice"
 # Farmer's Practice separately; this note names the remaining treatment whose
 # N rate is not represented so neither series reads as the source's whole
 # record.
-_PH_COMBINED_TREATMENT_NOTE = (
-    "The separate ph_combined_nopt_rcm bars retain the dataset's NOPT-N binding "
-    "(70-150 kg N ha⁻¹, the recommended rate the rest of the bundle profiles); "
-    "its RCM-N treatment (37-189 kg N ha⁻¹) is not drawn."
-)
+def _ph_combined_treatment_note(mark: str = "bars") -> str:
+    """Name the parent source's undrawn treatment, in the panel's own noun.
+
+    One sentence, one set of numbers, whatever the mark: a scatter says
+    "points" where a histogram says "bars", and two hand-written copies of a
+    governance disclosure would be free to drift apart on everything else.
+    """
+
+    return (
+        f"The separate ph_combined_nopt_rcm {mark} retain the dataset's NOPT-N "
+        "binding (70-150 kg N ha⁻¹, the recommended rate the rest of the "
+        "bundle profiles); its RCM-N treatment (37-189 kg N ha⁻¹) is not "
+        "drawn."
+    )
+
+
+_PH_COMBINED_TREATMENT_NOTE = _ph_combined_treatment_note()
 _ORIGINAL_UNDRAWN_ARM_NOTE = (
     "Its NOPT-N binding (70-150 kg N ha⁻¹, the recommended rate the rest of "
     "the bundle profiles) and its RCM-N treatment (37-189 kg N ha⁻¹) are not "
@@ -1290,6 +792,53 @@ def _farmers_practice_series(
         arm_rows=int(sum(len(arm) for arm in arms)),
         arm_source_names=tuple(arm_source_names),
     )
+
+
+def _farmers_practice_composition(derived: _FarmersPracticeSeries) -> str:
+    """How the derived series was assembled, for the captions that draw it.
+
+    A series read from an arm is only readable if the reader is told which arm
+    it is and which rows were moved into it, so every panel that draws one
+    states the same composition in the same words.
+    """
+
+    return (
+        "Farmer's Practice (FP) is drawn as its own series: "
+        f"{derived.arm_rows:,} FP observations were read from the "
+        f"{_FARMERS_PRACTICE_PARENT_SOURCE} sibling column pair, and "
+        f"{derived.relabeled_rows:,} literature-extracted rows recorded as "
+        "Farmer's Practice were moved into the same series."
+    )
+
+
+def _single_rate_arm_series_keys(
+    observations: pd.DataFrame, derived: _FarmersPracticeSeries
+) -> pd.DataFrame:
+    """Key every appended farmer's-practice row as its own single-rate series.
+
+    ``_farmers_practice_arm`` gives the whole arm one key, which is right for a
+    panel that only counts or bins its rows. A trajectory join groups by that
+    key, and one key across hundreds of farmer-chosen rates would draw a
+    polyline through unrelated trials, so each appended row is keyed by the
+    record it came from: one trial, one farmer treatment, one point.
+
+    Rows *relabeled* into the series keep the key they were recorded under.
+    They are literature rows that carry a real series identity, and rewriting
+    it would discard evidence rather than correct a placeholder.
+    """
+
+    keyed = observations.copy()
+    row_numbers = keyed["source_row_number"].astype(str)
+    for parent in derived.arm_source_names:
+        series_name = parent + _FARMERS_PRACTICE_SUFFIX
+        placeholder = f"{series_name}::{parent}"
+        is_arm = keyed["series_key"] == placeholder
+        if not is_arm.any():
+            continue
+        keyed.loc[is_arm, "series_key"] = (
+            placeholder + "::" + row_numbers.loc[is_arm]
+        )
+    return keyed
 
 
 def _share_histogram(
@@ -1611,7 +1160,11 @@ class _YieldDistributionAxes:
 
 
 def _yield_distribution_axes(
-    observations: pd.DataFrame, *, names: Sequence[str], config: DescriptiveStatisticsConfig
+    observations: pd.DataFrame,
+    *,
+    names: Sequence[str],
+    config: DescriptiveStatisticsConfig,
+    callout_slots: Sequence[float] = _YIELD_CALLOUT_SLOTS,
 ) -> _YieldDistributionAxes | None:
     yields = observations["yield_t_ha"].to_numpy(dtype=float)
     edges = np.linspace(
@@ -1643,7 +1196,7 @@ def _yield_distribution_axes(
         # Headroom for the lowest callout slot, derived from the slot heights
         # rather than fixed, so moving a slot cannot silently push its box into
         # the bars.
-        ylim=(0.0, tallest / (min(_YIELD_CALLOUT_SLOTS) - _YIELD_CALLOUT_CLEARANCE)),
+        ylim=(0.0, tallest / (min(callout_slots) - _YIELD_CALLOUT_CLEARANCE)),
     )
 
 
@@ -1742,25 +1295,47 @@ def _plot_yield_distribution(
     tables: Mapping[str, pd.DataFrame],
     loaded: LoadedSources,
     config: DescriptiveStatisticsConfig,
+    farmers_practice: bool = False,
 ) -> plt.Figure | None:
-    observations = _observations(loaded, config)
-    if observations.empty:
+    """Every dataset's yield distribution on one set of shared axes.
+
+    ``farmers_practice`` draws the declared farmer's-practice arm as its own
+    series, exactly as ``_plot_one_yield_distribution`` does for a single
+    dataset. The axis population is taken from the recorded frame either way,
+    so the two panels keep the bins and limits they share with their siblings.
+    """
+
+    recorded = _observations(loaded, config)
+    if recorded.empty:
         return None
-    names = _ordered_sources(loaded, observations["source_name"])
+    if farmers_practice:
+        derived = _farmers_practice_series(loaded, recorded, config)
+        observations = derived.observations
+        names = _nitrogen_series_order(loaded, observations, derived)
+        colours = _nitrogen_series_colours(loaded, derived)
+    else:
+        derived = None
+        observations = recorded
+        names = _ordered_sources(loaded, observations["source_name"])
+        colours = _source_colours(loaded)
     if not names:
         return None
+    slots = (
+        _extended_callout_slots(len(names))
+        if farmers_practice
+        else _YIELD_CALLOUT_SLOTS
+    )
 
     axis_observations, axis_names = _yield_axis_population(
-        observations, loaded, config
+        recorded, loaded, config
     )
     shared = _yield_distribution_axes(
-        axis_observations, names=axis_names, config=config
+        axis_observations, names=axis_names, config=config, callout_slots=slots
     )
     if shared is None:
         return None
     edges = shared.edges
 
-    colours = _source_colours(loaded)
     figure, axis = _figure(config)
     converted = 0
     for index, name in enumerate(names):
@@ -1778,17 +1353,19 @@ def _plot_yield_distribution(
             edges=edges,
             colour=colours[name],
             label=(
-                f"{_legend_label(name)} — "
+                f"{_nitrogen_series_label(name)} — "
                 f"{values.size:,} observations"
             ),
+            linestyle="--" if name.endswith(_FARMERS_PRACTICE_SUFFIX) else "-",
         )
         axis.axvline(median, color=colours[name], linestyle="--", linewidth=1.5)
         axis.annotate(
             f"median {median:.2f}",
             # Deliberately unguarded: a fourth configured source must raise
             # here rather than wrap onto an occupied slot and hide one
-            # dataset's median under another's.
-            xy=(median, _YIELD_CALLOUT_SLOTS[index]),
+            # dataset's median under another's. Only the farmer's-practice
+            # path extends the ladder, and it does so by the ladder's own step.
+            xy=(median, slots[index]),
             xycoords=("data", "axes fraction"),
             xytext=(5, 0),
             textcoords="offset points",
@@ -1801,7 +1378,13 @@ def _plot_yield_distribution(
     axis.set_xlim(*shared.xlim)
     axis.set_ylim(*shared.ylim)
     axis.set(
-        title="Recorded grain-yield distribution per dataset on the common t ha⁻¹ basis",
+        title=(
+            "Recorded grain-yield distribution per dataset and Farmer's "
+            "Practice on the common t ha⁻¹ basis"
+            if derived is not None
+            else "Recorded grain-yield distribution per dataset on the common "
+            "t ha⁻¹ basis"
+        ),
         xlabel="Grain yield (t ha⁻¹)",
         ylabel="Share of the dataset's harmonized observations (%)",
     )
@@ -1812,13 +1395,41 @@ def _plot_yield_distribution(
         if converted
         else "every observation is recorded natively in t ha⁻¹"
     )
+    caption = (
+        "Bars are within-dataset shares; dashed lines mark each dataset's "
+        f"median. Unit lineage: {lineage}."
+    )
+    if derived is not None:
+        caption = (
+            f"{caption} {_farmers_practice_composition(derived)} Each FP "
+            "observation is a second treatment of a trial whose NOPT-N "
+            "observation is also drawn, so the two series describe the same "
+            f"trials rather than independent ones. {_PH_COMBINED_TREATMENT_NOTE}"
+        )
     _footnote(
         figure,
-        "Bars are within-dataset shares; dashed lines mark each dataset's "
-        f"median. Unit lineage: {lineage}.",
+        caption,
         minimum_lines=_YIELD_DISTRIBUTION_FOOTNOTE_LINES,
     )
     return figure
+
+
+def _plot_published_yield_distribution(
+    *,
+    tables: Mapping[str, pd.DataFrame],
+    loaded: LoadedSources,
+    config: DescriptiveStatisticsConfig,
+) -> plt.Figure | None:
+    """The declared ``yield_distribution`` panel, which draws the FP arm.
+
+    Split from the renderer so the population the published figure reports is
+    a property of the contract entry rather than of a default argument, and so
+    the renderer stays callable without the arm by the standalone variants.
+    """
+
+    return _plot_yield_distribution(
+        tables=tables, loaded=loaded, config=config, farmers_practice=True
+    )
 
 
 def _plot_one_yield_distribution(
@@ -2206,6 +1817,7 @@ def _plot_yield_versus_nitrogen_trajectories(
     tables: Mapping[str, pd.DataFrame],
     loaded: LoadedSources,
     config: DescriptiveStatisticsConfig,
+    farmers_practice: bool = False,
 ) -> plt.Figure | None:
     """The N-yield cloud with each series' own observations joined in place.
 
@@ -2213,12 +1825,26 @@ def _plot_yield_versus_nitrogen_trajectories(
     opacity rule — with within-series connecting lines added beneath it. The two
     panels are meant to be read together: one shows coverage, this one shows
     that the coverage is made of ladders.
+
+    ``farmers_practice`` adds the declared farmer's-practice arm as its own
+    series. Its rates span far wider than any designed ladder, so the panel it
+    produces has a different x-range from the recorded-source panel and the two
+    are not read against one another.
     """
 
-    observations = _observations(loaded, config)
-    if observations.empty:
+    recorded = _observations(loaded, config)
+    if recorded.empty:
         return None
-    names = _ordered_sources(loaded, observations["source_name"])
+    if farmers_practice:
+        derived = _farmers_practice_series(loaded, recorded, config)
+        observations = _single_rate_arm_series_keys(derived.observations, derived)
+        names = _nitrogen_series_order(loaded, observations, derived)
+        colours = _nitrogen_series_colours(loaded, derived)
+    else:
+        derived = None
+        observations = recorded
+        names = _ordered_sources(loaded, observations["source_name"])
+        colours = _source_colours(loaded)
     if not names:
         return None
 
@@ -2233,7 +1859,6 @@ def _plot_yield_versus_nitrogen_trajectories(
     if not any(joined.get(name, 0) for name in names):
         return None
 
-    colours = _source_colours(loaded)
     figure, axis = _figure(config)
     counts = observations["source_name"].value_counts()
     drawing_order = sorted(names, key=lambda name: int(counts.get(name, 0)), reverse=True)
@@ -2290,7 +1915,7 @@ def _plot_yield_versus_nitrogen_trajectories(
                 markerfacecolor=colours[name],
                 markeredgecolor="none",
                 markersize=7,
-                label=f"{_legend_label(name)} — {detail}",
+                label=f"{_nitrogen_series_label(name)} — {detail}",
             )
         )
 
@@ -2314,6 +1939,7 @@ def _plot_yield_versus_nitrogen_trajectories(
         title=(
             "Recorded grain yield against recorded inorganic N rate, "
             "joined within each series"
+            + (", Farmer's Practice included" if derived is not None else "")
         ),
         xlabel="Inorganic N rate (kg N ha⁻¹)",
         ylabel="Grain yield (t ha⁻¹)",
@@ -2329,12 +1955,12 @@ def _plot_yield_versus_nitrogen_trajectories(
     if lineless:
         note += (
             " That is every series of "
-            + ", ".join(_legend_label(name) for name in lineless)
+            + ", ".join(_nitrogen_series_label(name) for name in lineless)
             + ": each record holds one N rate, and its zero-N arm is a paired "
             "column profiled in zero_nitrogen_checks, not a second row."
         )
     spanning = [
-        f"{trajectories.multi_year[name]:,} in {_legend_label(name)}"
+        f"{trajectories.multi_year[name]:,} in {_nitrogen_series_label(name)}"
         for name in names
         if trajectories.multi_year.get(name, 0)
     ]
@@ -2343,6 +1969,13 @@ def _plot_yield_versus_nitrogen_trajectories(
             " Some joined series record more than one year of planting ("
             + ", ".join(spanning)
             + "), so those lines join observations made in different seasons."
+        )
+    if derived is not None:
+        note += (
+            f" {_farmers_practice_composition(derived)} A farmer-chosen rate "
+            "is not a rung of a designed ladder, so each appended row is its "
+            "own single-rate series and the arm contributes points rather "
+            f"than lines. {_ph_combined_treatment_note('points')}"
         )
     _footnote(figure, note, minimum_lines=_PAIRED_SCATTER_FOOTNOTE_LINES)
     return figure
@@ -2353,7 +1986,18 @@ def _plot_temporal_coverage(
     tables: Mapping[str, pd.DataFrame],
     loaded: LoadedSources,
     config: DescriptiveStatisticsConfig,
+    series_order: Sequence[str] | None = None,
+    series_colours: Mapping[str, str] | None = None,
 ) -> plt.Figure | None:
+    """Stacked observation counts per recorded year.
+
+    ``series_order`` and ``series_colours`` are for a caller that stacks a
+    derived series beside the recorded ones, such as a farmer's-practice arm.
+    ``_ordered_sources`` and ``_source_colours`` both walk ``loaded.sources``,
+    which deliberately holds no entry for a derived series, so such a caller
+    supplies both itself. Omitting them is the governed path and is unchanged.
+    """
+
     coverage = _table(tables, "temporal_coverage")
     if coverage is None:
         return None
@@ -2362,7 +2006,13 @@ def _plot_temporal_coverage(
     frame["_year"] = _numeric_column(frame, "year")
     frame["_count"] = _numeric_column(frame, "observation_count")
     frame = frame.loc[frame["_year"].notna() & frame["_count"].notna()]
-    names = _ordered_sources(loaded, frame["_source"])
+    if series_order is None:
+        names = _ordered_sources(loaded, frame["_source"])
+    else:
+        # Held to the same rule as _ordered_sources: a name with no rows behind
+        # it would otherwise reach the legend as a zero-height entry.
+        recorded = set(frame["_source"])
+        names = tuple(name for name in series_order if name in recorded)
     if frame.empty or not names:
         return None
 
@@ -2375,7 +2025,11 @@ def _plot_temporal_coverage(
         .sort_index()
     )
     years = pivot.index.to_numpy(dtype=float)
-    colours = _source_colours(loaded)
+    colours = (
+        dict(series_colours)
+        if series_colours is not None
+        else _source_colours(loaded)
+    )
     figure, axis = _figure(config)
     bottom = np.zeros(years.size, dtype=float)
     for name in names:
@@ -2387,8 +2041,10 @@ def _plot_temporal_coverage(
             width=0.86,
             color=colours[name],
             edgecolor="none",
+            # Falls through to _legend_label for every recorded source, so the
+            # governed panel is unchanged; only a derived arm renders as one.
             label=(
-                f"{_legend_label(name)} — "
+                f"{_nitrogen_series_label(name)} — "
                 f"{int(values.sum()):,} observations"
             ),
         )
@@ -3012,6 +2668,118 @@ _COMPOSITION_FOOTNOTE = (
 )
 
 
+def _series_parent_source(
+    loaded: LoadedSources, series_name: str
+) -> ProfiledSource:
+    """The registered source a drawn series is read from, derived or not."""
+
+    name = series_name
+    if name.endswith(_FARMERS_PRACTICE_SUFFIX):
+        name = name[: -len(_FARMERS_PRACTICE_SUFFIX)]
+    source = next(
+        (candidate for candidate in loaded.sources if candidate.source_name == name),
+        None,
+    )
+    if source is None:
+        raise ProfileContractError(
+            f"No registered source behind series {series_name!r}"
+        )
+    return source
+
+
+def _temporal_coverage_with_farmers_practice(
+    loaded: LoadedSources,
+    derived: _FarmersPracticeSeries,
+    names: Sequence[str],
+) -> pd.DataFrame:
+    """Coverage counts for every drawn series, the derived one included.
+
+    ``_temporal_rows`` is reused rather than reimplemented, so the year
+    rounding, the undated-row handling, and the share denominator are the
+    published table's own. Only the two identity columns are rewritten,
+    because a derived series has no ``ProfiledSource`` to key them from.
+    """
+
+    observations = derived.observations
+    rows: list[dict[str, Any]] = []
+    for series_name in names:
+        source = _series_parent_source(loaded, series_name)
+        subset = observations.loc[
+            observations["source_name"] == series_name
+        ].reset_index(drop=True)
+        for row in _temporal_rows(source, subset):
+            # A derived arm is read from its parent's columns and inherits the
+            # parent's classification. The rows adopted from core_trial_data
+            # are classified less restrictively than that, so the inherited
+            # label never under-declares the series.
+            row["source_name"] = series_name
+            row["data_classification"] = source.data_classification
+            rows.append(row)
+    return conform_table("temporal_coverage", pd.DataFrame.from_records(rows))
+
+
+def _plot_published_temporal_coverage(
+    *,
+    tables: Mapping[str, pd.DataFrame],
+    loaded: LoadedSources,
+    config: DescriptiveStatisticsConfig,
+) -> plt.Figure | None:
+    """The declared ``temporal_coverage`` panel, which draws the FP arm.
+
+    Counts are recomputed from the observation cloud rather than read from the
+    ``temporal_coverage`` table: the drawn population carries the declared
+    farmer's-practice arm, and the published table records the three
+    registered sources. The table is unchanged and the caption states the
+    difference, so the two cannot be read as disagreeing about one population.
+    """
+
+    del tables  # the drawn population is wider than the published table
+    recorded = _observations(loaded, config)
+    if recorded.empty:
+        return None
+    derived = _farmers_practice_series(loaded, recorded, config)
+    names = _nitrogen_series_order(loaded, derived.observations, derived)
+    if not names:
+        return None
+    coverage = _temporal_coverage_with_farmers_practice(loaded, derived, names)
+    figure = _plot_temporal_coverage(
+        tables={"temporal_coverage": coverage},
+        loaded=loaded,
+        config=config,
+        series_order=names,
+        series_colours=_nitrogen_series_colours(loaded, derived),
+    )
+    if figure is None or not derived.exists:
+        # With no arm to draw this is the recorded-source panel already, and
+        # its own title and caption describe it correctly.
+        return figure
+
+    dated_arm_rows = int(
+        coverage.loc[
+            coverage["source_name"] == _FARMERS_PRACTICE_SERIES_NAME,
+            "observation_count",
+        ].sum()
+        - derived.relabeled_rows
+    )
+    figure.axes[0].set_title(
+        "Observation coverage by recorded year of planting, "
+        "Farmer's Practice included"
+    )
+    # Replace the renderer's generic caption with one that states the derived
+    # series' composition; re-running the helper reserves the taller band.
+    figure.texts.clear()
+    _footnote(
+        figure,
+        f"{_farmers_practice_composition(derived)} {dated_arm_rows:,} of the "
+        "appended rows carry a recorded year. Each FP observation is a second "
+        "treatment of a trial whose NOPT-N observation is also stacked here, "
+        "so a bar counts those trials once per arm rather than once per "
+        f"trial. {_PH_COMBINED_TREATMENT_NOTE} Bars stack the series within "
+        "each recorded year; rows without a recorded year contribute no bar.",
+    )
+    return figure
+
+
 def _plot_context_composition(
     *,
     tables: Mapping[str, pd.DataFrame],
@@ -3553,320 +3321,16 @@ def _plot_context_composition_variety(
 
 
 # --------------------------------------------------------------------------
-# crosscut
-# --------------------------------------------------------------------------
-
-
-def _range_panel(
-    axis: plt.Axes,
-    *,
-    names: Sequence[str],
-    low: pd.Series,
-    high: pd.Series,
-    middle: pd.Series | None,
-    colours: Mapping[str, str],
-    title: str,
-    xlabel: str,
-    value_format: str,
-) -> None:
-    positions = np.arange(len(names), dtype=float)
-    for position, name in zip(positions, names):
-        start = float(low.get(name, np.nan))
-        stop = float(high.get(name, np.nan))
-        if not (np.isfinite(start) and np.isfinite(stop)):
-            continue
-        axis.barh(
-            position,
-            max(stop - start, 0.0),
-            left=start,
-            height=0.5,
-            color=colours[name],
-            alpha=0.55,
-            edgecolor=colours[name],
-        )
-        axis.annotate(
-            format(start, value_format),
-            xy=(start, position),
-            xytext=(-4, 0),
-            textcoords="offset points",
-            ha="right",
-            va="center",
-            fontsize=7,
-        )
-        axis.annotate(
-            format(stop, value_format),
-            xy=(stop, position),
-            xytext=(4, 0),
-            textcoords="offset points",
-            ha="left",
-            va="center",
-            fontsize=7,
-        )
-        if middle is not None:
-            centre = float(middle.get(name, np.nan))
-            if np.isfinite(centre):
-                axis.plot(
-                    [centre],
-                    [position],
-                    marker="D",
-                    markersize=5,
-                    color="black",
-                    zorder=4,
-                )
-    # The low endpoint is annotated to the LEFT of the bar, so a bar that starts
-    # at the data minimum would push its label outside the axes and on top of the
-    # y tick label. Reserve margin for both endpoint labels rather than moving
-    # them inside the bar, where a short bar would collide with its own high label.
-    finite = np.array(
-        [
-            value
-            for name in names
-            for value in (float(low.get(name, np.nan)), float(high.get(name, np.nan)))
-            if np.isfinite(value)
-        ],
-        dtype=float,
-    )
-    if finite.size:
-        lowest, highest = float(finite.min()), float(finite.max())
-        span = highest - lowest
-        pad = span * 0.14 if span > 0 else max(abs(highest) * 0.14, 1.0)
-        axis.set_xlim(lowest - pad, highest + pad)
-
-    axis.set_yticks(positions)
-    axis.set_yticklabels(list(names), fontsize=8)
-    axis.invert_yaxis()
-    axis.set_title(title, fontsize=10)
-    axis.set_xlabel(xlabel, fontsize=8)
-    axis.tick_params(axis="x", labelsize=8)
-    axis.grid(axis="x", alpha=0.2)
-
-
-def _plot_source_comparability(
-    *,
-    tables: Mapping[str, pd.DataFrame],
-    loaded: LoadedSources,
-    config: DescriptiveStatisticsConfig,
-) -> plt.Figure | None:
-    comparability = _table(tables, "source_comparability")
-    if comparability is None:
-        return None
-    frame = comparability.copy()
-    frame["_source"] = _text_column(frame, "source_name")
-    names = _ordered_sources(loaded, frame["_source"])
-    if not names:
-        return None
-    indexed = frame.set_index("_source")
-
-    def column(name: str) -> pd.Series:
-        return _numeric_column(indexed, name).reindex(names)
-
-    colours = _source_colours(loaded)
-    figure, axes = _panel_figure(config, 2, 2)
-    _range_panel(
-        axes[0, 0],
-        names=names,
-        low=column("n_rate_min_kg_ha"),
-        high=column("n_rate_max_kg_ha"),
-        middle=None,
-        colours=colours,
-        title="Recorded inorganic N range",
-        xlabel="Inorganic N rate (kg N ha⁻¹)",
-        value_format=".0f",
-    )
-    _range_panel(
-        axes[0, 1],
-        names=names,
-        low=column("yield_min_t_ha"),
-        high=column("yield_max_t_ha"),
-        middle=column("yield_median_t_ha"),
-        colours=colours,
-        title="Recorded grain-yield range (♦ = median)",
-        xlabel="Grain yield (t ha⁻¹)",
-        value_format=".2f",
-    )
-    _range_panel(
-        axes[1, 0],
-        names=names,
-        low=column("year_min"),
-        high=column("year_max"),
-        middle=None,
-        colours=colours,
-        title="Recorded year span",
-        xlabel="Recorded year of planting",
-        value_format=".0f",
-    )
-
-    counts = column("harmonized_observation_count")
-    series_counts = column("grouping_series_count")
-    axis = axes[1, 1]
-    positions = np.arange(len(names), dtype=float)
-    for position, name in zip(positions, names):
-        value = float(counts.get(name, np.nan))
-        if not np.isfinite(value) or value <= 0:
-            continue
-        axis.barh(position, value, height=0.5, color=colours[name], alpha=0.75)
-        series_value = float(series_counts.get(name, np.nan))
-        suffix = (
-            f" · {int(series_value):,} series" if np.isfinite(series_value) else ""
-        )
-        axis.annotate(
-            f"{int(value):,}{suffix}",
-            xy=(value, position),
-            xytext=(4, 0),
-            textcoords="offset points",
-            ha="left",
-            va="center",
-            fontsize=7,
-        )
-    axis.set_xscale("log")
-    finite_counts = counts.to_numpy(dtype=float)
-    finite_counts = finite_counts[np.isfinite(finite_counts) & (finite_counts > 0)]
-    if finite_counts.size:
-        # Wide right margin: each bar carries its count and series total as
-        # text, which needs room beyond the longest bar.
-        axis.set_xlim(1.0, float(finite_counts.max()) * 60.0)
-    axis.set_yticks(positions)
-    axis.set_yticklabels(list(names), fontsize=8)
-    axis.invert_yaxis()
-    axis.set_title("Harmonized observations (logarithmic)", fontsize=10)
-    axis.set_xlabel("Observations carrying both N rate and yield (count)", fontsize=8)
-    axis.tick_params(axis="x", labelsize=8)
-    axis.grid(axis="x", alpha=0.2, which="both")
-
-    figure.suptitle(
-        "The registered datasets side by side on common axes", fontsize=12
-    )
-    classification_note = "; ".join(
-        _legend_label(name) for name in names
-    )
-    _footnote(
-        figure,
-        f"{classification_note}. Ranges are the extremes recorded, not "
-        "tolerance intervals. The panels describe what each dataset covers; "
-        "they do not rank the datasets or assert commensurability.",
-        top=0.95,
-    )
-    return figure
-
-
-def _plot_nitrogen_ladder_geometry(
-    *,
-    tables: Mapping[str, pd.DataFrame],
-    loaded: LoadedSources,
-    config: DescriptiveStatisticsConfig,
-) -> plt.Figure | None:
-    observations = _observations(loaded, config)
-    if observations.empty:
-        return None
-    resolved = observations.loc[observations["is_series_resolved"].astype(bool)]
-    if resolved.empty:
-        return None
-    names = _ordered_sources(loaded, resolved["source_name"])
-    if not names:
-        return None
-
-    # Bars and their annotations share one provenance: both the distribution and
-    # the median quoted in the legend come from this recomputation, so the panel
-    # cannot contradict itself.
-    distributions: dict[str, pd.Series] = {}
-    for name in names:
-        levels = _distinct_level_counts(
-            resolved.loc[resolved["source_name"] == name],
-            tolerance_kg_ha=config.n_level_tolerance_kg_ha,
-        )
-        if not levels.empty:
-            distributions[name] = levels
-    if not distributions:
-        return None
-
-    maximum_levels = int(
-        max(int(levels.max()) for levels in distributions.values())
-    )
-    cap = min(maximum_levels, 12)
-    buckets = np.arange(1, cap + 1)
-    colours = _source_colours(loaded)
-    figure, axis = _figure(config)
-    width = 0.8 / max(len(distributions), 1)
-    for index, (name, levels) in enumerate(distributions.items()):
-        capped = levels.clip(upper=cap)
-        shares = np.array(
-            [float((capped == bucket).sum()) / len(capped) * 100.0 for bucket in buckets]
-        )
-        offset = (index - (len(distributions) - 1) / 2.0) * width
-        axis.bar(
-            buckets + offset,
-            shares,
-            width=width,
-            color=colours[name],
-            edgecolor=colours[name],
-            alpha=0.85,
-            label=(
-                f"{_legend_label(name)} — "
-                f"{len(levels):,} series, median {float(levels.median()):g} "
-                + ("level" if float(levels.median()) == 1.0 else "levels")
-            ),
-        )
-        for bucket, share in zip(buckets, shares):
-            # A sliver rounds to "0%", which reads as an absent bar rather than
-            # a rare one; leave it to the bar itself.
-            if share < 0.5:
-                continue
-            axis.annotate(
-                f"{share:.0f}%",
-                xy=(bucket + offset, share),
-                xytext=(0, 3),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=6.5,
-            )
-
-    axis.set_xticks(buckets)
-    labels = [str(bucket) for bucket in buckets]
-    if maximum_levels > cap:
-        labels[-1] = f"{cap}+"
-    axis.set_xticklabels(labels)
-    axis.set_ylim(0.0, 108.0)
-    axis.set(
-        title="N-ladder geometry: distinct inorganic N levels recorded per grouping series",
-        xlabel="Distinct N levels in the series (count)",
-        ylabel="Share of the dataset's series (%)",
-    )
-    axis.legend(fontsize=8, loc="upper right")
-    axis.grid(axis="y", alpha=0.2)
-    key_note = "; ".join(
-        f"{_legend_label(source.source_name)} = "
-        + (
-            " | ".join(binding.header for binding in source.binding.series)
-            or "no series key declared"
-        )
-        for source in loaded.sources
-        if source.source_name in distributions
-    )
-    _footnote(
-        figure,
-        f"Series keys — {key_note}. Rates within "
-        f"{config.n_level_tolerance_kg_ha:g} kg N ha⁻¹ count as one level, and "
-        "only series whose key components are all recorded are counted.",
-    )
-    return figure
-
-
-# --------------------------------------------------------------------------
 # Registry and dispatch
 # --------------------------------------------------------------------------
 
 
 FIGURE_BUILDERS: Mapping[str, Callable[..., "plt.Figure | None"]] = {
-    "dataset_scale": _plot_dataset_scale,
-    "column_fill_profile": _plot_column_fill_profile,
-    "numeric_spread_overview": _plot_numeric_spread_overview,
-    "categorical_cardinality": _plot_categorical_cardinality,
     "nitrogen_rate_distribution": _plot_nitrogen_rate_distribution,
     "nitrogen_rate_distribution_with_separate_farmers_practice": (
         _plot_nitrogen_rate_distribution_with_separate_farmers_practice
     ),
-    "yield_distribution": _plot_yield_distribution,
+    "yield_distribution": _plot_published_yield_distribution,
     **{
         spec.name: _yield_distribution_builder(
             spec.source_name,
@@ -3877,7 +3341,7 @@ FIGURE_BUILDERS: Mapping[str, Callable[..., "plt.Figure | None"]] = {
     },
     "yield_versus_nitrogen": _plot_yield_versus_nitrogen,
     "yield_versus_nitrogen_trajectories": _plot_yield_versus_nitrogen_trajectories,
-    "temporal_coverage": _plot_temporal_coverage,
+    "temporal_coverage": _plot_published_temporal_coverage,
     "context_composition": _plot_context_composition,
     "context_composition_site_and_management": (
         _plot_context_composition_site_and_management
@@ -3891,8 +3355,6 @@ FIGURE_BUILDERS: Mapping[str, Callable[..., "plt.Figure | None"]] = {
         for spec in FIGURE_SPECS
         if spec.name.startswith("context_composition_") and spec.source_name
     },
-    "source_comparability": _plot_source_comparability,
-    "nitrogen_ladder_geometry": _plot_nitrogen_ladder_geometry,
 }
 
 

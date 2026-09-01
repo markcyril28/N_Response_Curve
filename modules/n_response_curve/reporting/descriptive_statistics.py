@@ -237,16 +237,16 @@ def _manifest_document(
             "observed_sha256": loaded.base_config_sha256,
             "binding": "recorded_not_enforced",
         },
+        # Only the settings that still govern an emitted artifact. The recipe
+        # profiles the agronomic view alone, so the retired structure, numeric,
+        # categorical, and cross-cut tuning is not recorded here as though it
+        # shaped a table in this bundle.
         "thresholds": {
             "numeric_parse_threshold": config.numeric_parse_threshold,
             "maximum_categorical_cardinality": config.maximum_categorical_cardinality,
             "example_values_per_column": config.example_values_per_column,
-            "outlier_iqr_multipliers": list(config.outlier_iqr_multipliers),
-            "quantiles": list(config.quantiles),
             "histogram_bins": config.histogram_bins,
-            "minimum_numeric_observations": config.minimum_numeric_observations,
             "minimum_level_count": config.minimum_level_count,
-            "maximum_levels_reported": config.maximum_levels_reported,
             "nitrogen_bin_width_kg_ha": config.nitrogen_bin_width_kg_ha,
             "zero_n_tolerance_kg_ha": config.zero_n_tolerance_kg_ha,
             "n_level_tolerance_kg_ha": config.n_level_tolerance_kg_ha,
@@ -427,20 +427,6 @@ def _lookup(tables: Mapping[str, pd.DataFrame], name: str) -> pd.DataFrame:
     return contracts.empty_table(name) if frame is None else frame
 
 
-def _cell(value: Any) -> str:
-    """Escape free text for a Markdown table cell.
-
-    Series keys are composed with "|" as their component separator, which is
-    also the Markdown column delimiter: unescaped, a key like
-    "Year|Season|Variety" silently splits one cell into three and shears the
-    whole row out of alignment.
-    """
-
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "n/a"
-    return " ".join(str(value).split()).replace("|", "\\|")
-
-
 def _fmt(value: Any, digits: int = 2) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "n/a"
@@ -466,9 +452,6 @@ def render_summary_markdown(
     skipped_figures: Sequence[str],
     generated_at: str,
 ) -> str:
-    inventory = _lookup(tables, "source_inventory")
-    comparability = _lookup(tables, "source_comparability")
-    ladder = _lookup(tables, "nitrogen_ladder_geometry")
     yields = _lookup(tables, "yield_profile")
     nitrogen = _lookup(tables, "nitrogen_rate_profile")
 
@@ -478,57 +461,34 @@ def render_summary_markdown(
     lines.append(f"Generated {generated_at} · mode `{config.mode}` · schema `{SCHEMA_VERSION}`")
     lines.append("")
     lines.append(
-        "This bundle documents the shape, completeness, measurement scale, and "
-        "agronomic coverage of every registered source dataset. It is descriptive "
-        "only: it fits no response model, selects no optimum, and makes no "
-        "fertilizer recommendation. Differences reported between datasets are "
-        "differences in what was recorded, not measured effects."
+        "This bundle documents the agronomic coverage of every registered source "
+        "dataset: recorded N rates and their ladder, grain yield on a common "
+        "t/ha basis, temporal coverage, zero-N checks, and the composition of "
+        "the context fields each dataset binds. It is descriptive only: it fits "
+        "no response model, selects no optimum, and makes no fertilizer "
+        "recommendation. Differences reported between datasets are differences "
+        "in what was recorded, not measured effects."
     )
     lines.append("")
+    # The roster is read straight off the loader rather than off a profile
+    # table: it states what was read, and nothing here is computed from the
+    # rows, so it does not reintroduce the retired structural profile.
     lines.append("## Datasets profiled")
     lines.append("")
-    lines.append(
-        "| Dataset | Class | Rows | Physical columns | Fill rate | Encoding | Adapter |"
-    )
-    lines.append("| --- | --- | ---: | ---: | ---: | --- | --- |")
-    for _, row in inventory.iterrows():
+    lines.append("| Dataset | Class | Rows | Physical columns | Encoding | Adapter |")
+    lines.append("| --- | --- | ---: | ---: | --- | --- |")
+    for source in loaded.sources:
         lines.append(
-            "| `{name}` | {cls} | {rows} | {cols} | {fill} | {enc} | `{adapter}` |".format(
-                name=row["source_name"],
-                cls=row["data_classification"],
-                rows=_fmt(row["data_row_count"]),
-                cols=_fmt(row["physical_column_count"]),
-                fill=f"{float(row['overall_fill_rate']):.1%}"
-                if pd.notna(row["overall_fill_rate"])
-                else "n/a",
-                enc=row["source_encoding"],
-                adapter=row["shape_adapter_version"],
+            "| `{name}` | {cls} | {rows} | {cols} | {enc} | `{adapter}` |".format(
+                name=source.source_name,
+                cls=source.data_classification,
+                rows=_fmt(source.data_row_count),
+                cols=_fmt(source.physical_column_count),
+                enc=source.source_encoding,
+                adapter=source.shape_adapter_version,
             )
         )
     lines.append("")
-
-    if not inventory.empty:
-        lines.append("### Column composition")
-        lines.append("")
-        lines.append(
-            "| Dataset | Numeric | Categorical | Identifier-like | Wholly empty | "
-            "Suppressed | Blank headers | Duplicated headers |"
-        )
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
-        for _, row in inventory.iterrows():
-            lines.append(
-                "| `{n}` | {num} | {cat} | {ident} | {empty} | {sup} | {blank} | {dup} |".format(
-                    n=row["source_name"],
-                    num=_fmt(row["numeric_column_count"]),
-                    cat=_fmt(row["categorical_column_count"]),
-                    ident=_fmt(row["identifier_column_count"]),
-                    empty=_fmt(row["empty_column_count"]),
-                    sup=_fmt(row["suppressed_column_count"]),
-                    blank=_fmt(row["blank_header_count"]),
-                    dup=_fmt(row["duplicated_header_count"]),
-                )
-            )
-        lines.append("")
 
     if not nitrogen.empty or not yields.empty:
         lines.append("## Agronomic coverage")
@@ -557,35 +517,6 @@ def render_summary_markdown(
                     ymax=_fmt(y["maximum_t_ha"], 2) if y is not None else "n/a",
                 )
             )
-        lines.append("")
-
-    if not ladder.empty:
-        lines.append("## N-ladder geometry")
-        lines.append("")
-        lines.append(
-            "| Dataset | Series | Median N levels/series | Single-level series | "
-            "Series with zero-N | Median span (kg/ha) | Series key |"
-        )
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- |")
-        for _, row in ladder.iterrows():
-            lines.append(
-                "| `{n}` | {series} | {med} | {single} | {zero} | {span} | {basis} |".format(
-                    n=row["source_name"],
-                    series=_fmt(row["series_count"]),
-                    med=_fmt(row["median_levels_per_series"], 1),
-                    single=_fmt(row["single_level_series_count"]),
-                    zero=_fmt(row["series_with_zero_n_count"]),
-                    span=_fmt(row["median_span_kg_ha"], 1),
-                    basis=_cell(row["series_key_basis"]),
-                )
-            )
-        lines.append("")
-
-    if not comparability.empty:
-        lines.append("## Comparability")
-        lines.append("")
-        for _, row in comparability.iterrows():
-            lines.append(f"- **`{row['source_name']}`** — {row['comparability_note']}")
         lines.append("")
 
     restricted_names = sorted(
