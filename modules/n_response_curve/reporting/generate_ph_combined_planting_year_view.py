@@ -6,6 +6,11 @@ row. This view keeps the exact linked-row/finite-arm population used by
 ``ph_combined_nopt_rcm_source_wide_no_nopt_npk.jpeg``. It never interprets the
 remaining same-row arms as a response series: annual summaries are computed
 separately for FP, RCM, and zero N.
+
+``--fp-variant no_fp`` reads the sibling source file that has no fp_* columns,
+so the FP arm is absent from the input rather than filtered out of it. The
+summarized classes, the panel grid, and the disclosures all follow the arms the
+selected file actually carries.
 """
 
 from __future__ import annotations
@@ -42,6 +47,20 @@ from n_response_curve.reporting.source_config_spec import (  # noqa: E402
 SOURCE_NAME = "ph_combined_nopt_rcm"
 EXCLUDED_TREATMENT_CLASSES = frozenset({"NOPT NPK"})
 TREND_TREATMENT_CLASSES = ("FP", "RCM", "zero N")
+# The Farmer's Practice arm exists only in the registered source file; the
+# "no_fp" variant file has no fp_* columns, so it summarizes one class fewer.
+_FARMERS_PRACTICE_CLASS = "FP"
+_VARIANT_DIRECTORY_SUFFIXES = {sdo.COMBINED_VARIANT_NO_FP: "_no_fp"}
+
+
+def _trend_treatment_classes(variant: str) -> tuple[str, ...]:
+    if variant == sdo.COMBINED_VARIANT_WITH_FP:
+        return TREND_TREATMENT_CLASSES
+    return tuple(
+        treatment_class
+        for treatment_class in TREND_TREATMENT_CLASSES
+        if treatment_class != _FARMERS_PRACTICE_CLASS
+    )
 ANNOTATED_FIGURE_FILENAME = "decades_and_trend.jpeg"
 FIGURE_ONLY_FILENAME = "decades_and_trend_figure.jpeg"
 NOTES_FILENAME = "decades_and_trend_notes.md"
@@ -99,6 +118,8 @@ class PreparedAnalysis:
     years: tuple[int, ...]
     decades: tuple[str, ...]
     source_sha256: str
+    variant: str
+    trend_treatment_classes: tuple[str, ...]
 
 
 def _normalize_season(value: str) -> str:
@@ -148,6 +169,7 @@ def _read_contexts(csv_path: Path, *, encoding: str) -> dict[str, LinkedRowConte
 def _annual_arm_summaries(
     overlay: sdo.SourceDatasetOverlay,
     contexts: Mapping[str, LinkedRowContext],
+    trend_treatment_classes: tuple[str, ...],
 ) -> tuple[AnnualArmSummary, ...]:
     values: dict[tuple[int, str, str], list[float]] = defaultdict(list)
     for trajectory in overlay.trajectories:
@@ -155,7 +177,7 @@ def _annual_arm_summaries(
         if context is None or context.year is None or context.season == "unrecorded":
             continue
         for observation in trajectory.observations:
-            if observation.treatment_class not in TREND_TREATMENT_CLASSES:
+            if observation.treatment_class not in trend_treatment_classes:
                 continue
             values[
                 (context.year, context.season, observation.treatment_class)
@@ -181,13 +203,20 @@ def _annual_arm_summaries(
     return tuple(summaries)
 
 
-def _prepare_analysis(csv_path: Path, *, encoding: str) -> PreparedAnalysis:
+def _prepare_analysis(
+    csv_path: Path,
+    *,
+    encoding: str,
+    variant: str = sdo.COMBINED_VARIANT_WITH_FP,
+) -> PreparedAnalysis:
     csv_path = Path(csv_path)
+    trend_treatment_classes = _trend_treatment_classes(variant)
     before = _sha256(csv_path)
     source_overlay = sdo.read_source_dataset_overlay(
         csv_path,
         SOURCE_NAME,
         encoding=encoding,
+        variant=variant,
     )
     overlay = _exclude_treatment_classes(
         source_overlay,
@@ -198,7 +227,7 @@ def _prepare_analysis(csv_path: Path, *, encoding: str) -> PreparedAnalysis:
     if after != before:
         raise RuntimeError("PH combined source bytes changed while preparing the figure")
 
-    annual_summaries = _annual_arm_summaries(overlay, contexts)
+    annual_summaries = _annual_arm_summaries(overlay, contexts, trend_treatment_classes)
     years = tuple(
         sorted(
             {
@@ -219,6 +248,8 @@ def _prepare_analysis(csv_path: Path, *, encoding: str) -> PreparedAnalysis:
         years=years,
         decades=decades,
         source_sha256=before,
+        variant=variant,
+        trend_treatment_classes=trend_treatment_classes,
     )
 
 
@@ -239,7 +270,7 @@ def _arm_counts(analysis: PreparedAnalysis) -> dict[str, int]:
             for trajectory in analysis.overlay.trajectories
             for observation in trajectory.observations
         )
-        for treatment_class in TREND_TREATMENT_CLASSES
+        for treatment_class in analysis.trend_treatment_classes
     }
 
 
@@ -252,17 +283,42 @@ def _season_row_counts(analysis: PreparedAnalysis) -> dict[str, int]:
     return counts
 
 
+def _class_list_text(analysis: PreparedAnalysis) -> str:
+    """Render the summarized treatment classes as prose."""
+
+    classes = list(analysis.trend_treatment_classes)
+    if len(classes) < 2:
+        return classes[0] if classes else "no treatment class"
+    if len(classes) == 2:
+        return f"{classes[0]} and {classes[1]}"
+    return ", ".join(classes[:-1]) + f", and {classes[-1]}"
+
+
 def _disclosures(analysis: PreparedAnalysis) -> list[str]:
     arm_counts = _arm_counts(analysis)
     season_counts = _season_row_counts(analysis)
     year_text = f"{analysis.years[0]}-{analysis.years[-1]}"
+    arm_text = ", ".join(
+        f"{arm_counts[treatment_class]} {treatment_class}"
+        for treatment_class in analysis.trend_treatment_classes
+    )
+    class_text = _class_list_text(analysis)
+    variant_note = (
+        []
+        if analysis.variant == sdo.COMBINED_VARIANT_WITH_FP
+        else [
+            "Farmer's Practice is absent from the input: this view was built "
+            f"from the '{analysis.variant}' source file, which carries no fp_* "
+            "columns, rather than by filtering the registered file."
+        ]
+    )
     return [
+        *variant_note,
         f"Population: {analysis.overlay.summary.trajectory_count} linked source rows and "
         f"{analysis.overlay.summary.finite_observation_count} retained finite arms "
-        f"({arm_counts['FP']} FP, {arm_counts['RCM']} RCM, "
-        f"{arm_counts['zero N']} zero N), matching the no-NOPT-NPK source-wide view.",
+        f"({arm_text}), matching the no-NOPT-NPK source-wide view.",
         "NOPT NPK is excluded from the inset, annual summaries, legends, and "
-        "connecting lines; FP, RCM, and zero N remain separate treatment classes.",
+        f"connecting lines; {class_text} remain separate treatment classes.",
         "The source stores these arms on one linked row; comparability is not "
         "assumed; gray within-row connectors in the inset are visual aids, not "
         "response trajectories, fits, or causal contrasts.",
@@ -288,7 +344,7 @@ def _draw_linked_arm_inset(analysis: PreparedAnalysis, axes) -> None:
         analysis.overlay.summary.finite_observation_count,
         analysis.overlay.summary.trajectory_count,
     )
-    for treatment_class in TREND_TREATMENT_CLASSES:
+    for treatment_class in analysis.trend_treatment_classes:
         observations = [
             observation
             for trajectory in analysis.overlay.trajectories
@@ -361,7 +417,7 @@ def _draw_trend_panels(analysis: PreparedAnalysis, axes_list) -> None:
 
     for axes, treatment_class in zip(
         axes_list,
-        TREND_TREATMENT_CLASSES,
+        analysis.trend_treatment_classes,
         strict=True,
     ):
         for season, (marker, linestyle, label) in _SEASON_STYLES.items():
@@ -409,21 +465,25 @@ def _build_figure(
 ):
     from matplotlib import pyplot as plt
 
-    height = 20.0 if annotated else 15.0
+    panel_count = len(analysis.trend_treatment_classes)
+    dropped_panels = len(TREND_TREATMENT_CLASSES) - panel_count
+    height = (20.0 if annotated else 15.0) - 1.6 * dropped_panels
     figure = plt.figure(figsize=(12.0, height))
     bottom = 0.30 if annotated else 0.20
     grid = figure.add_gridspec(
-        4,
+        panel_count + 1,
         1,
         left=0.09,
         right=0.97,
         top=0.86,
         bottom=bottom,
         hspace=0.33,
-        height_ratios=(1.65, 0.78, 0.78, 0.78),
+        height_ratios=(1.65, *(0.78,) * panel_count),
     )
     inset_axes = figure.add_subplot(grid[0])
-    trend_axes = [figure.add_subplot(grid[index]) for index in range(1, 4)]
+    trend_axes = [
+        figure.add_subplot(grid[index]) for index in range(1, panel_count + 1)
+    ]
     _draw_linked_arm_inset(analysis, inset_axes)
     _draw_trend_panels(analysis, trend_axes)
     handles, labels = trend_axes[0].get_legend_handles_labels()
@@ -535,7 +595,15 @@ def _write_readme(analysis: PreparedAnalysis, destination: Path) -> None:
         f"- Population: {analysis.overlay.summary.trajectory_count} linked rows, "
         f"{analysis.overlay.summary.finite_observation_count} retained observations.",
         f"- Coverage: {analysis.years[0]}-{analysis.years[-1]} ({', '.join(analysis.decades)}).",
-        "- NOPT NPK is excluded; FP, RCM, and zero N are summarized separately.",
+        f"- NOPT NPK is excluded; {_class_list_text(analysis)} are summarized "
+        "separately.",
+        # Named only when it is not the registered file, so the default view's
+        # published README stays exactly what it was.
+        *(
+            []
+            if analysis.variant == sdo.COMBINED_VARIANT_WITH_FP
+            else [f"- Source file variant: `{analysis.variant}` (no fp_* columns)."]
+        ),
         "- Comparability is not assumed and no pooled curve or fit is drawn.",
         "",
         "## Regenerate",
@@ -638,20 +706,59 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
+        default=None,
+        help=(
+            "Destination directory; defaults to the registered view's "
+            "directory, suffixed per variant so a variant run never replaces it"
+        ),
+    )
+    parser.add_argument(
+        "--fp-variant",
+        choices=sdo.COMBINED_SOURCE_VARIANTS,
+        default=sdo.COMBINED_VARIANT_WITH_FP,
+        help=(
+            "Which file of the PH combined source to read. The default reads "
+            "the registered CSV and summarizes FP, RCM, and zero N. 'no_fp' "
+            "reads the sibling file with no fp_* columns and summarizes the "
+            "remaining arms"
+        ),
     )
     return parser.parse_args()
+
+
+def _default_output_dir(variant: str) -> Path:
+    suffix = _VARIANT_DIRECTORY_SUFFIXES.get(variant, "")
+    if not suffix:
+        return DEFAULT_OUTPUT_DIR
+    return DEFAULT_OUTPUT_DIR.with_name(f"{DEFAULT_OUTPUT_DIR.name}{suffix}")
 
 
 def main() -> int:
     args = _parse_args()
     source_path, encoding = _load_source_spec(args.config.resolve())
-    analysis = _prepare_analysis(source_path, encoding=encoding)
-    destination = args.output_dir.resolve()
+    if args.fp_variant != sdo.COMBINED_VARIANT_WITH_FP:
+        source_path = sdo.combined_variant_source_path(source_path, args.fp_variant)
+        if not source_path.is_file():
+            raise ValueError(
+                f"Source '{SOURCE_NAME}' variant {args.fp_variant!r} expects "
+                f"{source_path}, which does not exist"
+            )
+    analysis = _prepare_analysis(
+        source_path,
+        encoding=encoding,
+        variant=args.fp_variant,
+    )
+    output_dir = args.output_dir or _default_output_dir(args.fp_variant)
+    destination = output_dir.resolve()
     _publish_document_set(
         analysis,
         destination,
         source_path=source_path,
+    )
+    print(f"{SOURCE_NAME}: source variant={args.fp_variant}; file={source_path.name}")
+    print(
+        f"{SOURCE_NAME}: summarized classes="
+        f"{', '.join(analysis.trend_treatment_classes)}"
     )
     print(
         f"{SOURCE_NAME}: linked rows={analysis.overlay.summary.trajectory_count}; "
