@@ -21,19 +21,15 @@ import uuid
 import pandas as pd
 
 from ..analysis.descriptive_statistics.agronomic import analyze_agronomic
-from ..analysis.descriptive_statistics.categorical import analyze_categorical
 from ..analysis.descriptive_statistics.config import (
     DescriptiveStatisticsConfig,
     RecipeConfigError,
     load_recipe_config,
 )
-from ..analysis.descriptive_statistics.crosscut import analyze_crosscut
-from ..analysis.descriptive_statistics.numeric import analyze_numeric
 from ..analysis.descriptive_statistics.sources import (
     LoadedSources,
     load_profiled_sources,
 )
-from ..analysis.descriptive_statistics.structure import analyze_structure
 from ..analysis.descriptive_statistics import contracts
 from ..data.config import load_config
 from ..data.provenance import sha256_file
@@ -64,11 +60,7 @@ _IMPLEMENTATION_RELATIVE_PATHS = (
     "modules/n_response_curve/analysis/descriptive_statistics/contracts.py",
     "modules/n_response_curve/analysis/descriptive_statistics/config.py",
     "modules/n_response_curve/analysis/descriptive_statistics/sources.py",
-    "modules/n_response_curve/analysis/descriptive_statistics/structure.py",
-    "modules/n_response_curve/analysis/descriptive_statistics/numeric.py",
-    "modules/n_response_curve/analysis/descriptive_statistics/categorical.py",
     "modules/n_response_curve/analysis/descriptive_statistics/agronomic.py",
-    "modules/n_response_curve/analysis/descriptive_statistics/crosscut.py",
     "modules/n_response_curve/reporting/descriptive_statistics.py",
     "modules/n_response_curve/reporting/descriptive_statistics_figures.py",
 )
@@ -114,13 +106,7 @@ def _compute_tables(
     """Run every profile and reject a name that is not in the frozen contract."""
 
     tables: dict[str, pd.DataFrame] = {}
-    for analyze in (
-        analyze_structure,
-        analyze_numeric,
-        analyze_categorical,
-        analyze_agronomic,
-        analyze_crosscut,
-    ):
+    for analyze in (analyze_agronomic,):
         produced = analyze(loaded, config)
         for name, frame in produced.items():
             if name in tables:
@@ -246,13 +232,11 @@ def run_descriptive_statistics(
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
 
-    # The row-level export is optional, so the authoritative count is the one
-    # the comparability table reports per source; fall back to it whenever the
-    # export was disabled and the frame is legitimately empty.
-    comparability = tables["source_comparability"]["harmonized_observation_count"]
-    observations = int(
-        pd.to_numeric(comparability, errors="coerce").fillna(0).sum()
-    )
+    # One count per source, on the harmonized (N rate, yield) basis every
+    # agronomic table is built from — the same number the retired cross-cut
+    # comparability table used to report.
+    profiled = tables["nitrogen_rate_profile"]["observation_count"]
+    observations = int(pd.to_numeric(profiled, errors="coerce").fillna(0).sum())
     return DescriptiveStatisticsResult(
         status="completed",
         mode=config.mode,
