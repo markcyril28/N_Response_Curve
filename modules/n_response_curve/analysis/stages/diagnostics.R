@@ -25,6 +25,15 @@ nrc_model_converged <- function(model) {
   if (inherits(model, "multinom")) {
     return(isTRUE(model$convergence == 0L))
   }
+  # A `glm` carries class c("glm", "lm") and reports its own IRLS convergence
+  # in `$converged`. It has to be answered before the `lm` fallback below, or
+  # that fallback reports every glm as converged whatever `$converged` says --
+  # a binomial fit stopped at `maxit`, or one whose coefficients diverge under
+  # complete separation, would clear the gate that exists to stop it.
+  if (inherits(model, "glm")) {
+    return(isTRUE(model$converged))
+  }
+  # `lm` is a direct least-squares solve with no iteration to converge.
   isTRUE(model$converged) || inherits(model, "lm")
 }
 
