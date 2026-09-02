@@ -1,31 +1,22 @@
 # Goal: produce a comprehensive descriptive statistical profile of every
 # registered source dataset in this project — the internal literature extraction
 # (core_trial_data) and the two restricted trial datasets (ph_combined_nopt_rcm,
-# ltcce) — so that the shape, completeness, measurement scale, and agronomic
-# coverage of each dataset are documented before any inferential claim is made
-# about them.
+# ltcce) — so that the agronomic coverage of each dataset is documented before
+# any inferential claim is made about it.
 #
-# The profile answers four questions per dataset, and one across datasets:
-#   1. Structure   — how many physical columns and logical data rows exist, which
-#                    headers are blank or duplicated, which columns are wholly
-#                    empty, and how completeness is distributed across rows.
-#   2. Numeric     — for every numeric-parsable column: count, missing, mean, sd,
-#                    coefficient of variation, min/quartiles/max, IQR, median
-#                    absolute deviation, skewness, kurtosis, zero and negative
-#                    counts, and Tukey outlier counts at 1.5 and 3.0 IQR.
-#   3. Categorical — for every categorical column: cardinality, mode, Shannon
-#                    entropy (raw and normalized), singleton-level count, and a
-#                    frequency table of levels at or above a reporting threshold.
-#   4. Agronomic   — the domain view: inorganic N-rate distribution and ladder
-#                    geometry, grain-yield distribution on a common t/ha basis
-#                    with its unit lineage recorded, yield binned against N rate,
-#                    temporal coverage, zero-N check observations, and the
-#                    composition of every context field each dataset binds —
-#                    the recorded ones as recorded, plus applied N and year
-#                    banded into ordinal levels the recipe derives.
-#   5. Cross-cut   — the three datasets side by side on a harmonized N-yield
-#                    observation basis, with an explicit comparability audit of
-#                    what is and is not commensurable between them.
+# The profile answers one question per dataset — the agronomic view: inorganic
+# N-rate distribution and ladder geometry, grain-yield distribution on a common
+# t/ha basis with its unit lineage recorded, yield binned against N rate,
+# temporal coverage, zero-N check observations, and the composition of every
+# context field each dataset binds — the recorded ones as recorded, plus applied
+# N and year banded into ordinal levels the recipe derives.
+#
+# The structure, numeric, categorical, and cross-cut profiles this recipe used
+# to publish beside it were retired on 2026-09-01 along with their analysis
+# modules. The bundle no longer reports physical column shape, per-column
+# numeric statistics, categorical level frequencies, or the three datasets side
+# by side on a harmonized observation basis; the corresponding output
+# directories are gone rather than emptied.
 #
 # This is descriptive only. It reports what the recorded data contain. It fits no
 # response model, selects no optimum, makes no fertilizer recommendation, and
@@ -45,7 +36,7 @@
 # "restricted". Every artifact derived from them is labeled with its source
 # classification in run_manifest.json, and the personal- and location-identifier
 # columns named in [privacy].suppressed_headers are excluded from every emitted
-# table — no level frequency, example value, or row-level export may carry them.
+# table and figure — no value of theirs may reach a published artifact.
 
 # --- Execution settings ---
 [run]
@@ -60,8 +51,11 @@ overwrite = true
 # later resampling statistic cannot be added without a declared seed.
 random_seed = 20260816
 fail_fast = true
-# Row-level export of the harmonized cross-source N-yield frame. Restricted rows
-# are included when true; the table is classification-labeled in the manifest.
+# Row-level export of the harmonized cross-source N-yield frame. Inert since the
+# cross-cut profile that published harmonized_observations.csv was retired: no
+# table in this bundle is row-level. Kept accepted, and recorded in the manifest,
+# so a config written before the retirement still loads and so re-enabling a
+# row-level export later cannot happen without a declared switch.
 include_row_level_observations = true
 
 # --- Input sources ---
@@ -74,16 +68,16 @@ profiled = ["core_trial_data", "ph_combined_nopt_rcm", "ltcce"]
 # --- Privacy suppression ---
 [privacy]
 # Matched on exact header text. Their cells are blanked before any profile sees
-# them, so no value from these columns reaches any emitted table: they carry no
-# level frequency, no example value, and no row-level export.
+# them, so no value from these columns reaches any emitted table or figure, and
+# none is carried as an example value even in memory.
 # farmer_first_name / farmer_last_name are personal identifiers; boundary1
 # through boundary4 resolve to a named barangay-level location in the restricted
 # NOPT dataset.
-# What IS retained is the schema fact that the column exists: the structural
-# inventory keeps one row per physical column — reporting the suppressed column
-# as 0 nonblank of N, with its suppression reason — so the column arithmetic
-# stays reconcilable against the 302/228/12 source shapes. The header name is
-# metadata about the file's layout; the suppressed values are the personal data.
+# What IS retained is the schema fact that the column exists: the loader keeps
+# one classified column record per physical column, marking the suppressed ones
+# blank with their suppression reason, so the column arithmetic stays
+# reconcilable against the 302/228/12 source shapes. The header name is metadata
+# about the file's layout; the suppressed values are the personal data.
 # latitude / longitude are suppressed for the same reason as boundary1..4 and
 # more urgently. In ph_combined_nopt_rcm they are recorded to seven and eight
 # decimal places on every one of the 718 rows across 99 distinct sites — finer
@@ -92,11 +86,12 @@ profiled = ["core_trial_data", "ph_combined_nopt_rcm", "ltcce"]
 # farmer's field. Suppressing the boundary names while publishing the exact
 # coordinate of the same row would have protected nothing.
 #
-# This matters most for the numeric profile rather than the example values: an
-# unsuppressed coordinate column reaches numeric_summary as a full quantile
-# ladder (min, p01, p05, q1, median, q3, p95, p99, max), which is the bounding
-# box and interior density of the whole restricted trial network, not three
-# sample cells.
+# The retired numeric profile made this most acute — an unsuppressed coordinate
+# column reached numeric_summary as a full quantile ladder, which is the bounding
+# box and interior density of the whole restricted trial network rather than
+# three sample cells. The suppression stays in force regardless: it is stated
+# against the columns, not against the profile that would have exposed them, so
+# it holds for any table or figure a later revision adds.
 #
 # core_trial_data's coordinate and place-name columns are deliberately NOT
 # listed. That source is data_classification = "internal" and is extracted from
@@ -114,10 +109,14 @@ suppressed_headers = [
     "longitude",
 ]
 
-# --- Structure profiling rules ---
+# --- Column classification rules ---
+# Applied by the loader when each source is read. They no longer drive a
+# published structural profile, but they still decide how every physical column
+# is classified and how many example values it carries in memory, so they are
+# recorded in run_manifest.json. The table keeps its historical name.
 [structure]
 # A column is treated as numeric when at least this share of its nonblank cells
-# parse as finite numbers; otherwise it is profiled as categorical.
+# parse as finite numbers; otherwise it is treated as categorical.
 numeric_parse_threshold = 0.80
 # Columns with more distinct nonblank values than this are profiled as
 # high-cardinality identifiers: summarized, but not level-tabulated.
@@ -125,16 +124,26 @@ maximum_categorical_cardinality = 60
 example_values_per_column = 3
 
 # --- Numeric profiling rules ---
+# Only histogram_bins is still consumed — it sets the class width of the
+# agronomic yield-distribution panels. The other three keys governed the retired
+# per-column numeric profile and now shape nothing; they stay accepted so a
+# config written before the retirement still loads rather than failing on an
+# unknown key.
 [numeric]
 outlier_iqr_multipliers = [1.5, 3.0]
 quantiles = [0.01, 0.05, 0.25, 0.50, 0.75, 0.95, 0.99]
 histogram_bins = 24
 minimum_observations = 3
 
-# --- Categorical profiling rules ---
+# --- Categorical reporting rules ---
+# minimum_level_count survives the retirement of the categorical profile: it is
+# the floor the agronomic context-composition figures draw and label a level at.
+# maximum_levels_reported governed the retired level frequency table only, and
+# stays accepted for the same backward-compatibility reason as the [numeric]
+# keys above.
 [categorical]
-# A level is written to the frequency table only at or above this count, so rare
-# levels of restricted context fields cannot become de facto row identifiers.
+# A level is drawn and labeled only at or above this count, so rare levels of
+# restricted context fields cannot become de facto row identifiers.
 minimum_level_count = 3
 maximum_levels_reported = 40
 
