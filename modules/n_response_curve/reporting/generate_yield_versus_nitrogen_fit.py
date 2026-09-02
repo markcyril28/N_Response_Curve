@@ -488,7 +488,7 @@ def _fit_one(
             f"no recorded zero-N row; fitted window starts at {low:g} kg N/ha"
         )
 
-    required = {"linear": 2, "quadratic": 3, "quadratic-plateau": 4, "loess": 4}[form]
+    required = {"quadratic": 3, "quadratic-plateau": 4, "loess": 4}[form]
     if levels < required:
         print(
             f"{source_name}: skipped — {levels} distinct N level(s), "
@@ -501,10 +501,7 @@ def _fit_one(
     vertex_yield: float | None = None
     plateau_unbounded = False
     interior_minimum_n: float | None = None
-    if form == "linear":
-        coefficients, grid, curve, r2 = _polynomial_fit(x, y, 1, weights)
-        parameters = f"y = {coefficients[1]:.4g} + {coefficients[0]:.4g}·N"
-    elif form == "quadratic":
+    if form == "quadratic":
         coefficients, grid, curve, r2 = _polynomial_fit(x, y, 2, weights)
         quadratic, linear, intercept = (float(value) for value in coefficients)
         parameters = (
@@ -584,7 +581,6 @@ def _fit_one(
 
 
 _FORM_LABEL = {
-    "linear": "linear fit",
     "quadratic": "quadratic fit",
     "quadratic-plateau": "quadratic-plateau fit",
     "loess": "LOESS smoother",
@@ -989,7 +985,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument(
         "--fit",
-        choices=("quadratic", "linear", "quadratic-plateau", "loess"),
+        choices=("quadratic", "quadratic-plateau", "loess"),
         default="quadratic",
         help="Fitted form, per dataset (default: quadratic). Never auto-selected.",
     )
