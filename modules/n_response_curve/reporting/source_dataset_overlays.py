@@ -84,6 +84,90 @@ _COMBINED_REQUIRED_HEADERS = frozenset(
     }
 )
 
+# Source-file variants of the PH combined CSV. "with_fp" is the registered file
+# named by [sources.ph_combined_nopt_rcm].data_path, which carries the Farmer's
+# Practice arm as its fp_* column block. "no_fp" is the sibling file with that
+# whole block removed, so the arm cannot reach a figure even by accident.
+#
+# The variant is always named by the caller and never inferred from which
+# headers a file happens to carry. Each variant asserts both what must be
+# present and what must be absent, so an FP-free file cannot silently stand in
+# for the registered one and the registered file cannot silently satisfy a
+# request for file-level FP-free provenance.
+COMBINED_VARIANT_WITH_FP = "with_fp"
+COMBINED_VARIANT_NO_FP = "no_fp"
+COMBINED_SOURCE_VARIANTS = (COMBINED_VARIANT_WITH_FP, COMBINED_VARIANT_NO_FP)
+_COMBINED_FP_ARM_ID = "fp"
+_COMBINED_FP_HEADER_PREFIX = "fp_"
+# Filename stem suffix of each variant, relative to the registered data_path.
+# Deriving the sibling from the registered path keeps scriptCONFIG.toml
+# untouched and leaves no second path binding that could drift from it.
+_COMBINED_VARIANT_STEM_SUFFIXES = {
+    COMBINED_VARIANT_WITH_FP: "",
+    COMBINED_VARIANT_NO_FP: "_no_FP",
+}
+
+
+def _require_known_variant(variant: str) -> str:
+    if variant not in COMBINED_SOURCE_VARIANTS:
+        raise ValueError(
+            f"Unsupported {_COMBINED_SOURCE_NAME} source variant: {variant!r}; "
+            "supported: " + ", ".join(COMBINED_SOURCE_VARIANTS)
+        )
+    return variant
+
+
+def combined_variant_source_path(source_path: str | Path, variant: str) -> Path:
+    """Return the file holding *variant* of the registered PH combined source."""
+
+    path = Path(source_path)
+    suffix = _COMBINED_VARIANT_STEM_SUFFIXES[_require_known_variant(variant)]
+    if not suffix:
+        return path
+    return path.with_name(f"{path.stem}{suffix}{path.suffix}")
+
+
+def _combined_arm_specs(variant: str) -> tuple[tuple[str, str, str, str], ...]:
+    """The arm specs this variant's file is able to supply."""
+
+    if _require_known_variant(variant) == COMBINED_VARIANT_WITH_FP:
+        return _COMBINED_ARM_SPECS
+    return tuple(
+        spec for spec in _COMBINED_ARM_SPECS if spec[0] != _COMBINED_FP_ARM_ID
+    )
+
+
+def _combined_required_headers(variant: str) -> frozenset[str]:
+    specs = _combined_arm_specs(variant)
+    return frozenset(
+        {
+            *(n_header for _, _, n_header, _ in specs),
+            *(y_header for _, _, _, y_header in specs),
+            _COMBINED_ZERO_N_ARM[2],
+        }
+    )
+
+
+def _forbid_farmers_practice_headers(
+    fieldnames: Sequence[str] | None, variant: str
+) -> None:
+    """Reject an FP-carrying file when FP-free provenance was requested."""
+
+    if _require_known_variant(variant) == COMBINED_VARIANT_WITH_FP:
+        return
+    present = sorted(
+        header
+        for header in (fieldnames or ())
+        if header.startswith(_COMBINED_FP_HEADER_PREFIX)
+    )
+    if present:
+        raise ValueError(
+            f"Source '{_COMBINED_SOURCE_NAME}' variant "
+            f"{COMBINED_VARIANT_NO_FP!r} requires an input with no Farmer's "
+            "Practice columns, but the file still carries: "
+            + ", ".join(present)
+        )
+
 # The whole unit a threshold selection retains, per source. Selecting a unit
 # keeps every finite member observation, so threshold filtering never severs a
 # trajectory into disconnected points.
@@ -217,6 +301,7 @@ def _read_rows(
     *,
     source_name: str,
     encoding: str | None = None,
+    required_headers: frozenset[str] | None = None,
 ) -> tuple[Sequence[str], list[dict[str, str]]]:
     reviewed_encoding = _SOURCE_ENCODINGS[source_name]
     if encoding is not None:
@@ -244,11 +329,12 @@ def _read_rows(
         descriptor = os.open(path, flags)
     except OSError as exc:
         raise ValueError(f"Source '{source_name}' overlay input is unreadable or unsafe") from exc
-    required_headers = {
-        _CORE_TRIAL_SOURCE_NAME: _CORE_TRIAL_REQUIRED_HEADERS,
-        _LTCCE_SOURCE_NAME: _LTCCE_REQUIRED_HEADERS,
-        _COMBINED_SOURCE_NAME: _COMBINED_REQUIRED_HEADERS,
-    }[source_name]
+    if required_headers is None:
+        required_headers = {
+            _CORE_TRIAL_SOURCE_NAME: _CORE_TRIAL_REQUIRED_HEADERS,
+            _LTCCE_SOURCE_NAME: _LTCCE_REQUIRED_HEADERS,
+            _COMBINED_SOURCE_NAME: _COMBINED_REQUIRED_HEADERS,
+        }[source_name]
     try:
         text_handle = os.fdopen(
             descriptor,
@@ -447,13 +533,22 @@ def _read_combined_overlay(
     csv_path: str | Path,
     *,
     encoding: str | None = None,
+    variant: str = COMBINED_VARIANT_WITH_FP,
 ) -> SourceDatasetOverlay:
+    required_headers = _combined_required_headers(variant)
     fieldnames, rows = _read_rows(
         csv_path,
         source_name=_COMBINED_SOURCE_NAME,
         encoding=encoding,
+        required_headers=required_headers,
     )
-    _require_headers(fieldnames, _COMBINED_REQUIRED_HEADERS, source_name=_COMBINED_SOURCE_NAME)
+    _require_headers(fieldnames, required_headers, source_name=_COMBINED_SOURCE_NAME)
+    _forbid_farmers_practice_headers(fieldnames, variant)
+    arm_specs = _combined_arm_specs(variant)
+    # Arms this variant's file can hold per linked row: the named arms plus the
+    # zero-N column. The count follows the variant rather than the registered
+    # four, so a dropped arm is never miscounted as a nonfinite exclusion.
+    arms_per_row = len(arm_specs) + 1
 
     observations_by_trajectory: dict[str, list[SourceObservation]] = {}
     excluded_by_trajectory: dict[str, int] = {}
@@ -462,7 +557,7 @@ def _read_combined_overlay(
         trajectory_id = _trajectory_id(_COMBINED_SOURCE_NAME, "row", str(row_index))
         row_observations: list[SourceObservation] = []
 
-        for _arm_id, treatment_class, n_header, y_header in _COMBINED_ARM_SPECS:
+        for _arm_id, treatment_class, n_header, y_header in arm_specs:
             n_rate = finite_number(row.get(n_header))
             yield_value = finite_number(row.get(y_header))
             if n_rate is None or yield_value is None:
@@ -493,7 +588,7 @@ def _read_combined_overlay(
 
         if row_observations:
             observations_by_trajectory.setdefault(trajectory_id, []).extend(row_observations)
-            excluded_by_trajectory[trajectory_id] = 4 - len(row_observations)
+            excluded_by_trajectory[trajectory_id] = arms_per_row - len(row_observations)
 
     return _finalize_overlay(
         source_name=_COMBINED_SOURCE_NAME,
@@ -509,20 +604,30 @@ def read_source_dataset_overlay(
     source_name: str,
     *,
     encoding: str | None = None,
+    variant: str = COMBINED_VARIANT_WITH_FP,
 ) -> SourceDatasetOverlay:
     """Parse a supported source's curated CSV into an opaque overlay structure.
 
     Pure/read: no plotting or file writing happens here. Unsupported source
     names and CSVs missing required headers are rejected before any rendering
     is attempted.
+
+    ``variant`` selects which file of the PH combined source is being read; it
+    only applies to that source, and only its default is accepted for the
+    others, so a variant request can never be silently ignored.
     """
 
+    if source_name == _COMBINED_SOURCE_NAME:
+        return _read_combined_overlay(csv_path, encoding=encoding, variant=variant)
+    if _require_known_variant(variant) != COMBINED_VARIANT_WITH_FP:
+        raise ValueError(
+            f"Source '{source_name}' has no source-file variants; "
+            f"{variant!r} applies only to '{_COMBINED_SOURCE_NAME}'"
+        )
     if source_name == _CORE_TRIAL_SOURCE_NAME:
         return _read_core_trial_overlay(csv_path, encoding=encoding)
     if source_name == _LTCCE_SOURCE_NAME:
         return _read_ltcce_overlay(csv_path, encoding=encoding)
-    if source_name == _COMBINED_SOURCE_NAME:
-        return _read_combined_overlay(csv_path, encoding=encoding)
     raise ValueError(
         f"Unsupported source dataset overlay name: {source_name!r}; supported: "
         + ", ".join(sorted(SUPPORTED_SOURCE_NAMES))
