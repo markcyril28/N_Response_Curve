@@ -28,7 +28,7 @@ from n_response_curve.reporting.source_config_spec import load_source_spec  # no
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full"
+    / "WF/04_Response_Curves"
 )
 
 
