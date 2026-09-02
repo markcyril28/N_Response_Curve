@@ -14,17 +14,18 @@
 # Architecture: this is a standalone, hash-bound companion recipe. scriptCONFIG.toml
 # remains the repository configuration authority; output is written outside the
 # immutable N-response release package and is never appended to that package.
-# The bundle mixes figures and tables within shared theme directories —
-# {population,pooled,heterogeneity,factors} — with run_manifest.json and
-# CHECKSUMS.sha256 binding every member.
+# The bundle mixes figures and tables within the shared `factors/` theme
+# directory, with run_manifest.json and CHECKSUMS.sha256 binding every member.
+# The former {population,pooled,heterogeneity} directories were retired: those
+# fits are still computed and still described in summary.md, but nothing derived
+# from them is published as a bundle artifact.
 
 # --- Execution settings ---
 [run]
 mode = "full" # validate | test | full
 overwrite = true # replace only after the existing companion bundle verifies
-random_seed = 20260816 # seeds the cluster-bootstrap resampling of pooled uncertainty
+random_seed = 20260816 # recorded run seed; no stochastic step remains in this recipe
 fail_fast = true
-include_raw_sensitivity = true
 run_mixed_model = true
 mixed_model_required = true
 # Current package members remain checksum-verified. If the stricter historical
@@ -81,7 +82,7 @@ figure_height_inches = 6.4
 
 # --- Input integrity checks ---
 [expected_inputs]
-base_config_sha256 = "ecdc077cef97b2826e7add4f0cd0bba7f9093a82f9fc4d8ffaf2d34569ef3b3a"
+base_config_sha256 = "f76b82b2edd539b07db89a4df3994193118d11b9a6c00451577fe64949fbbfee"
 source_sha256 = "88e492add192621382d9e198af7558882de4d666b6934ceefc1cd688e076d5de"
 release_manifest_sha256 = "468c02cd5da5932f1e481a983d42200843c969e0a5da46dbba755106d5c6ab3a"
 release_ledger_sha256 = "96865dd4bde6ea034e8ca6a5832de795fb9195f905da0333a32bd572efcd62e9"
