@@ -316,11 +316,16 @@ multiple_testing_method = "benjamini_hochberg"
 # is absent, so inferential/predictive/higher-order families stay disabled.
 
 # Configured descriptive overlay figures generated inside Phase 5 release
-# staging (no-op in validate). Declared by the v3 manifest and covered by the
-# main release ledger, with nested manifests/checksums for focused verification.
+# staging (no-op in validate). When enabled they are declared by the v3 manifest
+# and covered by the main release ledger, with nested manifests/checksums for
+# focused verification. Retired below, so Phase 5 declares no such inventory.
 # --- Overlay outputs ---
 [custom_overlays]
-enabled = true
+# Retired 2026-09-01: the configured descriptive subsets are superseded by the
+# standalone per-source overlay generators, so no further release carries them.
+# The stage writer returns an empty inventory here and declares no
+# figures.diagnostics block; every key below is read only when re-enabled.
+enabled = false
 # One transactional release promotion owns this diagnostic set. Unknown extras,
 # malformed ledgers, tampered inputs, and post-release mutation fail closed.
 replace_existing = true
@@ -517,8 +522,6 @@ variety_lookup = "WF/01_Curated_Dataset/02_Context_Data/Nutrient_Management_Lite
 analysis_ready_root = "WF/02_Analysis_Ready_Dataset"
 qc_root = "WF/03_Quality_Control"
 curves_root = "WF/04_Response_Curves"
-comparisons_root = "WF/04_Response_Curves/Comparisons"
-explanatory_root = "WF/05_Explanatory_Analysis"
 reports_root = "WF/06_Reports"
 run_metadata_root = "WF/99_Run_Metadata"
 test_output_root = "WF/98_Test_Outputs"
