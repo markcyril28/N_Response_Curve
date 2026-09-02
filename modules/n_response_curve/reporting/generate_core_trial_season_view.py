@@ -52,7 +52,7 @@ SOURCE_NAME = "core_trial_data"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full"
+    / "WF/04_Response_Curves"
     / "literature_extracted_dataset/clusters/by_season"
 )
 
