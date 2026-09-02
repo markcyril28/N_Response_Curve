@@ -29,7 +29,6 @@ class GrainYieldResponseConfig:
     overwrite: bool
     random_seed: int
     fail_fast: bool
-    include_raw_sensitivity: bool
     run_mixed_model: bool
     mixed_model_required: bool
     release_verification_policy: str
@@ -81,7 +80,6 @@ _TABLE_KEYS = {
         "overwrite",
         "random_seed",
         "fail_fast",
-        "include_raw_sensitivity",
         "run_mixed_model",
         "mixed_model_required",
         "release_verification_policy",
@@ -274,7 +272,6 @@ def load_recipe_config(
         overwrite=_boolean(run, "overwrite", "[run]"),
         random_seed=_positive_int(run, "random_seed", "[run]"),
         fail_fast=_boolean(run, "fail_fast", "[run]"),
-        include_raw_sensitivity=_boolean(run, "include_raw_sensitivity", "[run]"),
         run_mixed_model=_boolean(run, "run_mixed_model", "[run]"),
         mixed_model_required=_boolean(run, "mixed_model_required", "[run]"),
         release_verification_policy=_string(
