@@ -148,7 +148,7 @@ NOTES_FILENAME = "decades_and_trend_notes.md"
 
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full"
+    / "WF/04_Response_Curves"
     / "literature_extracted_dataset"
     / "clusters/by_planting_year"
 )
