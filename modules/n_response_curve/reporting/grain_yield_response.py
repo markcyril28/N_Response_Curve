@@ -130,6 +130,32 @@ def exchange_directories(left: Path, right: Path) -> bool:
 # tables are intentionally mixed by subject rather than split into top-level
 # type buckets. Registration here is mandatory so the layout cannot drift.
 _TABLE_GROUPS: dict[str, str] = {
+    "factor_support": "factors",
+    "factor_level_summary": "factors",
+    "factor_additive_screen": "factors",
+    "factor_series_adjusted_screen": "factors",
+    "factor_redundancy_audit": "factors",
+    "factor_evidence_audit": "factors",
+    "series_slope_modifier_screen": "factors",
+}
+
+_FIGURE_GROUPS: dict[str, str] = {
+    "factor_baseline_screen": GRAIN_YIELD_FACTOR_CONTRIBUTOR_ROOT.as_posix(),
+    "factor_explanatory_ranking": GRAIN_YIELD_FACTOR_CONTRIBUTOR_ROOT.as_posix(),
+    "series_slope_vs_check_yield": (
+        RESPONSE_CURVE_FACTOR_CONTRIBUTOR_ROOT.as_posix()
+    ),
+    "response_curve_modifier_ranking": (
+        RESPONSE_CURVE_FACTOR_CONTRIBUTOR_ROOT.as_posix()
+    ),
+}
+
+# Groups this recipe published before the population/pooled/heterogeneity
+# subdirectories were retired. The writer never emits these names again; the
+# maps exist so a bundle written under an earlier revision still resolves its
+# own manifest paths and stays verifiable — including the one on disk that the
+# replaceable-container check reads just before it is overwritten.
+_RETIRED_TABLE_GROUPS: dict[str, str] = {
     "analysis_population": "population",
     "pooled_models": "pooled",
     "model_grid": "pooled",
@@ -144,56 +170,18 @@ _TABLE_GROUPS: dict[str, str] = {
     "heterogeneity_summary": "heterogeneity",
     "heterogeneity_decomposition": "heterogeneity",
     "mixed_model_summary": "heterogeneity",
-    "factor_support": "factors",
-    "factor_level_summary": "factors",
-    "factor_additive_screen": "factors",
-    "factor_series_adjusted_screen": "factors",
-    "factor_redundancy_audit": "factors",
-    "factor_evidence_audit": "factors",
-    "series_slope_modifier_screen": "factors",
 }
 
-_FIGURE_GROUPS: dict[str, str] = {
+_RETIRED_FIGURE_GROUPS: dict[str, str] = {
     "pooled_linear_response": "pooled",
     "pooled_quadratic_sensitivity": "pooled",
     "raw_finite_population_sensitivity": "pooled",
     "series_response_overlay": "heterogeneity",
     "within_series_response": "heterogeneity",
     "series_slope_distribution": "heterogeneity",
-    "factor_baseline_screen": GRAIN_YIELD_FACTOR_CONTRIBUTOR_ROOT.as_posix(),
-    "factor_explanatory_ranking": GRAIN_YIELD_FACTOR_CONTRIBUTOR_ROOT.as_posix(),
-    "series_slope_vs_check_yield": (
-        RESPONSE_CURVE_FACTOR_CONTRIBUTOR_ROOT.as_posix()
-    ),
-    "response_curve_modifier_ranking": (
-        RESPONSE_CURVE_FACTOR_CONTRIBUTOR_ROOT.as_posix()
-    ),
 }
 
 _TABLE_DESCRIPTIONS: dict[str, str] = {
-    "analysis_population": (
-        "manifest-declared observed-series rows every other artifact uses"
-    ),
-    "pooled_models": "pooled linear/quadratic/Theil–Sen fits with equations",
-    "model_grid": "predicted-yield grid tracing the pooled lines",
-    "bootstrap_uncertainty": (
-        "seeded cluster-bootstrap intervals for the pooled slope, intercept, "
-        "curvature, and turning point"
-    ),
-    "leave_one_series_out": "pooled linear refits omitting one series at a time",
-    "zero_n_deltas": "per-observation yield gain over each series' zero-N check",
-    "zero_n_delta_summary": "through-origin slope of the zero-N yield gains",
-    "raw_finite_sensitivity": "all-finite-pair source-wide sensitivity fits",
-    "series_slopes": "per-series linear fits with slope standard errors",
-    "series_fixed_intercepts": "per-series intercepts from the common-slope model",
-    "series_covariates": (
-        "one row per series: check yield, N-ladder geometry, era, fitted slope"
-    ),
-    "heterogeneity_summary": "pooled versus within-series slopes and SSE reduction",
-    "heterogeneity_decomposition": (
-        "study/trial/series fixed-intercept comparison"
-    ),
-    "mixed_model_summary": "R/lme4 random-intercept random-slope diagnostic",
     "factor_support": "per-factor availability, levels, aliasing, and eligibility",
     "factor_level_summary": "per-level counts and yield summaries",
     "factor_additive_screen": (
@@ -212,12 +200,6 @@ _TABLE_DESCRIPTIONS: dict[str, str] = {
 }
 
 _FIGURE_DESCRIPTIONS: dict[str, str] = {
-    "pooled_linear_response": "observations by series with the pooled line",
-    "pooled_quadratic_sensitivity": "linear versus quadratic pooled shape",
-    "raw_finite_population_sensitivity": "all-finite-pair source-wide view",
-    "series_response_overlay": "connected series overlaid on the pooled line",
-    "within_series_response": "series-centered response association",
-    "series_slope_distribution": "per-series slopes with ±1 SE bars",
     "factor_baseline_screen": "complete-case factor screen gains",
     "series_slope_vs_check_yield": "series slope versus zero-N check yield",
     "factor_explanatory_ranking": (
@@ -353,16 +335,6 @@ def _figure(config: GrainYieldResponseConfig) -> tuple[plt.Figure, plt.Axes]:
     )
 
 
-def _display_equation(row: pd.Series, *, quadratic: bool = False) -> str:
-    intercept = float(row["intercept_t_ha"])
-    slope = float(row["slope_t_ha_per_kg_n_ha"])
-    equation = f"Ŷ = {intercept:.4f} {'+' if slope >= 0 else '-'} {abs(slope):.7f} N"
-    if quadratic:
-        curvature = float(row["quadratic_t_ha_per_kg_n_ha_squared"])
-        equation += f" {'+' if curvature >= 0 else '-'} {abs(curvature):.7g} N²"
-    return equation
-
-
 _FACTOR_LABELS = {
     "water_regime_normalized": "Water regime",
     "season_normalized": "Season",
@@ -391,296 +363,6 @@ _FACTOR_LABELS = {
 def _factor_label(value: object) -> str:
     key = str(value)
     return _FACTOR_LABELS.get(key, key.replace("_", " ").title())
-
-
-def _scatter_by_series(
-    axis: plt.Axes,
-    frame: pd.DataFrame,
-    *,
-    series_key: str,
-    connect: bool,
-) -> None:
-    groups = tuple(frame.groupby(series_key, sort=True))
-    colors = plt.get_cmap("tab20")(np.linspace(0.0, 1.0, max(len(groups), 2)))
-    for color, (uid, group) in zip(colors, groups):
-        ordered = group.sort_values("n_rate_kg_ha")
-        label = str(uid) if len(groups) <= 10 else None
-        if connect:
-            axis.plot(
-                ordered["n_rate_kg_ha"],
-                ordered["yield_t_ha"],
-                marker="o",
-                markersize=4,
-                linewidth=1.0,
-                alpha=0.7,
-                color=color,
-                label=label,
-            )
-        else:
-            axis.scatter(
-                ordered["n_rate_kg_ha"],
-                ordered["yield_t_ha"],
-                s=28,
-                alpha=0.75,
-                color=color,
-                edgecolor="white",
-                linewidth=0.35,
-                label=label,
-            )
-    if len(groups) <= 10:
-        axis.legend(title="Response series", fontsize=7, title_fontsize=8)
-
-
-def _plot_pooled_linear(
-    config: GrainYieldResponseConfig,
-    population: GovernedPopulation,
-    descriptive: DescriptiveResults,
-) -> plt.Figure:
-    figure, axis = _figure(config)
-    _scatter_by_series(
-        axis,
-        population.frame,
-        series_key=config.series_key,
-        connect=False,
-    )
-    grid = descriptive.model_grid[descriptive.model_grid["model"] == "linear"]
-    axis.plot(
-        grid["n_rate_kg_ha"],
-        grid["predicted_yield_t_ha"],
-        color="black",
-        linewidth=2.2,
-        label="Pooled descriptive line",
-    )
-    linear = descriptive.pooled_models.set_index("model").loc["linear"]
-    axis.text(
-        0.02,
-        0.98,
-        f"{_display_equation(linear)}\n"
-        f"n={int(linear['observations'])}; series={int(linear['series_count'])}; "
-        f"R²={float(linear['r_squared']):.3f}\n"
-        "Pooled across series; descriptive only—not causal or a recommendation.",
-        transform=axis.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8,
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.88},
-    )
-    axis.set(
-        title="Grain yield versus inorganic N: pooled descriptive line",
-        xlabel="Inorganic N rate (kg N ha⁻¹)",
-        ylabel="Grain yield (t ha⁻¹)",
-    )
-    axis.grid(alpha=0.2)
-    figure.tight_layout()
-    return figure
-
-
-def _plot_quadratic(
-    config: GrainYieldResponseConfig,
-    population: GovernedPopulation,
-    descriptive: DescriptiveResults,
-) -> plt.Figure:
-    figure, axis = _figure(config)
-    axis.scatter(
-        population.frame["n_rate_kg_ha"],
-        population.frame["yield_t_ha"],
-        s=24,
-        color="#4C78A8",
-        alpha=0.65,
-    )
-    for model, color, style, label in (
-        ("linear", "black", "--", "Linear diagnostic"),
-        ("quadratic", "#E45756", "-", "Quadratic sensitivity"),
-    ):
-        grid = descriptive.model_grid[descriptive.model_grid["model"] == model]
-        axis.plot(
-            grid["n_rate_kg_ha"],
-            grid["predicted_yield_t_ha"],
-            color=color,
-            linestyle=style,
-            linewidth=2.0,
-            label=label,
-        )
-    quadratic = descriptive.pooled_models.set_index("model").loc["quadratic"]
-    turning = quadratic["turning_point_n_kg_ha"]
-    turning_text = (
-        f"turning point={float(turning):.1f} kg N ha⁻¹; "
-        f"inside observed domain={bool(quadratic['turning_point_in_observed_domain'])}"
-        if pd.notna(turning)
-        else "turning point unavailable"
-    )
-    axis.text(
-        0.02,
-        0.98,
-        f"Quadratic R²={float(quadratic['r_squared']):.3f}; {turning_text}\n"
-        "Visual sensitivity only; no optimum claim.",
-        transform=axis.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8,
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.88},
-    )
-    axis.set(
-        title="Pooled shape sensitivity within the observed N domain",
-        xlabel="Inorganic N rate (kg N ha⁻¹)",
-        ylabel="Grain yield (t ha⁻¹)",
-    )
-    axis.legend(fontsize=8)
-    axis.grid(alpha=0.2)
-    figure.tight_layout()
-    return figure
-
-
-def _plot_series_overlay(
-    config: GrainYieldResponseConfig,
-    population: GovernedPopulation,
-    descriptive: DescriptiveResults,
-) -> plt.Figure:
-    figure, axis = _figure(config)
-    _scatter_by_series(
-        axis,
-        population.frame,
-        series_key=config.series_key,
-        connect=True,
-    )
-    grid = descriptive.model_grid[descriptive.model_grid["model"] == "linear"]
-    axis.plot(
-        grid["n_rate_kg_ha"],
-        grid["predicted_yield_t_ha"],
-        color="black",
-        linewidth=2.5,
-        label="Pooled descriptive line",
-    )
-    axis.set(
-        title="Manifest-declared observed series and pooled descriptive line",
-        xlabel="Inorganic N rate (kg N ha⁻¹)",
-        ylabel="Grain yield (t ha⁻¹)",
-    )
-    axis.text(
-        0.02,
-        0.02,
-        "Colored segments connect observations within series; the black line is "
-        "pooled and noncausal.",
-        transform=axis.transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=8,
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.88},
-    )
-    axis.grid(alpha=0.2)
-    figure.tight_layout()
-    return figure
-
-
-def _plot_within_series(
-    config: GrainYieldResponseConfig,
-    heterogeneity: HeterogeneityResults,
-) -> plt.Figure:
-    figure, axis = _figure(config)
-    frame = heterogeneity.centered_frame
-    axis.scatter(
-        frame["centered_n_rate_kg_ha"],
-        frame["centered_yield_t_ha"],
-        s=28,
-        alpha=0.7,
-        color="#72B7B2",
-        edgecolor="white",
-        linewidth=0.35,
-    )
-    x_min = float(frame["centered_n_rate_kg_ha"].min())
-    x_max = float(frame["centered_n_rate_kg_ha"].max())
-    line_x = np.linspace(x_min, x_max, 201)
-    slope = float(
-        heterogeneity.summary["within_series_slope_t_ha_per_kg_n_ha"]
-    )
-    axis.plot(line_x, slope * line_x, color="black", linewidth=2.2)
-    axis.text(
-        0.02,
-        0.98,
-        f"Within-series slope={slope:.6f} t ha⁻¹ per kg N ha⁻¹\n"
-        f"R²={float(heterogeneity.summary['within_series_r_squared']):.3f}\n"
-        "Centered association only; not a causal effect.",
-        transform=axis.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8,
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.88},
-    )
-    axis.set(
-        title="Within-series centered grain-yield response",
-        xlabel="N rate minus series mean (kg N ha⁻¹)",
-        ylabel="Yield minus series mean (t ha⁻¹)",
-    )
-    axis.axhline(0, color="grey", linewidth=0.7)
-    axis.axvline(0, color="grey", linewidth=0.7)
-    axis.grid(alpha=0.2)
-    figure.tight_layout()
-    return figure
-
-
-def _plot_series_slopes(
-    config: GrainYieldResponseConfig,
-    descriptive: DescriptiveResults,
-) -> plt.Figure:
-    figure, axis = _figure(config)
-    slopes = descriptive.series_slopes[
-        descriptive.series_slopes["status"] == "fitted"
-    ].sort_values("slope_t_ha_per_kg_n_ha")
-    positions = np.arange(len(slopes))
-    slope_values = slopes["slope_t_ha_per_kg_n_ha"].to_numpy(dtype=float) * 100
-    if "slope_se_t_ha_per_kg_n_ha" in slopes.columns:
-        standard_errors = (
-            pd.to_numeric(
-                slopes["slope_se_t_ha_per_kg_n_ha"], errors="coerce"
-            ).to_numpy(dtype=float)
-            * 100
-        )
-        axis.errorbar(
-            slope_values,
-            positions,
-            xerr=np.where(np.isfinite(standard_errors), standard_errors, 0.0),
-            fmt="none",
-            ecolor="#9D9D9D",
-            elinewidth=1.0,
-            capsize=2,
-            zorder=2,
-        )
-    axis.scatter(
-        slope_values,
-        positions,
-        color="#F58518",
-        s=38,
-        zorder=3,
-    )
-    axis.axvline(0, color="black", linestyle="--", linewidth=1.0)
-    if len(slopes) <= 25:
-        axis.set_yticks(positions)
-        series_column = (
-            config.series_key
-            if config.series_key in slopes.columns
-            else slopes.columns[0]
-        )
-        axis.set_yticklabels(slopes[series_column].astype(str), fontsize=6)
-    else:
-        axis.set_yticks([])
-    axis.set(
-        title="Response-series slope heterogeneity",
-        xlabel="Series slope (t ha⁻¹ per 100 kg N ha⁻¹)",
-        ylabel="Response series",
-    )
-    axis.grid(axis="x", alpha=0.2)
-    figure.text(
-        0.5,
-        0.015,
-        "Descriptive slopes use only each series' observed points. Bars show "
-        "±1 SE where estimable (two-point ladders have none); rows are not "
-        "effect rankings.",
-        ha="center",
-        va="bottom",
-        fontsize=8,
-    )
-    figure.tight_layout(rect=(0, 0.06, 1, 1))
-    return figure
 
 
 def _plot_factor_screen(
@@ -1573,9 +1255,9 @@ def _modifier_ranking_explainer_markdown(
         lines += [
             "The dashed vertical rule is not one of the screens. It is the "
             "random-effect intercept↔slope correlation "
-            f"({float(correlation):+.2f}) from the lme4 model in "
-            "`heterogeneity/mixed_model_summary.csv`, estimated from "
-            f"all {int(mixed_model.get('observations') or 0)} observations at "
+            f"({float(correlation):+.2f}) from the lme4 model, "
+            f"estimated from all {int(mixed_model.get('observations') or 0)} "
+            "observations at "
             "once: series that start high gain less per kilogram of N."
             + agreement,
             "",
@@ -1757,8 +1439,7 @@ def _modifier_ranking_explainer_markdown(
             lines += [
                 "This is the same wall the level-side figure runs into. Series "
                 f"identity alone removes {series_share:.1%} of the residual "
-                "spread around a pooled N line "
-                "(`heterogeneity/heterogeneity_decomposition.csv`), and "
+                "spread around a pooled N line, and "
                 "every named factor is nested inside it. Series identity is "
                 "not an explanation — it is a label for whatever differs "
                 "between trials that this dataset did not record.",
@@ -1777,8 +1458,7 @@ def _modifier_ranking_explainer_markdown(
         "not an interaction estimate; none was fitted.",
         "- **Unequal precision is ignored.** Each series contributes one slope "
         "unweighted, although the slopes are estimated with very different "
-        "standard errors (`series_slope_se_t_ha_per_kg_n_ha` in "
-        "`heterogeneity/series_covariates.csv`).",
+        "standard errors.",
         "- **Slopes are straight-line summaries.** A series fitted with three "
         "or four N levels has a slope, not a curve shape; nothing here speaks "
         "to plateaus or optima.",
@@ -1789,10 +1469,8 @@ def _modifier_ranking_explainer_markdown(
         "## Provenance",
         "",
         "- Screen values: `factors/series_slope_modifier_screen.csv`",
-        "- Series slopes and covariates: "
-        "`heterogeneity/series_covariates.csv`",
-        "- Dashed reference line: "
-        "`heterogeneity/mixed_model_summary.csv`",
+        "- Series slopes, covariates, and the dashed reference line: derived "
+        "in-run and not published as bundle tables",
         "- Factor holds: `factors/factor_support.csv`",
         "- Both the figure and this file are written by "
         "`modules/n_response_curve/reporting/grain_yield_response.py` "
@@ -1811,73 +1489,6 @@ def _modifier_ranking_explainer_markdown(
         lines += ["", note.strip()]
     lines.append("")
     return "\n".join(lines)
-
-
-def _plot_raw_sensitivity(
-    config: GrainYieldResponseConfig,
-    raw_sensitivity: Mapping[str, Any],
-) -> plt.Figure:
-    frame = raw_sensitivity.get("frame")
-    summary = raw_sensitivity.get("summary")
-    if not isinstance(frame, pd.DataFrame) or not isinstance(summary, pd.DataFrame):
-        raise DiagnosticBundleError(
-            "Raw sensitivity must provide frame and summary DataFrames"
-        )
-    figure, axis = _figure(config)
-    axis.scatter(
-        frame["n_rate_kg_ha"],
-        frame["yield_t_ha"],
-        s=13,
-        alpha=0.35,
-        color="#4C78A8",
-        edgecolor="none",
-    )
-    x_min = float(frame["n_rate_kg_ha"].min())
-    x_max = float(frame["n_rate_kg_ha"].max())
-    grid = np.linspace(x_min, x_max, 301)
-    model_rows = summary.set_index("model")
-    linear = model_rows.loc["raw_finite_linear"]
-    axis.plot(
-        grid,
-        float(linear["intercept_t_ha"])
-        + float(linear["slope_t_ha_per_kg_n_ha"]) * grid,
-        color="black",
-        linewidth=2.1,
-        label="Raw finite-pair linear sensitivity",
-    )
-    quadratic = model_rows.loc["raw_finite_quadratic_sensitivity"]
-    axis.plot(
-        grid,
-        float(quadratic["intercept_t_ha"])
-        + float(quadratic["slope_t_ha_per_kg_n_ha"]) * grid
-        + float(quadratic["quadratic_t_ha_per_kg_n_ha_squared"]) * grid**2,
-        color="#E45756",
-        linestyle="--",
-        linewidth=1.8,
-        label="Raw finite-pair quadratic sensitivity",
-    )
-    axis.text(
-        0.02,
-        0.98,
-        f"{_display_equation(linear)}\n"
-        f"n={int(linear['observations'])}; R²={float(linear['r_squared']):.3f}\n"
-        "Direct finite-pair inventory fit; pooled, noncausal, and not a recommendation.\n"
-        "Population differs from the manifest-declared overlay snapshot.",
-        transform=axis.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8,
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.88},
-    )
-    axis.set(
-        title="All-finite-row grain-yield sensitivity",
-        xlabel="Inorganic N rate (kg N ha⁻¹)",
-        ylabel="Grain yield (t ha⁻¹)",
-    )
-    axis.legend(fontsize=8, loc="lower right")
-    axis.grid(alpha=0.2)
-    figure.tight_layout()
-    return figure
 
 
 def _slope_confidence_sentence(row: pd.Series) -> str:
@@ -2213,8 +1824,7 @@ def _factors_beyond_nitrogen_markdown(
             )
             lines.append(
                 "- **Series-level covariates** "
-                "(`heterogeneity/series_covariates.csv`, "
-                "`factors/series_slope_modifier_screen.csv`): derived "
+                "(`factors/series_slope_modifier_screen.csv`): derived "
                 "zero-N check yield, N-ladder geometry, era, and P/K recording "
                 "state are screened against the fitted series slopes. The "
                 "largest absolute correlation among screens with differing "
@@ -2365,65 +1975,8 @@ def _loo_sentence(descriptive: DescriptiveResults) -> str:
     return (
         "Leave-one-series-out refits keep the pooled slope between "
         f"{float(slopes.min()) * 100:.2f} and {float(slopes.max()) * 100:.2f} "
-        "t ha⁻¹ per 100 kg N ha⁻¹ "
-        "(`pooled/leave_one_series_out.csv`). "
+        "t ha⁻¹ per 100 kg N ha⁻¹. "
     )
-
-
-def _bootstrap_sentences(
-    bootstrap_uncertainty: pd.DataFrame | None,
-) -> tuple[str, str]:
-    """Return (pooled-slope sentence, turning-point sentence), either may be empty."""
-
-    if (
-        bootstrap_uncertainty is None
-        or bootstrap_uncertainty.empty
-        or "quantity" not in bootstrap_uncertainty.columns
-    ):
-        return "", ""
-    indexed = bootstrap_uncertainty.set_index("quantity")
-    slope_sentence = ""
-    slope_key = "pooled_linear_slope_t_ha_per_kg_n_ha"
-    if slope_key in indexed.index:
-        row = indexed.loc[slope_key]
-        if str(row.get("status", "")) == "fitted":
-            slope_sentence = (
-                "A cluster bootstrap that resamples whole response series "
-                f"({int(row['resamples_used'])} usable resamples, seed "
-                f"{int(row['random_seed'])}) puts the slope's 95% interval at "
-                f"{float(row['ci95_low']) * 100:.2f} to "
-                f"{float(row['ci95_high']) * 100:.2f} t ha⁻¹ per 100 kg N ha⁻¹ "
-                "(`pooled/bootstrap_uncertainty.csv`). "
-            )
-    turning_sentence = ""
-    turning_key = "pooled_quadratic_turning_point_n_kg_ha"
-    if turning_key in indexed.index:
-        row = indexed.loc[turning_key]
-        concave = pd.to_numeric(
-            pd.Series([row.get("share_concave_resamples")]), errors="coerce"
-        ).iloc[0]
-        inside = pd.to_numeric(
-            pd.Series([row.get("share_turning_point_inside_observed_domain")]),
-            errors="coerce",
-        ).iloc[0]
-        low = row.get("ci95_low")
-        high = row.get("ci95_high")
-        if pd.notna(concave) and pd.notna(low) and pd.notna(high):
-            inside_text = (
-                f" and {100 * float(inside):.0f}% of those maxima fall inside "
-                "the observed N domain"
-                if pd.notna(inside)
-                else ""
-            )
-            turning_sentence = (
-                "Cluster-bootstrap check: "
-                f"{100 * float(concave):.0f}% of resamples fit a concave "
-                "(downward-bending) parabola; among those, the turning point's "
-                f"95% interval spans {float(low):.0f} to {float(high):.0f} "
-                f"kg N ha⁻¹{inside_text} — the pooled data do not locate a "
-                "maximum (`pooled/bootstrap_uncertainty.csv`).\n\n"
-            )
-    return slope_sentence, turning_sentence
 
 
 def _zero_n_delta_sentence(descriptive: DescriptiveResults) -> str:
@@ -2437,8 +1990,8 @@ def _zero_n_delta_sentence(descriptive: DescriptiveResults) -> str:
         "Measured against each series' own zero-N check, the through-origin "
         f"gain slope is {float(slope) * 100:.2f} t ha⁻¹ per 100 kg N ha⁻¹ "
         f"across {int(summary.get('nonzero_observations', 0))} fertilized "
-        f"observations in {int(summary.get('series_with_zero_n', 0))} series "
-        "(`pooled/zero_n_delta_summary.csv`).\n\n"
+        f"observations in {int(summary.get('series_with_zero_n', 0))} "
+        "series.\n\n"
     )
 
 
@@ -2448,7 +2001,6 @@ def _key_findings_lines(
     heterogeneity: HeterogeneityResults,
     factors: FactorSupportResults,
     mixed_model: Mapping[str, Any],
-    bootstrap_uncertainty: pd.DataFrame | None,
     redundancy_audit: pd.DataFrame | None,
 ) -> list[str]:
     lines: list[str] = ["## Key findings at a glance\n"]
@@ -2555,30 +2107,6 @@ def _key_findings_lines(
                 else "beyond the observed N domain"
             )
         )
-        if (
-            bootstrap_uncertainty is not None
-            and not bootstrap_uncertainty.empty
-            and "quantity" in bootstrap_uncertainty.columns
-        ):
-            indexed = bootstrap_uncertainty.set_index("quantity")
-            key = "pooled_quadratic_turning_point_n_kg_ha"
-            if key in indexed.index:
-                inside_share = pd.to_numeric(
-                    pd.Series(
-                        [
-                            indexed.loc[key].get(
-                                "share_turning_point_inside_observed_domain"
-                            )
-                        ]
-                    ),
-                    errors="coerce",
-                ).iloc[0]
-                if pd.notna(inside_share):
-                    optimum_text += (
-                        f", and only {100 * float(inside_share):.0f}% of the "
-                        "bootstrap resamples that fit a concave shape place it "
-                        "inside that domain"
-                    )
         lines.append(optimum_text + ". No optimum is inferred.")
 
     lines.append(
@@ -2604,7 +2132,7 @@ def _bundle_contents_lines(
         "the whole bundle.\n",
     ]
 
-    group_order = {"population": 0, "pooled": 1, "heterogeneity": 2, "factors": 3}
+    group_order = {"factors": 0}
 
     def emit(paths: tuple[str, ...], descriptions: Mapping[str, str]) -> None:
         by_directory: dict[str, list[str]] = {}
@@ -2648,32 +2176,12 @@ def _summary_markdown(
     redundancy_audit: pd.DataFrame | None,
     evidence_audit: pd.DataFrame | None,
     mixed_model: Mapping[str, Any],
-    raw_sensitivity: Mapping[str, Any] | None,
-    bootstrap_uncertainty: pd.DataFrame | None = None,
     table_paths: tuple[str, ...] = (),
     figure_paths: tuple[str, ...] = (),
     explainer_paths: tuple[str, ...] = (),
 ) -> str:
     linear = descriptive.pooled_models.set_index("model").loc["linear"]
     quadratic = descriptive.pooled_models.set_index("model").loc["quadratic"]
-    raw_block = ""
-    if raw_sensitivity is not None:
-        raw_summary = raw_sensitivity.get("summary")
-        if isinstance(raw_summary, pd.DataFrame):
-            raw_linear = raw_summary.set_index("model").loc["raw_finite_linear"]
-            raw_block = (
-                "## Direct source-wide finite-pair fit (sensitivity)\n\n"
-                f"`{raw_linear['equation']}`\n\n"
-                f"Finite N–yield pairs: {int(raw_linear['observations'])}; "
-                f"R² = {float(raw_linear['r_squared']):.6f}; "
-                f"RMSE = {float(raw_linear['rmse_t_ha']):.6f} t ha⁻¹.\n\n"
-                "This is the direct descriptive fit to all finite pairs in the "
-                "authoritative CSV — a population deliberately wider than the "
-                "governed overlay snapshot above. It pools heterogeneous studies "
-                "and treatments, so it is not a causal N effect, recommendation, "
-                "or universal curve.\n\n"
-                + _figures_note(figure_paths, "raw_finite_population_sensitivity")
-            )
     modifier_eligible = int(
         factors.support["modifier_status"]
         .eq("eligible_for_prespecified_review_not_run")
@@ -2762,13 +2270,9 @@ def _summary_markdown(
         else:
             mixed_model_sentence += ". "
 
-    bootstrap_slope_sentence, bootstrap_turning_sentence = _bootstrap_sentences(
-        bootstrap_uncertainty
-    )
     uncertainty_parts = "".join(
         part
         for part in (
-            bootstrap_slope_sentence,
             _theil_sentence(descriptive),
             _loo_sentence(descriptive),
         )
@@ -2787,7 +2291,6 @@ def _summary_markdown(
                 heterogeneity,
                 factors,
                 mixed_model,
-                bootstrap_uncertainty,
                 redundancy_audit,
             )
         )
@@ -2811,9 +2314,6 @@ def _summary_markdown(
         + intercept_caveat
         + "The pooled intercept and slope combine distinct studies and response "
         "series. They are not causal effects or universal agronomic parameters.\n\n"
-        + _figures_note(
-            figure_paths, "pooled_linear_response", "series_response_overlay"
-        )
         + "## Heterogeneity\n\n"
         f"Within-series slope = "
         f"{float(heterogeneity.summary['within_series_slope_t_ha_per_kg_n_ha']):.5f} "
@@ -2826,22 +2326,14 @@ def _summary_markdown(
         + _zero_n_delta_sentence(descriptive)
         + "The large baseline-structure reduction is evidence that a single pooled "
         "line suppresses important between-series differences.\n\n"
-        + _figures_note(
-            figure_paths,
-            "within_series_response",
-            "series_slope_distribution",
-        )
         + "## Pooled quadratic sensitivity\n\n"
         f"`{quadratic['equation']}`\n\n"
         + turning_point_text
-        + bootstrap_turning_sentence
-        + _figures_note(figure_paths, "pooled_quadratic_sensitivity")
         + "## Hierarchical diagnostic\n\n"
         f"R mixed-model status: `{mixed_model.get('status', 'not_run')}`. "
         f"Singular fit: `{mixed_model.get('singular', 'not_available')}`. "
-        + mixed_model_sentence
-        + "See `heterogeneity/mixed_model_summary.csv` for the complete "
-        "diagnostic record.\n\n"
+        + mixed_model_sentence.rstrip()
+        + "\n\n"
         "## Candidate-factor support\n\n"
         f"Complete-case additive baseline screens fitted: {fitted_screens}; factors "
         f"with enough within-series support for a future prespecified modifier review: "
@@ -2861,7 +2353,6 @@ def _summary_markdown(
         + _figures_note(
             figure_paths, "factor_baseline_screen", "series_slope_vs_check_yield"
         )
-        + raw_block
         + "\n".join(
             _bundle_contents_lines(table_paths, figure_paths, explainer_paths)
         )
@@ -2877,13 +2368,11 @@ def write_diagnostic_bundle(
     heterogeneity: HeterogeneityResults,
     factors: FactorSupportResults,
     mixed_model: Mapping[str, Any],
-    raw_sensitivity: Mapping[str, Any] | None,
     implementation_sha256: Mapping[str, str],
     series_covariates: SeriesCovariateResults | None = None,
     series_adjusted_screen: pd.DataFrame | None = None,
     redundancy_audit: pd.DataFrame | None = None,
     evidence_audit: pd.DataFrame | None = None,
-    bootstrap_uncertainty: pd.DataFrame | None = None,
 ) -> WrittenDiagnosticBundle:
     target = Path(root).resolve()
     if target.exists() and any(target.iterdir()):
@@ -2892,36 +2381,11 @@ def write_diagnostic_bundle(
     artifacts: list[dict[str, Any]] = []
 
     tables: dict[str, pd.DataFrame] = {
-        "analysis_population": population.frame,
-        "pooled_models": descriptive.pooled_models,
-        "model_grid": descriptive.model_grid,
-        "series_slopes": descriptive.series_slopes,
-        "leave_one_series_out": descriptive.leave_one_series_out,
-        "zero_n_deltas": descriptive.zero_n_deltas,
-        "zero_n_delta_summary": pd.DataFrame(
-            [descriptive.zero_n_delta_summary]
-        ),
-        "heterogeneity_summary": pd.DataFrame([heterogeneity.summary]),
-        "heterogeneity_decomposition": heterogeneity.decomposition,
-        "series_fixed_intercepts": heterogeneity.series_intercepts,
         "factor_support": factors.support,
         "factor_level_summary": factors.level_summary,
         "factor_additive_screen": factors.additive_screen,
-        "mixed_model_summary": pd.DataFrame(
-            [
-                {
-                    key: (
-                        json.dumps(_jsonable(value), sort_keys=True)
-                        if isinstance(value, (dict, list, tuple))
-                        else value
-                    )
-                    for key, value in mixed_model.items()
-                }
-            ]
-        ),
     }
     if series_covariates is not None:
-        tables["series_covariates"] = series_covariates.series_frame
         tables["series_slope_modifier_screen"] = series_covariates.modifier_screen
     if series_adjusted_screen is not None:
         tables["factor_series_adjusted_screen"] = series_adjusted_screen
@@ -2929,30 +2393,10 @@ def write_diagnostic_bundle(
         tables["factor_redundancy_audit"] = redundancy_audit
     if evidence_audit is not None:
         tables["factor_evidence_audit"] = evidence_audit
-    if bootstrap_uncertainty is not None:
-        tables["bootstrap_uncertainty"] = bootstrap_uncertainty
-    if raw_sensitivity is not None:
-        summary = raw_sensitivity.get("summary")
-        if isinstance(summary, pd.DataFrame):
-            tables["raw_finite_sensitivity"] = summary
     for name, frame in tables.items():
         artifacts.append(_write_csv(target, table_relative_path(name), frame))
 
     figure_specs = [
-        (
-            "pooled_linear_response",
-            _plot_pooled_linear(config, population, descriptive),
-        ),
-        (
-            "pooled_quadratic_sensitivity",
-            _plot_quadratic(config, population, descriptive),
-        ),
-        (
-            "series_response_overlay",
-            _plot_series_overlay(config, population, descriptive),
-        ),
-        ("within_series_response", _plot_within_series(config, heterogeneity)),
-        ("series_slope_distribution", _plot_series_slopes(config, descriptive)),
         ("factor_baseline_screen", _plot_factor_screen(config, factors)),
         (
             "factor_explanatory_ranking",
@@ -2972,13 +2416,6 @@ def write_diagnostic_bundle(
             (
                 "response_curve_modifier_ranking",
                 _plot_slope_modifier_ranking(config, series_covariates, mixed_model),
-            )
-        )
-    if raw_sensitivity is not None:
-        figure_specs.append(
-            (
-                "raw_finite_population_sensitivity",
-                _plot_raw_sensitivity(config, raw_sensitivity),
             )
         )
     # Every configured figure format is emitted; one rendered figure is saved
@@ -3043,8 +2480,6 @@ def write_diagnostic_bundle(
             redundancy_audit,
             evidence_audit,
             mixed_model,
-            raw_sensitivity,
-            bootstrap_uncertainty=bootstrap_uncertainty,
             table_paths=table_paths,
             figure_paths=figure_paths,
             explainer_paths=tuple(explainer_paths),
@@ -3092,28 +2527,6 @@ def write_diagnostic_bundle(
             "trial_count": population.trial_count,
             "series_uids": list(population.series_uids),
         },
-        "raw_finite_population": (
-            {
-                "status": "completed",
-                "population_id": "raw_finite_inventory_sensitivity",
-                "source_nonblank_rows": raw_sensitivity.get(
-                    "source_nonblank_rows"
-                ),
-                "finite_pair_rows": len(raw_sensitivity["frame"]),
-                "excluded_nonfinite_pairs": raw_sensitivity.get(
-                    "excluded_nonfinite_pairs"
-                ),
-                "yield_t_source_count": raw_sensitivity.get(
-                    "yield_t_source_count"
-                ),
-                "yield_kg_fallback_count": raw_sensitivity.get(
-                    "yield_kg_fallback_count"
-                ),
-            }
-            if raw_sensitivity is not None
-            and isinstance(raw_sensitivity.get("frame"), pd.DataFrame)
-            else {"status": "disabled"}
-        ),
         "input_sha256": {
             "recipe_config": sha256_file(config.config_path),
             **population.input_sha256,
@@ -3393,12 +2806,12 @@ def _expected_diagnostic_artifact_path(
     legacy = schema_version == LEGACY_SCHEMA_VERSION
     intermediate = schema_version == INTERMEDIATE_SCHEMA_VERSION
     if kind == "table":
-        group = _TABLE_GROUPS.get(pure.stem)
+        group = _TABLE_GROUPS.get(pure.stem) or _RETIRED_TABLE_GROUPS.get(pure.stem)
         if group is not None and pure.suffix == ".csv":
             prefix = f"tables/{group}" if legacy else group
             return f"{prefix}/{pure.name}"
     elif kind == "figure":
-        group = _FIGURE_GROUPS.get(pure.stem)
+        group = _FIGURE_GROUPS.get(pure.stem) or _RETIRED_FIGURE_GROUPS.get(pure.stem)
         if group is not None and pure.suffix:
             if (intermediate or legacy) and pure.stem in {
                 "factor_baseline_screen",
