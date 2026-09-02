@@ -223,3 +223,33 @@ test_that("the reviewed residual-df threshold controls R model dispatch", {
     "INSUFFICIENT_RESIDUAL_INFORMATION"
   )
 })
+
+test_that("the convergence gate reads a glm's own convergence flag", {
+  # A glm carries class c("glm", "lm"), so an `inherits(model, "lm")` fallback
+  # answers for it too and reports an unconverged fit as converged.
+  separable <- data.frame(
+    outcome = c(0, 0, 0, 0, 1, 1, 1, 1),
+    predictor = c(1, 2, 3, 4, 10, 11, 12, 13)
+  )
+  stopped_early <- suppressWarnings(stats::glm(
+    outcome ~ predictor,
+    data = separable,
+    family = stats::binomial(),
+    control = list(maxit = 1L)
+  ))
+  expect_false(isTRUE(stopped_early$converged))
+  expect_false(nrc_model_converged(stopped_early))
+
+  converged_fit <- stats::glm(
+    outcome ~ predictor,
+    data = data.frame(
+      outcome = c(0, 1, 0, 1, 0, 1, 0, 1),
+      predictor = c(1, 2, 3, 4, 5, 6, 7, 8)
+    ),
+    family = stats::binomial()
+  )
+  expect_true(nrc_model_converged(converged_fit))
+
+  # An lm has no iteration to converge, so it stays reported as converged.
+  expect_true(nrc_model_converged(stats::lm(outcome ~ predictor, data = separable)))
+})
