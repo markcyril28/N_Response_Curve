@@ -3,8 +3,8 @@
 The promoted package under ``[paths].reports_root`` stays the single
 authoritative, checksummed deliverable. Full runs additionally project a
 deterministic subset of its *already verified* artifacts into the documented
-``WF/02``-``WF/05`` roots so downstream readers find dataset, QC, curve,
-comparison, and explanatory outputs where the workflow documents them.
+``WF/02``-``WF/04`` roots so downstream readers find dataset, QC, and curve
+outputs where the workflow documents them.
 
 Every projected file is an exact byte copy hashed against the source package's
 checksum ledger -- never a symlink, a hardlink, or a recomputed table. Nothing
@@ -65,16 +65,12 @@ WORKSPACE_VIEW_CATEGORIES = (
     "analysis_ready",
     "qc",
     "curves",
-    "comparisons",
-    "explanatory",
 )
 
 _CATEGORY_ROOT_KEYS = {
     "analysis_ready": "analysis_ready_root",
     "qc": "qc_root",
     "curves": "curves_root",
-    "comparisons": "comparisons_root",
-    "explanatory": "explanatory_root",
 }
 
 _STAGE_SUFFIX = ".workspace-stage"
@@ -105,14 +101,16 @@ _RETAINED_ONLY_PATHS = frozenset(
         "replacement_record.json",
     }
 )
-_RETAINED_ONLY_PREFIXES = ("logs/",)
+# ``figures/overlay/`` was retired from projection on 2026-09-01: the configured
+# descriptive subsets are no longer generated ([custom_overlays].enabled = false)
+# and the per-source overlay itself is superseded by the standalone generators.
+# It is matched here, *before* _PREFIX_RULES, so the surviving ``figures/`` rule
+# cannot silently relocate it into the curves view root instead.
+_RETAINED_ONLY_PREFIXES = ("logs/", "figures/overlay/")
 
-# ``tables/analysis`` splits between the comparisons and explanatory views.
-_COMPARISON_BASENAME_MARKER = "_comparison"
-_COMPARISON_EXACT_STEMS = frozenset(
-    {"descriptive_summaries", "management_system_proximity"}
-)
-_EXPLANATORY_LEDGERS = frozenset(
+# Explanatory ledgers are recognized so a *new* ledger path still fails closed,
+# but they are retained only in the release root: no view projects them.
+_RETAINED_ONLY_LEDGERS = frozenset(
     {
         "ledgers/multiplicity_reconciliation.json",
         "ledgers/claim_classification.json",
@@ -127,7 +125,6 @@ _PREFIX_RULES = (
     ("tables/derived/", "analysis_ready", "derived/"),
     ("tables/quality/", "qc", "quality/"),
     ("tables/curves/", "curves", ""),
-    ("figures/overlay/", "curves", "configured/"),
     ("figures/", "curves", ""),
 )
 
@@ -340,18 +337,12 @@ def _classify(relative: str) -> tuple[str, str] | None:
             return category, target_prefix + relative[len(prefix) :]
     if relative in _QC_LEDGERS:
         return "qc", relative
-    if relative in _EXPLANATORY_LEDGERS:
-        return "explanatory", relative
+    if relative in _RETAINED_ONLY_LEDGERS:
+        return None
+    # Analysis tables -- comparison tables included -- are recognized so a *new*
+    # analysis path still fails closed, but no view projects any of them.
     if relative.startswith("tables/analysis/"):
-        tail = relative[len("tables/analysis/") :]
-        basename = Path(tail).name
-        category = (
-            "comparisons"
-            if _COMPARISON_BASENAME_MARKER in basename
-            or Path(tail).stem in _COMPARISON_EXACT_STEMS
-            else "explanatory"
-        )
-        return category, "tables/" + tail
+        return None
     raise WorkspaceOutputError(
         "Release package contains an unsupported path for workspace projection: "
         f"{relative}"
@@ -809,6 +800,16 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
 
 
 def _view_targets(config: Any, view_name: str) -> dict[str, Path]:
+    """Resolve each category's live target directory.
+
+    ``curves`` is the exception: unlike ``analysis_ready``/``qc``, its root is
+    dedicated to this view alone, so the governed ledger lives at
+    ``curves_root`` directly rather than under a ``curves_root/view_name``
+    subdirectory. The standalone generators' source-named directories
+    (``_STANDALONE_EXTENSION_ROOTS_V4``) are unbound siblings there, exactly
+    as ``_extension_inventory``/``_copy_standalone_extension`` already allow.
+    """
+
     targets: dict[str, Path] = {}
     for category in WORKSPACE_VIEW_CATEGORIES:
         root_key = _CATEGORY_ROOT_KEYS[category]
@@ -816,8 +817,7 @@ def _view_targets(config: Any, view_name: str) -> dict[str, Path]:
             root = Path(config.paths[root_key])
         except KeyError as exc:
             raise WorkspaceOutputError(f"[paths].{root_key} is not configured") from exc
-        directory_name = f"z_{view_name}" if category == "curves" else view_name
-        targets[category] = root / directory_name
+        targets[category] = root if category == "curves" else root / view_name
     return targets
 
 
@@ -955,9 +955,9 @@ class _WorkspaceLayout:
 
 
 def _target_set_fingerprint(targets: Mapping[str, Path]) -> str:
-    """Canonical identity of the five resolved live targets, order-independent.
+    """Canonical identity of the three resolved live targets, order-independent.
 
-    Two configurations naming the same five directories -- however they spell
+    Two configurations naming the same three directories -- however they spell
     them, and whatever ``run_metadata_root`` they declare -- produce the same
     fingerprint and therefore contend on the same lock.
     """
@@ -1353,11 +1353,6 @@ def _structural_ownership(
                     legacy_relative = "tables/" + source_relative[
                         len("tables/curves/") :
                     ]
-                elif source_relative.startswith("figures/overlay/"):
-                    legacy_relative = (
-                        "figures/overlay/configured/"
-                        + source_relative[len("figures/overlay/") :]
-                    )
                 elif source_relative.startswith("figures/"):
                     legacy_relative = source_relative
                 else:
@@ -1369,20 +1364,6 @@ def _structural_ownership(
             if relative != legacy_relative:
                 raise WorkspaceOutputError(
                     "Legacy workspace ownership metadata does not match the exact v1 "
-                    f"layout: {relative}"
-                )
-        elif (
-            schema_version == _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V2
-            and category == "curves"
-            and source_relative.startswith("figures/overlay/")
-        ):
-            legacy_relative = (
-                "overlay/configured/"
-                + source_relative[len("figures/overlay/") :]
-            )
-            if relative != legacy_relative:
-                raise WorkspaceOutputError(
-                    "Legacy workspace ownership metadata does not match the exact v2 "
                     f"layout: {relative}"
                 )
         elif relative != classified[1]:
@@ -1807,7 +1788,7 @@ def _authorize_recovery_candidates(
     to write a view target can write a journal naming it. Its say-so is
     therefore never authority to destroy what is at those paths now. This runs
     before the commit-or-roll-back fork and is all-or-nothing: it either clears
-    all fifteen candidates or raises having touched none of them, leaving the
+    all nine candidates or raises having touched none of them, leaving the
     journal in place for an operator to adjudicate.
     """
 
@@ -2006,7 +1987,7 @@ def _recover_workspace_transaction(
     trusted_attestations: Mapping[str, str],
     force_rollback: bool = False,
 ) -> str | None:
-    """Commit or roll back an interrupted five-view transaction as one set.
+    """Commit or roll back an interrupted three-view transaction as one set.
 
     ``force_rollback`` skips commit detection. It is used when the caller knows
     the promoted set must be undone even though it verifies -- notably when the
@@ -2061,7 +2042,7 @@ def _recover_workspace_transaction(
             committed_live_set = True
     else:
         # The journal belongs to an earlier generation than the package now being
-        # projected. The live set counts as committed only if all five views are
+        # projected. The live set counts as committed only if all three views are
         # structurally owned and consistently bound to *that* journal's source.
         live_bindings: set[tuple[str, str, str, str]] = set()
         expected_plan = plan_workspace_views(recovery_package)
@@ -2442,7 +2423,7 @@ def _materialize_workspace_views_locked(
         # whose bytes and inventory still hash to one of these, so the journal
         # authorizes exactly the two states this run observed and nothing an
         # operator put there. Taken inside the staging guard: a fingerprint that
-        # cannot be taken unwinds the stages rather than stranding five complete
+        # cannot be taken unwinds the stages rather than stranding three complete
         # ones that no journal explains and the next run refuses to reap.
         category_records = {
             category: {
@@ -2635,103 +2616,6 @@ def _materialize_workspace_views_locked(
     )
 
 
-@dataclass(frozen=True)
-class _LegacyCurvesMigration:
-    historical: Path
-    canonical: Path
-    prior_state_sha256: str
-
-
-def _prepare_legacy_curves_migration(
-    config: Any, layout: _WorkspaceLayout
-) -> _LegacyCurvesMigration | None:
-    """Move one exact historical-v1 curves target into the transaction boundary."""
-
-    curves_root = Path(config.paths[_CATEGORY_ROOT_KEYS["curves"]])
-    historical = curves_root / layout.view_name
-    canonical = layout.targets["curves"]
-    historical_present = historical.exists() or historical.is_symlink()
-    canonical_present = canonical.exists() or canonical.is_symlink()
-    if historical_present and canonical_present:
-        raise WorkspaceOutputError(
-            "Both historical and canonical curves workspace targets exist; move neither "
-            f"until an operator resolves them: {historical} / {canonical}"
-        )
-    if not historical_present:
-        return None
-    if historical.is_symlink() or not historical.is_dir():
-        raise WorkspaceOutputError(
-            f"Historical curves workspace target is unsafe: {historical}"
-        )
-    manifest = _read_view_manifest(
-        historical,
-        accepted_schema_versions=frozenset(
-            {_LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1}
-        ),
-    )
-    if (
-        manifest.get("schema_version")
-        != _LEGACY_WORKSPACE_VIEW_MANIFEST_SCHEMA_VERSION_V1
-    ):
-        raise WorkspaceOutputError(
-            f"Historical curves workspace target is not an exact v1 view: {historical}"
-        )
-    _structural_ownership(
-        historical,
-        category="curves",
-        view_name=layout.view_name,
-    )
-    fingerprint = _state_fingerprint(historical)
-    migration = _LegacyCurvesMigration(
-        historical=historical,
-        canonical=canonical,
-        prior_state_sha256=fingerprint,
-    )
-    try:
-        _promote_directory(historical, canonical)
-    except BaseException as exc:
-        # A rename may have completed before an interruption was delivered. The
-        # migration record must therefore exist before promotion, and that exact
-        # side-effect state is restored here rather than escaping the outer
-        # transaction without anything to roll back.
-        if (
-            not historical.exists()
-            and not historical.is_symlink()
-            and canonical.is_dir()
-            and not canonical.is_symlink()
-        ):
-            try:
-                _rollback_legacy_curves_migration(migration)
-            except BaseException as rollback_exc:
-                raise WorkspaceOutputError(
-                    "Historical curves migration was interrupted after its rename, "
-                    f"and restoring the historical path also failed: {rollback_exc}"
-                ) from exc
-        raise
-    return migration
-
-
-def _rollback_legacy_curves_migration(migration: _LegacyCurvesMigration) -> None:
-    """Restore an unchanged v1 prior to its historical path after a failed run."""
-
-    if migration.historical.exists() or migration.historical.is_symlink():
-        raise WorkspaceOutputError(
-            "Historical curves migration rollback found its original path occupied: "
-            f"{migration.historical}"
-        )
-    if migration.canonical.is_symlink() or not migration.canonical.is_dir():
-        raise WorkspaceOutputError(
-            "Historical curves migration rollback cannot find its canonical prior: "
-            f"{migration.canonical}"
-        )
-    if _state_fingerprint(migration.canonical) != migration.prior_state_sha256:
-        raise WorkspaceOutputError(
-            "Historical curves migration rollback refuses a canonical target that no "
-            f"longer matches the v1 prior: {migration.canonical}"
-        )
-    _promote_directory(migration.canonical, migration.historical)
-
-
 def materialize_workspace_views(
     config: Any,
     package: ReleasePackage,
@@ -2750,24 +2634,12 @@ def materialize_workspace_views(
         )
     layout = _resolve_workspace_layout(config, package, view_name=view_name)
     with _workspace_output_lock(layout):
-        legacy_migration = _prepare_legacy_curves_migration(config, layout)
-        try:
-            return _materialize_workspace_views_locked(
-                config,
-                package,
-                layout=layout,
-                run_log=run_log,
-            )
-        except BaseException as exc:
-            if legacy_migration is not None:
-                try:
-                    _rollback_legacy_curves_migration(legacy_migration)
-                except BaseException as rollback_exc:
-                    raise WorkspaceOutputError(
-                        "Workspace generation failed after moving a historical curves "
-                        f"view, and restoring that view also failed: {rollback_exc}"
-                    ) from exc
-            raise
+        return _materialize_workspace_views_locked(
+            config,
+            package,
+            layout=layout,
+            run_log=run_log,
+        )
 
 
 def workspace_view_display_paths(
