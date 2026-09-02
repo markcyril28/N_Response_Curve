@@ -8,11 +8,7 @@ import sys
 from typing import Any, Callable
 import uuid
 
-from ..analysis.grain_yield_response.descriptive import (
-    analyze_descriptive,
-    analyze_raw_sensitivity,
-    bootstrap_pooled_uncertainty,
-)
+from ..analysis.grain_yield_response.descriptive import analyze_descriptive
 from ..analysis.grain_yield_response.factor_support import (
     analyze_factor_support,
     audit_factor_evidence,
@@ -38,7 +34,6 @@ from ..analysis.grain_yield_response.config import (
 )
 from ..analysis.grain_yield_response.population import (
     GovernedPopulation,
-    RawFinitePopulation,
     load_governed_population,
     load_raw_finite_population,
 )
@@ -80,7 +75,7 @@ def _load_inputs(
     config: GrainYieldResponseConfig,
     *,
     base_config_loader: Callable[..., Any],
-) -> tuple[Any, GovernedPopulation, RawFinitePopulation]:
+) -> tuple[Any, GovernedPopulation]:
     base_config = base_config_loader(
         config.base_config_path,
         project_root=config.project_root,
@@ -94,12 +89,13 @@ def _load_inputs(
         source_release_verification_status=release_status,
         source_release_verification_detail=release_detail,
     )
-    # The recipe is source-hash-bound even when the raw sensitivity is disabled.
-    # Reading this frame during validation proves the registered source identity,
-    # positional schema, yield-unit consistency, and before/after stability.
-    raw_population = load_raw_finite_population(config, base_config=base_config)
+    # Nothing derived from this frame is published any more, but the read is
+    # kept: it is what proves the registered source identity, positional schema,
+    # yield-unit consistency, and before/after stability of the raw CSV, and the
+    # recipe stays source-hash-bound on it.
+    load_raw_finite_population(config, base_config=base_config)
     preflight_mixed_model_engine(config)
-    return base_config, population, raw_population
+    return base_config, population
 
 
 def _implementation_paths(config: GrainYieldResponseConfig) -> tuple[Path, ...]:
@@ -271,7 +267,7 @@ def _run_grain_yield_response_unlocked(
         raise RecipeConfigError(
             "Diagnostic output root changed while acquiring its publication lock"
         )
-    base_config, population, raw_population = _load_inputs(
+    base_config, population = _load_inputs(
         config,
         base_config_loader=base_config_loader,
     )
@@ -309,11 +305,6 @@ def _run_grain_yield_response_unlocked(
         series_key=config.series_key,
         zero_n_tolerance_kg_ha=config.zero_n_tolerance_kg_ha,
         n_level_tolerance_kg_ha=config.n_level_tolerance_kg_ha,
-    )
-    bootstrap_uncertainty = bootstrap_pooled_uncertainty(
-        population.frame,
-        series_key=config.series_key,
-        random_seed=config.random_seed,
     )
     heterogeneity = analyze_heterogeneity(
         population.frame,
@@ -367,19 +358,6 @@ def _run_grain_yield_response_unlocked(
         ),
     )
     mixed_model = run_mixed_model(population.frame, config)
-    raw_sensitivity = None
-    if config.include_raw_sensitivity:
-        raw_sensitivity = {
-            "frame": raw_population.frame,
-            "summary": analyze_raw_sensitivity(
-                raw_population.frame,
-                n_level_tolerance_kg_ha=config.n_level_tolerance_kg_ha,
-            ),
-            "source_nonblank_rows": raw_population.source_nonblank_rows,
-            "excluded_nonfinite_pairs": raw_population.excluded_nonfinite_pairs,
-            "yield_t_source_count": raw_population.yield_t_source_count,
-            "yield_kg_fallback_count": raw_population.yield_kg_fallback_count,
-        }
 
     # Importing pyplot is intentionally deferred until writing mode so validate
     # remains free of Matplotlib cache or font-manager side effects.
@@ -413,9 +391,7 @@ def _run_grain_yield_response_unlocked(
             series_adjusted_screen=series_adjusted_screen,
             redundancy_audit=redundancy_audit,
             evidence_audit=evidence_audit,
-            bootstrap_uncertainty=bootstrap_uncertainty,
             mixed_model=mixed_model,
-            raw_sensitivity=raw_sensitivity,
             implementation_sha256=implementation_sha256,
         )
         verify_diagnostic_bundle(stage)
