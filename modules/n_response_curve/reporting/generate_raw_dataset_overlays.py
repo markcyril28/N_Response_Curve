@@ -22,8 +22,12 @@ if str(MODULES_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULES_ROOT))
 
 from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
+    COMBINED_SOURCE_VARIANTS,
+    COMBINED_VARIANT_NO_FP,
+    COMBINED_VARIANT_WITH_FP,
     SourceDatasetOverlay,
     SourceDatasetZeroNStrata,
+    combined_variant_source_path,
     read_source_dataset_overlay,
     select_source_dataset_overlay_above_n_rate_threshold,
     select_source_dataset_overlay_above_yield_threshold,
@@ -60,6 +64,13 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/04_Response_Curves/z_n_response_full"
 DEFAULT_YIELD_THRESHOLD_T_HA = 7.8
 DEFAULT_ZERO_N_YIELD_THRESHOLD_T_HA = 5.0
 DEFAULT_N_RATE_THRESHOLD_KG_HA = 250.0
+_COMBINED_SOURCE_NAME = "ph_combined_nopt_rcm"
+# A non-default variant writes into its own nested directory rather than
+# alongside the registered run's figures: the two runs share figure filenames,
+# and _retire_superseded_n_rate_figures only sweeps loose files in one
+# directory, so a nested directory is what survives a later default run.
+# Keyed by the variant token itself so the directory cannot drift from it.
+_VARIANT_SUBDIRECTORY_NAMES = {COMBINED_VARIANT_NO_FP: COMBINED_VARIANT_NO_FP}
 _SOURCE_NAMES = (
     "core_trial_data",
     "ltcce",
@@ -611,12 +622,102 @@ def _parse_args() -> argparse.Namespace:
             "rate in kg N/ha; sources that never reach it get no such view"
         ),
     )
+    parser.add_argument(
+        "--fp-variant",
+        choices=COMBINED_SOURCE_VARIANTS,
+        default=COMBINED_VARIANT_WITH_FP,
+        help=(
+            "Which file of the PH combined source to read. The default reads "
+            "the registered CSV and writes every source's views as before. "
+            f"'{COMBINED_VARIANT_NO_FP}' reads its Farmer's-Practice-free "
+            "sibling and writes only that source's views, into a nested "
+            f"'{_VARIANT_SUBDIRECTORY_NAMES[COMBINED_VARIANT_NO_FP]}/' "
+            "directory so neither run can overwrite the other"
+        ),
+    )
     return parser.parse_args()
+
+
+def _write_combined_variant_figures(
+    args: argparse.Namespace,
+    source_specs: dict[str, tuple[Path, str]],
+) -> int:
+    """Write the PH combined views from a non-default source-file variant."""
+
+    source_name = _COMBINED_SOURCE_NAME
+    registered_path, encoding = source_specs[source_name]
+    source_path = combined_variant_source_path(registered_path, args.fp_variant)
+    if not source_path.is_file():
+        raise ValueError(
+            f"Source '{source_name}' variant {args.fp_variant!r} expects "
+            f"{source_path}, which does not exist"
+        )
+
+    overlay = read_source_dataset_overlay(
+        source_path,
+        source_name,
+        encoding=encoding,
+        variant=args.fp_variant,
+    )
+    selected = select_source_dataset_overlay_above_yield_threshold(
+        overlay,
+        threshold_t_ha=args.yield_threshold,
+    )
+    n_rate_selected = select_source_dataset_overlay_above_n_rate_threshold(
+        overlay,
+        threshold_kg_ha=args.n_rate_threshold,
+    )
+
+    token = _threshold_token(args.yield_threshold)
+    destination_dir = (
+        args.output_dir
+        / source_name
+        / _VARIANT_SUBDIRECTORY_NAMES[args.fp_variant]
+    )
+    write_source_dataset_overlay_figure(
+        overlay,
+        destination_dir / f"{source_name}_source_wide.jpeg",
+    )
+    write_source_dataset_overlay_figure(
+        selected,
+        destination_dir / f"{source_name}_series_with_yield_above_{token}_t_ha.jpeg",
+    )
+    written = 2
+    n_rate_name = None
+    if n_rate_selected.trajectories:
+        n_rate_name = _n_rate_figure_name(source_name, args.n_rate_threshold)
+        write_source_dataset_overlay_figure(n_rate_selected, destination_dir / n_rate_name)
+        written += 1
+    _retire_superseded_n_rate_figures(destination_dir, source_name, keep_name=n_rate_name)
+
+    print(f"{source_name}: source variant={args.fp_variant}; file={source_path.name}")
+    print(
+        f"{source_name}: treatment classes="
+        f"{', '.join(overlay.summary.treatment_classes)}"
+    )
+    print(
+        f"{source_name}: source-wide observations="
+        f"{overlay.summary.finite_observation_count}; selected observations="
+        f"{selected.summary.finite_observation_count}"
+    )
+    print(
+        _source_n_rate_report(
+            overlay,
+            n_rate_selected,
+            threshold_kg_ha=args.n_rate_threshold,
+        )
+    )
+    print(
+        f"Generated {written} source-dataset overlay views under {destination_dir}"
+    )
+    return 0
 
 
 def main() -> int:
     args = _parse_args()
     source_specs = _load_source_specs(args.config)
+    if args.fp_variant != COMBINED_VARIANT_WITH_FP:
+        return _write_combined_variant_figures(args, source_specs)
     token = _threshold_token(args.yield_threshold)
     governed_core = _load_governed_core_inputs(
         args.config,
