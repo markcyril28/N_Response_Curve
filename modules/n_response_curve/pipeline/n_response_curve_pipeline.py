@@ -1098,7 +1098,7 @@ def _materialize_workspace_views(
     *,
     run_log: Any | None = None,
 ) -> WorkspaceOutputs | None:
-    """Project the verified release package into the WF/02-WF/05 roots.
+    """Project the verified release package into the WF/02-WF/04 roots.
 
     Full mode only: ``test`` writes its package under the test output root and
     ``validate`` writes nothing at all, so neither one may touch these roots.
