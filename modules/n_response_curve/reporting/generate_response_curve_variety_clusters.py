@@ -64,7 +64,7 @@ from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/ltcce/clusters/by_variety"
+    / "WF/04_Response_Curves/ltcce/clusters/by_variety"
 )
 SOURCE_NAME = "ltcce"
 

@@ -60,7 +60,7 @@ from n_response_curve.reporting.figure_output import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/04_Response_Curves/z_n_response_full"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/04_Response_Curves"
 DEFAULT_YIELD_THRESHOLD_T_HA = 7.8
 DEFAULT_ZERO_N_YIELD_THRESHOLD_T_HA = 5.0
 DEFAULT_N_RATE_THRESHOLD_KG_HA = 250.0

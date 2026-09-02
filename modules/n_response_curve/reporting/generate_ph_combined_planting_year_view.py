@@ -74,7 +74,7 @@ _OWNED_FILENAMES = frozenset(
 )
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full"
+    / "WF/04_Response_Curves"
     / "ph_combined_nopt_rcm/clusters/by_planting_year/no_nopt_npk"
 )
 _ARM_COLOURS = {"FP": "C0", "RCM": "C1", "zero N": "C2"}

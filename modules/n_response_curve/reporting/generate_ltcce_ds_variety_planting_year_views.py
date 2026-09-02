@@ -161,7 +161,7 @@ SOURCE_NAME = "ltcce"
 DEFAULT_SEASON = "DS"
 SUPPORTED_SEASONS = ("DS", "EWS", "LWS")
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
-CLUSTERS_ROOT = PROJECT_ROOT / "WF/04_Response_Curves/z_n_response_full/ltcce/clusters"
+CLUSTERS_ROOT = PROJECT_ROOT / "WF/04_Response_Curves/ltcce/clusters"
 
 # Sibling of PLANTING_YEAR_REPLICATE_DIRNAME. Named here rather than in the
 # season-cluster generator because that generator does not own this output and

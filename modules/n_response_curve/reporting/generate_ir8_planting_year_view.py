@@ -128,7 +128,7 @@ SOURCE_NAME = "ltcce"
 
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/z_n_response_full/ltcce"
+    / "WF/04_Response_Curves/ltcce"
     / "clusters/by_season/ds/by_variety/ir8_by_planting_year"
 )
 
