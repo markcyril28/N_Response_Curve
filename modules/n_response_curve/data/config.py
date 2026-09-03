@@ -195,7 +195,6 @@ REQUIRED_PATHS = {
     "source_checksums",
     "schema_evidence",
     "variety_lookup",
-    "analysis_ready_root",
     "qc_root",
     "curves_root",
     "reports_root",
@@ -211,7 +210,6 @@ INPUT_PATHS = {
     "variety_lookup",
 }
 OUTPUT_PATHS = {
-    "analysis_ready_root",
     "qc_root",
     "curves_root",
     "reports_root",
