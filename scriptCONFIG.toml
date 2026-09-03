@@ -339,7 +339,7 @@ yield_threshold_t_ha = 7.8
 high_n_threshold_kg_ha = 200.0
 # Stable full-mode package path; must equal the active release target. The
 # random seed remains in the run identity, not in the output-folder name.
-package_path = "WF/06_Reports/n_response_full"
+package_path = "WF/04_Reports/n_response_full"
 
 # Source-wide and strict-yield-selection overlays: a separately signed extension
 # inside the full report container, outside its governed manifest and checksum
@@ -360,8 +360,8 @@ source_names = ["core_trial_data", "ltcce", "ph_combined_nopt_rcm"]
 # retain all their finite observations. This is descriptive, not a fitted gate.
 yield_threshold_t_ha = 7.8
 # Host package bytes remain unchanged and are bound by the extension manifest.
-package_path = "WF/06_Reports/n_response_full"
-output_root = "WF/06_Reports/n_response_full/restricted_diagnostics/source_dataset_overlays"
+package_path = "WF/04_Reports/n_response_full"
+output_root = "WF/04_Reports/n_response_full/restricted_diagnostics/source_dataset_overlays"
 
 # Registered source/schema contract. Edit only when a source is added or its
 # evidence changes; path bindings stay with provenance metadata.
@@ -519,8 +519,8 @@ source_manifest = "WF/01_Curated_Dataset/MANIFEST.csv"
 source_checksums = "WF/01_Curated_Dataset/CHECKSUMS.sha256"
 schema_evidence = "WF/01_Curated_Dataset/03_Schema_and_Source_Evidence/Nutrient_Management_Literature_Data_Extraction_Template_Data_Dictionary.csv"
 variety_lookup = "WF/01_Curated_Dataset/02_Context_Data/Nutrient_Management_Literature_Data_Extraction_Template_Variety_Crop_Duration.csv"
-qc_root = "WF/03_Quality_Control"
-curves_root = "WF/04_Response_Curves"
-reports_root = "WF/06_Reports"
+qc_root = "WF/02_Quality_Control"
+curves_root = "WF/03_Response_Curves"
+reports_root = "WF/04_Reports"
 run_metadata_root = "WF/99_Run_Metadata"
 test_output_root = "WF/98_Test_Outputs"
