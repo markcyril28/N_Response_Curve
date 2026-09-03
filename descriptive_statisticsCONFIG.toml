@@ -384,5 +384,5 @@ ltcce_sha256 = "f8ab7c50ca51f95c596d15e5d01ba23749dce085da050db56956efb803330ef8
 # --- Paths ---
 [paths]
 base_config = "scriptCONFIG.toml"
-output_root = "WF/03_Quality_Control/descriptive_statistics"
-test_output_root = "WF/06_Reports/descriptive_statistics_test"
+output_root = "WF/02_Quality_Control/descriptive_statistics"
+test_output_root = "WF/04_Reports/descriptive_statistics_test"
