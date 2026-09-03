@@ -91,11 +91,11 @@ release_checksums_sha256 = "a1239ee59e1b0fef25d5432e18fe3abc804ad47b8fa5d9daacdd
 # --- Paths ---
 [paths]
 base_config = "scriptCONFIG.toml"
-release_package = "WF/06_Reports/n_response_full"
+release_package = "WF/04_Reports/n_response_full"
 # Canonical host for the separately signed, prioritized subtree at
 # factors/response_curve_factor_contributors/response_curve_modifier_by_dataset.
 # Full host reruns verify and carry that subtree through the same staged
 # promotion instead of deleting it.
-output_root = "WF/03_Quality_Control/grain_yield_response_diagnostics"
-test_output_root = "WF/06_Reports/grain_yield_response_diagnostics_test"
+output_root = "WF/02_Quality_Control/grain_yield_response_diagnostics"
+test_output_root = "WF/04_Reports/grain_yield_response_diagnostics_test"
 r_stage = "modules/n_response_curve/analysis/stages/grain_yield_response_mixed_models.R"
