@@ -3,7 +3,7 @@
 The promoted package under ``[paths].reports_root`` stays the single
 authoritative, checksummed deliverable. Full runs additionally project a
 deterministic subset of its *already verified* artifacts into the documented
-``WF/02``-``WF/04`` roots so downstream readers find dataset, QC, and curve
+``WF/03``-``WF/04`` roots so downstream readers find QC and curve
 outputs where the workflow documents them.
 
 Every projected file is an exact byte copy hashed against the source package's
@@ -62,13 +62,11 @@ _SOURCE_DATASET_EXTENSION_V1 = "figures/overlay/source_dataset"
 
 #: Ordered so plans, promotion, logging, and reporting all traverse identically.
 WORKSPACE_VIEW_CATEGORIES = (
-    "analysis_ready",
     "qc",
     "curves",
 )
 
 _CATEGORY_ROOT_KEYS = {
-    "analysis_ready": "analysis_ready_root",
     "qc": "qc_root",
     "curves": "curves_root",
 }
@@ -106,7 +104,17 @@ _RETAINED_ONLY_PATHS = frozenset(
 # and the per-source overlay itself is superseded by the standalone generators.
 # It is matched here, *before* _PREFIX_RULES, so the surviving ``figures/`` rule
 # cannot silently relocate it into the curves view root instead.
-_RETAINED_ONLY_PREFIXES = ("logs/", "figures/overlay/")
+# ``tables/dataset/`` and ``tables/derived/`` were retired from projection on
+# 2026-09-03 together with the ``analysis_ready`` view: the controlled package
+# under ``[paths].reports_root`` stays their single governed home. They are
+# matched here so both trees remain *recognized* -- a new dataset or derived
+# path still fails closed rather than vanishing -- while no view projects them.
+_RETAINED_ONLY_PREFIXES = (
+    "logs/",
+    "figures/overlay/",
+    "tables/dataset/",
+    "tables/derived/",
+)
 
 # Explanatory ledgers are recognized so a *new* ledger path still fails closed,
 # but they are retained only in the release root: no view projects them.
@@ -121,8 +129,6 @@ _QC_LEDGERS = frozenset({"ledgers/review_issue_ledger.json"})
 
 # (source prefix, category, target prefix) applied in order; first match wins.
 _PREFIX_RULES = (
-    ("tables/dataset/", "analysis_ready", "dataset/"),
-    ("tables/derived/", "analysis_ready", "derived/"),
     ("tables/quality/", "qc", "quality/"),
     ("tables/curves/", "curves", ""),
     ("figures/", "curves", ""),
@@ -802,7 +808,7 @@ def verify_workspace_view(target_path: str | Path) -> WorkspaceView:
 def _view_targets(config: Any, view_name: str) -> dict[str, Path]:
     """Resolve each category's live target directory.
 
-    ``curves`` is the exception: unlike ``analysis_ready``/``qc``, its root is
+    ``curves`` is the exception: unlike ``qc``, its root is
     dedicated to this view alone, so the governed ledger lives at
     ``curves_root`` directly rather than under a ``curves_root/view_name``
     subdirectory. The standalone generators' source-named directories
