@@ -1,7 +1,7 @@
 # Goal: answer "is the response-curve modifier ranking an LTCCE result?" by
 # rebuilding that screen once per registered source dataset and once on the
 # three pooled. The released bundle
-# (WF/03_Quality_Control/grain_yield_response_diagnostics) screens series-level
+# (WF/02_Quality_Control/grain_yield_response_diagnostics) screens series-level
 # covariates against fitted per-series N-response slopes on ONE population --
 # the governed core_trial_data observed-series overlay, 21 series -- because
 # the release manifest records series_count_by_source =
@@ -69,14 +69,14 @@ figure_height_inches = 6.4
 # The host grain-yield producer recognizes this exact checksummed subtree and
 # carries it through the host package's verified staged replacement.
 enabled = true
-host_package = "WF/03_Quality_Control/grain_yield_response_diagnostics"
+host_package = "WF/02_Quality_Control/grain_yield_response_diagnostics"
 placement = "factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
 
 # --- Paths ---
 [paths]
 base_config = "scriptCONFIG.toml"
-release_package = "WF/06_Reports/n_response_full"
-output_root = "WF/03_Quality_Control/grain_yield_response_diagnostics/factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
+release_package = "WF/04_Reports/n_response_full"
+output_root = "WF/02_Quality_Control/grain_yield_response_diagnostics/factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
 
 # ---------------------------------------------------------------------------
 # Datasets. Series keys are not interchangeable between these: each dataset
