@@ -2,7 +2,7 @@
 # Launcher for the descriptive-statistics companion recipe.
 #
 # The recipe profiles every registered source dataset and writes a self-verifying
-# bundle under WF/03_Quality_Control/. It never touches the promoted N-response
+# bundle under WF/02_Quality_Control/. It never touches the promoted N-response
 # release package. See descriptive_statisticsCONFIG.toml for the goal and settings.
 set -euo pipefail
 
