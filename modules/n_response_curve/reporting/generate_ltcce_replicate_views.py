@@ -48,7 +48,7 @@ SOURCE_NAME = "ltcce"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/ltcce/clusters/by_replicate"
+    / "WF/03_Response_Curves/ltcce/clusters/by_replicate"
 )
 TREATMENT_COLOURS = {"mineral N rate": "C0", "zero N": "C1"}
 CONNECTOR_LABEL = "within-trajectory connecting lines (visual aid; not a fit)"

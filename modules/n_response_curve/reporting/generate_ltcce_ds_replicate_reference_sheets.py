@@ -56,7 +56,7 @@ DEFAULT_SEASON = "DS"
 SUPPORTED_SEASONS = ("DS", "EWS", "LWS")
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 CLUSTERS_ROOT = (
-    PROJECT_ROOT / "WF/04_Response_Curves/ltcce/clusters"
+    PROJECT_ROOT / "WF/03_Response_Curves/ltcce/clusters"
 )
 OUTPUT_STEM = "decades_designs_and_trend_figure_no_description_rep"
 EXPECTED_DECADES = ("1960s", "1970s", "1980s", "1990s", "2000s", "2010s")

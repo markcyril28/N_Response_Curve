@@ -3,7 +3,7 @@
 The promoted package under ``[paths].reports_root`` stays the single
 authoritative, checksummed deliverable. Full runs additionally project a
 deterministic subset of its *already verified* artifacts into the documented
-``WF/03``-``WF/04`` roots so downstream readers find QC and curve
+``WF/02``-``WF/03`` roots so downstream readers find QC and curve
 outputs where the workflow documents them.
 
 Every projected file is an exact byte copy hashed against the source package's
@@ -106,9 +106,10 @@ _RETAINED_ONLY_PATHS = frozenset(
 # cannot silently relocate it into the curves view root instead.
 # ``tables/dataset/`` and ``tables/derived/`` were retired from projection on
 # 2026-09-03 together with the ``analysis_ready`` view: the controlled package
-# under ``[paths].reports_root`` stays their single governed home. They are
-# matched here so both trees remain *recognized* -- a new dataset or derived
-# path still fails closed rather than vanishing -- while no view projects them.
+# under ``[paths].reports_root`` stays their single governed home. Matching them
+# here is what keeps a *new* dataset or derived table from reaching the
+# unsupported-path error below: like ``tables/analysis/``, both trees are
+# recognized and deliberately retained, and no view projects any of them.
 _RETAINED_ONLY_PREFIXES = (
     "logs/",
     "figures/overlay/",
@@ -961,9 +962,9 @@ class _WorkspaceLayout:
 
 
 def _target_set_fingerprint(targets: Mapping[str, Path]) -> str:
-    """Canonical identity of the three resolved live targets, order-independent.
+    """Canonical identity of the two resolved live targets, order-independent.
 
-    Two configurations naming the same three directories -- however they spell
+    Two configurations naming the same two directories -- however they spell
     them, and whatever ``run_metadata_root`` they declare -- produce the same
     fingerprint and therefore contend on the same lock.
     """
@@ -1794,7 +1795,7 @@ def _authorize_recovery_candidates(
     to write a view target can write a journal naming it. Its say-so is
     therefore never authority to destroy what is at those paths now. This runs
     before the commit-or-roll-back fork and is all-or-nothing: it either clears
-    all nine candidates or raises having touched none of them, leaving the
+    all six candidates or raises having touched none of them, leaving the
     journal in place for an operator to adjudicate.
     """
 
@@ -1993,7 +1994,7 @@ def _recover_workspace_transaction(
     trusted_attestations: Mapping[str, str],
     force_rollback: bool = False,
 ) -> str | None:
-    """Commit or roll back an interrupted three-view transaction as one set.
+    """Commit or roll back an interrupted two-view transaction as one set.
 
     ``force_rollback`` skips commit detection. It is used when the caller knows
     the promoted set must be undone even though it verifies -- notably when the
@@ -2048,7 +2049,7 @@ def _recover_workspace_transaction(
             committed_live_set = True
     else:
         # The journal belongs to an earlier generation than the package now being
-        # projected. The live set counts as committed only if all three views are
+        # projected. The live set counts as committed only if both views are
         # structurally owned and consistently bound to *that* journal's source.
         live_bindings: set[tuple[str, str, str, str]] = set()
         expected_plan = plan_workspace_views(recovery_package)
@@ -2429,7 +2430,7 @@ def _materialize_workspace_views_locked(
         # whose bytes and inventory still hash to one of these, so the journal
         # authorizes exactly the two states this run observed and nothing an
         # operator put there. Taken inside the staging guard: a fingerprint that
-        # cannot be taken unwinds the stages rather than stranding three complete
+        # cannot be taken unwinds the stages rather than stranding two complete
         # ones that no journal explains and the next run refuses to reap.
         category_records = {
             category: {

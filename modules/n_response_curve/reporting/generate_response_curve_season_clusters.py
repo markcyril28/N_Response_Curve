@@ -161,7 +161,7 @@ from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/ltcce/clusters/by_season"
+    / "WF/03_Response_Curves/ltcce/clusters/by_season"
 )
 SOURCE_NAME = "ltcce"
 

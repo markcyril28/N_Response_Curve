@@ -47,7 +47,7 @@ from n_response_curve.reporting.source_dataset_overlays import (  # noqa: E402
 SOURCE_NAME = "ltcce"
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves"
+    / "WF/03_Response_Curves"
     / "ltcce/clusters/by_planting_year"
 )
 KNOWN_DECADES = ("1960s", "1970s", "1980s", "1990s", "2000s", "2010s")

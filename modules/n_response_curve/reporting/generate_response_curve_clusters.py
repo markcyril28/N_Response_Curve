@@ -75,7 +75,7 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
 # in parallel subdirectories makes ownership and regeneration unambiguous.
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
-    / "WF/04_Response_Curves/ltcce/clusters/by_trajectory"
+    / "WF/03_Response_Curves/ltcce/clusters/by_trajectory"
 )
 SOURCE_NAME = "ltcce"
 

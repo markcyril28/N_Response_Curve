@@ -74,7 +74,7 @@ from n_response_curve.reporting import descriptive_statistics_figures as dsf  # 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "descriptive_statisticsCONFIG.toml"
 # A sibling of the governed bundle, never inside it: the bundle verifies its own
 # contents against CHECKSUMS, and a stray figure under its tree fails that check.
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "WF/03_Quality_Control/descriptive_statistics_fits"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "WF/02_Quality_Control/descriptive_statistics_fits"
 
 # The governed PH NOPT rows carry no zero-N arm in this observation basis:
 # ``n0_yield`` is a sibling column that ``build_observation_frame`` deliberately

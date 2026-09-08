@@ -60,7 +60,7 @@ from n_response_curve.reporting.figure_output import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "scriptCONFIG.toml"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/04_Response_Curves"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "WF/03_Response_Curves"
 DEFAULT_YIELD_THRESHOLD_T_HA = 7.8
 DEFAULT_ZERO_N_YIELD_THRESHOLD_T_HA = 5.0
 DEFAULT_N_RATE_THRESHOLD_KG_HA = 250.0
@@ -126,26 +126,38 @@ def _load_governed_core_inputs(
     *,
     yield_threshold_t_ha: float,
     require_yield_selection: bool = True,
+    package_path: Path | None = None,
 ) -> GovernedCoreOverlayInputs:
-    """Load the exact governed core-series membership used by configured overlays."""
+    """Load the exact governed core-series membership used by configured overlays.
 
-    with config_path.open("rb") as handle:
-        config = tomllib.load(handle)
-    custom_plots = config.get("custom_overlays")
-    if not isinstance(custom_plots, dict):
-        custom_plots = config.get("custom_plots")
-    if not isinstance(custom_plots, dict):
-        raise ValueError(
-            "The configuration must contain a [custom_overlays] or [custom_plots] table"
-        )
-    raw_package_path = custom_plots.get("package_path")
-    if not isinstance(raw_package_path, str) or not raw_package_path.strip():
-        raise ValueError("The custom-overlay package_path must be a nonempty string")
-    package = Path(raw_package_path)
-    if not package.is_absolute():
-        package = config_path.resolve().parent / package
-    package = package.resolve()
+    *package_path* overrides the ``[custom_overlays].package_path`` binding, for
+    operators reading a package that has been moved out of the configured
+    release target. It is resolved and containment-checked exactly as the
+    configured path is, and the manifest and ledger it names are still verified
+    against the package's own ``CHECKSUMS.sha256``: this relocates the input,
+    it does not relax the binding.
+    """
+
     project_root = config_path.resolve().parent
+    if package_path is None:
+        with config_path.open("rb") as handle:
+            config = tomllib.load(handle)
+        custom_plots = config.get("custom_overlays")
+        if not isinstance(custom_plots, dict):
+            custom_plots = config.get("custom_plots")
+        if not isinstance(custom_plots, dict):
+            raise ValueError(
+                "The configuration must contain a [custom_overlays] or [custom_plots] table"
+            )
+        raw_package_path = custom_plots.get("package_path")
+        if not isinstance(raw_package_path, str) or not raw_package_path.strip():
+            raise ValueError("The custom-overlay package_path must be a nonempty string")
+        package = Path(raw_package_path)
+    else:
+        package = Path(package_path)
+    if not package.is_absolute():
+        package = project_root / package
+    package = package.resolve()
     try:
         package.relative_to(project_root)
     except ValueError as exc:

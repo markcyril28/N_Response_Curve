@@ -77,7 +77,7 @@ from .source_display_names import display_source_name  # noqa: E402
 SCHEMA_VERSION = "response-curve-modifier-by-dataset-v3"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CANONICAL_HOST_PACKAGE = (
-    PROJECT_ROOT / "WF/03_Quality_Control/grain_yield_response_diagnostics"
+    PROJECT_ROOT / "WF/02_Quality_Control/grain_yield_response_diagnostics"
 ).resolve()
 CANONICAL_EXTENSION_PLACEMENT = (
     "factors/response_curve_factor_contributors/response_curve_modifier_by_dataset"
@@ -331,7 +331,7 @@ def load_config(config_path: Path) -> RecipeConfig:
         extension_enabled=bool(extension.get("enabled", False)),
         extension_host_package=(
             project_root
-            / str(extension.get("host_package", "WF/03_Quality_Control/grain_yield_response_diagnostics"))
+            / str(extension.get("host_package", "WF/02_Quality_Control/grain_yield_response_diagnostics"))
         ).resolve(),
         extension_placement=str(
             extension.get(
