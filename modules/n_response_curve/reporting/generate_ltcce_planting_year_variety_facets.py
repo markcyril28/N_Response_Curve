@@ -71,6 +71,7 @@ from n_response_curve.reporting.figure_output import (  # noqa: E402
     save_figure_atomically as _save_figure,
 )
 from n_response_curve.reporting.generate_ltcce_planting_year_variety_lines import (  # noqa: E402
+    DEFAULT_REPLICATE,
     README_FILENAME,
     VARIETY_LINES_DIRNAME,
     _AXES_INCHES,
@@ -78,16 +79,27 @@ from n_response_curve.reporting.generate_ltcce_planting_year_variety_lines impor
     _OVERLAY_TITLE_WIDTH,
     _UNRECORDED_VARIETY_LABEL,
     _draw_variety_lines,
-    _stratum_varieties,
+    _varieties_present,
     _variety_colours,
     _variety_handles,
     _variety_of,
+    check_replicate,
+    drawn_ids,
+    drawn_member_count,
+    recorded_replicates,
+    replicate_headline,
+    replicate_readme_section,
+    replicate_scope_lines,
 )
 from n_response_curve.reporting.generate_response_curve_season_clusters import (  # noqa: E402
     PLANTING_YEAR_ANNOTATED_DIRNAME,
+    PLANTING_YEAR_FIGURE_ONLY_DIRNAME,
+    SEPARATED_NOTES_FILENAME,
+    _SEPARATED_FIGURE_SUFFIX,
     _factor_agreement_lines,
     _promote,
     _season_token,
+    _separated_footer_line,
 )
 from n_response_curve.reporting.response_curve_clusters import (  # noqa: E402
     TrajectoryContext,
@@ -207,13 +219,18 @@ def _variety_definition() -> Any:
 
 
 def _variety_members(
-    stratum: FactorStratum,
+    trajectory_ids: Sequence[str],
     contexts: Mapping[str, TrajectoryContext],
 ) -> dict[str, tuple[str, ...]]:
-    """Trajectory ids of one stratum, split by recorded variety."""
+    """The drawn trajectories of one stratum, split by recorded variety.
+
+    Takes ids rather than the stratum because `--replicate` keeps a quarter of
+    it, and the panel count, the panel titles and the trajectory-count ordering
+    all have to describe what is on the canvas.
+    """
 
     grouped: dict[str, list[str]] = collections.defaultdict(list)
-    for trajectory_id in stratum.trajectory_ids:
+    for trajectory_id in trajectory_ids:
         grouped[_variety_of(contexts, trajectory_id)].append(trajectory_id)
     return {variety: tuple(ids) for variety, ids in grouped.items()}
 
@@ -307,26 +324,63 @@ def _variety_facts(
     return year_text, ladders, centroid_text
 
 
-def _variety_title_lines(
+def _variety_identity_lines(
     result: SeasonClusteringResult,
     substructure: FactorSubstructure,
     stratum: FactorStratum,
+    stratum_ids: Sequence[str],
     variety: str,
     variety_ids: Sequence[str],
-    agreement_lines: Sequence[str],
-    with_backdrop: bool,
+    replicate: str | None,
 ) -> list[str]:
+    """What identifies this panel and what it measures — and nothing else.
+
+    The half a plates-only figure keeps: a per-variety plate carries its own
+    numbers in its caption and nowhere else, so stripping them would leave a
+    figure that cannot be read at all.
+    """
+
     definition = substructure.definition
     year_text, ladders, centroid_text = _variety_facts(result, variety_ids)
-    share = len(variety_ids) / len(stratum.trajectory_ids)
-    lines = [
+    share = len(variety_ids) / len(stratum_ids) if stratum_ids else 0.0
+    return [
         f"source={SOURCE_NAME} — {season_label(substructure.season)}, "
-        f"{definition.level_title(stratum.level)} — variety {variety}",
-        f"{len(variety_ids)} of this decade's {len(stratum.trajectory_ids)} "
+        f"{definition.level_title(stratum.level)} — variety "
+        f"{variety}{replicate_headline(replicate)}",
+        f"{len(variety_ids)} of this decade's {len(stratum_ids)} drawn "
         f"cluster-eligible trajectories ({100 * share:.0f}%); {year_text}",
         f"applied-N ladders: {ladders}",
         centroid_text,
     ]
+
+
+def _variety_interpretive_lines(
+    substructure: FactorSubstructure,
+    stratum: FactorStratum,
+    agreement_lines: Sequence[str],
+    with_backdrop: bool,
+    replicate: str | None,
+    recorded: Sequence[str],
+    *,
+    generic_level: bool = False,
+) -> list[str]:
+    """The half that moves off the plate and into the notes file.
+
+    The grey backdrop keeps its own entry in the *legend* either way, so the
+    plates-only figure still says what the grey is; what moves is the sentence
+    about what it is not.
+
+    `generic_level` writes the stratum line to stand for every figure in the
+    family rather than for one decade. The notes file sets these disclosures
+    once beneath a table of six folders, and a line naming the 1960s under a
+    table whose last row is the 2010s is simply wrong. Asking for the generic
+    form here — rather than editing the list afterwards by index — keeps the
+    two forms one list, so a change to a disclosure reaches the figure and the
+    notes together.
+    """
+
+    definition = substructure.definition
+    lines: list[str] = []
     if with_backdrop:
         lines.append(
             "grey: the rest of the decade, drawn for scale only — it is not "
@@ -334,8 +388,17 @@ def _variety_title_lines(
         )
     lines += [
         _COLOUR_SOURCE_LINE,
-        f"recorded stratum, not a cluster: every trajectory here carries "
-        f"{definition.source_column}={stratum.level!r} in the source",
+        (
+            "every figure here sits inside a recorded stratum, not a cluster: "
+            f"its trajectories are the ones the source's "
+            f"{definition.source_column} column assigns to that decade, and "
+            "nothing was clustered to produce it"
+            if generic_level
+            else "recorded stratum, not a cluster: every trajectory here "
+            f"carries {definition.source_column}={stratum.level!r} in the "
+            "source"
+        ),
+        *replicate_scope_lines(replicate, recorded),
         definition.identity_caveat,
         *agreement_lines,
         _DISCLAIMER,
@@ -344,27 +407,32 @@ def _variety_title_lines(
 
 
 def _write_variety_figure(
-    result: SeasonClusteringResult,
     overlay: SourceDatasetOverlay,
-    substructure: FactorSubstructure,
-    stratum: FactorStratum,
+    stratum_ids: Sequence[str],
     contexts: Mapping[str, TrajectoryContext],
     colours: Mapping[str, tuple[float, ...]],
     variety: str,
     variety_ids: Sequence[str],
     destination: Path,
     limits: SharedAxisLimits,
-    agreement_lines: Sequence[str],
+    title_lines: Sequence[str],
     with_backdrop: bool,
 ) -> None:
-    """One variety of one decade, alone on the season's shared frame."""
+    """One variety of one decade, alone on the season's shared frame.
+
+    The caption arrives assembled, so one function draws both the annotated
+    plate and its plates-only twin and the two cannot come out on different
+    canvases. The backdrop is drawn from the *drawn* stratum, not the whole
+    one: a grey four times denser than the variety in front of it would put
+    the replication back on a figure that exists to have it taken out.
+    """
 
     figure = plt.figure(figsize=_AXES_INCHES, constrained_layout=True)
     try:
         axes = figure.add_subplot(1, 1, 1)
         background = [
             trajectory_id
-            for trajectory_id in stratum.trajectory_ids
+            for trajectory_id in stratum_ids
             if trajectory_id not in set(variety_ids)
         ]
         if with_backdrop:
@@ -374,18 +442,7 @@ def _write_variety_figure(
         scatter_handles = _draw_variety_lines(subset, contexts, colours, axes)
         limits.apply(axes)
         axes.set_title(
-            _wrap_title_lines(
-                _variety_title_lines(
-                    result,
-                    substructure,
-                    stratum,
-                    variety,
-                    variety_ids,
-                    agreement_lines,
-                    with_backdrop and bool(background),
-                ),
-                width=_OVERLAY_TITLE_WIDTH,
-            ),
+            _wrap_title_lines(title_lines, width=_OVERLAY_TITLE_WIDTH),
             fontsize=_TITLE_FONT_SIZE,
         )
         handles: list[Any] = [*scatter_handles, *_variety_handles([variety], colours)]
@@ -423,20 +480,66 @@ def _by_trajectory_count(
     )
 
 
+def _sheet_identity_lines(
+    substructure: FactorSubstructure,
+    stratum: FactorStratum,
+    stratum_ids: Sequence[str],
+    varieties: Sequence[str],
+    order_line: str,
+    replicate: str | None,
+) -> list[str]:
+    """What the sheet is, what is on it, and how its panels are ordered.
+
+    The order line is identity, not interpretation, and stays on the plate: a
+    sheet that does not say how it is ordered invites the reader to find
+    meaning in the sequence, and on one of the two orders that meaning is real.
+    """
+
+    definition = substructure.definition
+    return [
+        f"source={SOURCE_NAME} — {season_label(substructure.season)}, "
+        f"{definition.level_title(stratum.level)}: "
+        f"{len(varieties)} varieties side by "
+        f"side{replicate_headline(replicate)}",
+        f"the {len(stratum_ids)} drawn cluster-eligible trajectories of this "
+        "decade, split by the variety the source records; the panels share "
+        "both axes",
+        order_line,
+    ]
+
+
+def _sheet_interpretive_lines(
+    substructure: FactorSubstructure,
+    agreement_lines: Sequence[str],
+    replicate: str | None,
+    recorded: Sequence[str],
+) -> list[str]:
+    """The sheet's half that moves into the notes file."""
+
+    return [
+        _COLOUR_SOURCE_LINE,
+        "a variety here is not a treatment: it arrives with the year it was "
+        "grown, the plot design of the day and that year's applied-N ladder, "
+        "so a difference between panels is a difference between experiments",
+        *replicate_scope_lines(replicate, recorded),
+        substructure.definition.identity_caveat,
+        *agreement_lines,
+        _DISCLAIMER,
+    ]
+
+
 def _write_side_by_side(
     result: SeasonClusteringResult,
     overlay: SourceDatasetOverlay,
-    substructure: FactorSubstructure,
-    stratum: FactorStratum,
+    stratum_ids: Sequence[str],
     contexts: Mapping[str, TrajectoryContext],
     colours: Mapping[str, tuple[float, ...]],
     members: Mapping[str, tuple[str, ...]],
     varieties: Sequence[str],
     destination: Path,
     limits: SharedAxisLimits,
-    agreement_lines: Sequence[str],
+    suptitle_lines: Sequence[str],
     with_backdrop: bool,
-    order_line: str,
 ) -> None:
     """Every variety of one decade as its own panel, in one image.
 
@@ -448,29 +551,12 @@ def _write_side_by_side(
 
     if not varieties:
         return
-    definition = substructure.definition
     columns = min(_PANEL_MAX_COLUMNS, len(varieties))
     rows = math.ceil(len(varieties) / columns)
     panel_width, panel_height = _PANEL_INCHES
 
     suptitle = _wrap_title_lines(
-        [
-            f"source={SOURCE_NAME} — {season_label(substructure.season)}, "
-            f"{definition.level_title(stratum.level)}: "
-            f"{len(varieties)} varieties side by side",
-            f"the {len(stratum.trajectory_ids)} cluster-eligible "
-            "trajectories of this decade, split by the variety the "
-            "source records; the panels share both axes",
-            order_line,
-            _COLOUR_SOURCE_LINE,
-            "a variety here is not a treatment: it arrives with the "
-            "year it was grown, the plot design of the day and that "
-            "year's applied-N ladder, so a difference between panels "
-            "is a difference between experiments",
-            definition.identity_caveat,
-            *agreement_lines,
-            _DISCLAIMER,
-        ],
+        suptitle_lines,
         width=_SHEET_TITLE_CHARS_PER_COLUMN * columns,
     )
     # The suptitle and the legend are both reserved out of the canvas, so the
@@ -504,7 +590,7 @@ def _write_side_by_side(
             variety_ids = members[variety]
             background = [
                 trajectory_id
-                for trajectory_id in stratum.trajectory_ids
+                for trajectory_id in stratum_ids
                 if trajectory_id not in set(variety_ids)
             ]
             if with_backdrop:
@@ -574,20 +660,25 @@ def _readme_lines(
     substructure: FactorSubstructure,
     contexts: Mapping[str, TrajectoryContext],
     colours: Mapping[str, tuple[float, ...]],
+    drawn: Mapping[str, Sequence[str]],
     counts: Mapping[str, int],
     season: str,
     figure_count: int,
     minimum_stratum: int,
     with_backdrop: bool,
+    replicate: str | None,
+    recorded: Sequence[str],
 ) -> list[str]:
     adjective = season_label(season)
     lines = [
         f"# {adjective} — each planting decade split into one figure per variety",
         "",
         f"`../{VARIETY_LINES_DIRNAME}/<decade>.jpeg` draws a whole decade on one "
-        "axes with every connector in its variety's colour. At 26 varieties over "
-        "240 trajectories that plate shows the tangle and little else. Here the "
-        "same decades are drawn again, split:",
+        "axes with every connector in its variety's colour. At "
+        f"{max(counts.values(), default=0)} varieties over "
+        f"{max((len(ids) for ids in drawn.values()), default=0)} trajectories "
+        "the busiest of those plates shows the tangle and little else. Here "
+        "the same decades are drawn again, split:",
         "",
         "- `<decade>/<variety>.jpeg` — one variety alone on the season's shared "
         "frame.",
@@ -612,8 +703,11 @@ def _readme_lines(
         "That holds only while both recipes are run with the same "
         f"`--min-factor-stratum` (this run: {minimum_stratum}). The floor decides "
         "which strata exist, the strata decide the roster, and the roster is what "
-        "the colours are allocated over.",
+        "the colours are allocated over. `--replicate` does not enter into it — "
+        "it filters after the allocation — but the two products only draw the "
+        "same lines when they are given the same value, so run them together.",
         "",
+        *replicate_readme_section(replicate, recorded),
     ]
     if with_backdrop:
         lines += [
@@ -632,10 +726,12 @@ def _readme_lines(
     lines += ["## What is here", ""]
     for stratum in substructure.strata:
         stem = factor_level_stem(substructure.definition, stratum.level)
-        varieties = _stratum_varieties(stratum, contexts, colours)
+        ids = drawn[stratum.level]
+        varieties = _varieties_present(ids, contexts, colours)
         lines.append(
             f"- `{stem}/` — {counts.get(stem, 0)} varieties over "
-            f"{len(stratum.trajectory_ids)} trajectories, one figure each plus "
+            f"{len(ids)} drawn trajectories of the stratum's "
+            f"{len(stratum.trajectory_ids)}, one figure each plus "
             f"the two `side_by_side*` sheets."
             + (
                 " Includes trajectories whose variety the source does not record."
@@ -650,6 +746,17 @@ def _readme_lines(
         "close to calendar order, and that is the confounding the caveat on every "
         "figure is about. A filename with no year is a breeding-line designation "
         "with no release year on record.",
+        "",
+        "## The plates-only twin",
+        "",
+        "Every figure here also exists under "
+        f"`../../{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/{FACET_DIRNAME}/` as "
+        f"`<decade>/<stem>{_SEPARATED_FIGURE_SUFFIX}`: the same canvas with the "
+        "interpretive half of the caption lifted off and set in "
+        f"`{SEPARATED_NOTES_FILENAME}` at the root of that folder. Use these "
+        "annotated figures when one has to travel alone, and that folder when "
+        "the prose belongs in the surrounding document. `--no-separate-notes` "
+        "suppresses the whole folder.",
         "",
         "## Interpretation boundary",
         "",
@@ -666,8 +773,12 @@ def _readme_lines(
         "conda run -n n_response python \\",
         "  modules/n_response_curve/reporting/"
         "generate_ltcce_planting_year_variety_facets.py \\",
-        f"  --config scriptCONFIG.toml --season {season}",
+        f"  --config scriptCONFIG.toml --season {season}"
+        + ("" if replicate is None else f" --replicate {replicate}"),
         "```",
+        "",
+        "One run writes this folder and its plates-only twin together, so the "
+        "two can never come from different replicate or stratum settings.",
         "",
         "The strata are recomputed from the source on every run, so re-run this "
         "after any run of `generate_response_curve_season_clusters.py`, which "
@@ -691,6 +802,122 @@ def _readme_lines(
     return lines
 
 
+def _notes_lines(
+    substructure: FactorSubstructure,
+    decade_rows: Sequence[Mapping[str, Any]],
+    shared_prose: Sequence[str],
+    season: str,
+    replicate: str | None,
+    recorded: Sequence[str],
+    with_backdrop: bool,
+) -> list[str]:
+    """The prose the `*_figure.jpeg` figures in `figure_only/` no longer carry.
+
+    One file at the root rather than one per decade folder: every figure in
+    every decade carries the same disclosures and differs only in its numbers,
+    and six near-identical files would be six things to keep in step instead of
+    one. The numbers stay on the figures, where they belong; what is here is
+    the table that lets a reader find a figure, and the reading it needs.
+
+    Built from the same line lists the annotated captions are built from — see
+    :func:`_variety_interpretive_lines` and :func:`_sheet_interpretive_lines` —
+    so a figure and its notes cannot disagree.
+    """
+
+    annotated_root = f"../../{PLANTING_YEAR_ANNOTATED_DIRNAME}/{FACET_DIRNAME}"
+    lines = [
+        f"# {season_label(season)} — each planting decade split into one figure "
+        "per variety: notes for the separated figures",
+        "",
+        f"{_DISCLAIMER[0].upper()}{_DISCLAIMER[1:]}.",
+        "",
+        f"These notes belong to every `*{_SEPARATED_FIGURE_SUFFIX}` under this "
+        "folder's decade directories. Each of those carries its identity, its "
+        "own measurements and its legend and nothing else; everything about "
+        "how to read them, and what not to conclude from them, is here. Every "
+        f"figure also exists under `{annotated_root}/` in an annotated form "
+        "that sets the same text on its own face, for when a figure has to "
+        "travel alone.",
+        "",
+        "## What is in each decade folder",
+        "",
+        f"- `<variety>{_SEPARATED_FIGURE_SUFFIX}` — one variety alone on the "
+        "season's shared frame.",
+        f"- `{Path(SIDE_BY_SIDE_FILENAME).stem}{_SEPARATED_FIGURE_SUFFIX}` — "
+        "those same panels in one image, in planting order.",
+        f"- `{Path(TRAJECTORY_COUNT_FILENAME).stem}"
+        f"{_SEPARATED_FIGURE_SUFFIX}` — the same sheet ordered by trajectory "
+        "count, largest first; ties keep the planting order. Each sheet says "
+        "on its own face which order it is in, because on one of the two that "
+        "order carries meaning and on the other it carries none.",
+        "",
+        *replicate_readme_section(replicate, recorded),
+    ]
+
+    if with_backdrop:
+        lines += [
+            "## The grey behind each variety",
+            "",
+            "The rest of the decade is drawn behind the variety in light grey, "
+            "and the legend on every figure names it. It is context, not a "
+            "comparison group, and it is a lighter grey than the one "
+            f"`../{VARIETY_LINES_DIRNAME}/` gives a variety the source does "
+            "not name — that grey is a variety, this one never is. It is drawn "
+            "from the same replicate as the variety in front of it.",
+            "",
+        ]
+
+    if decade_rows:
+        lines += [
+            f"## The {len(decade_rows)} decade folders",
+            "",
+            "| Folder | Level | Varieties | Trajectories drawn | Years | "
+            "Figures |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for row in decade_rows:
+            lines.append(
+                f"| `{row['folder']}/` | {row['level']} | {row['varieties']} | "
+                f"{row['count']} of the stratum's {row['stratum_count']} | "
+                f"{row['years']} | {row['figures']} |"
+            )
+        lines.append("")
+        if shared_prose:
+            lines += ["### True of every figure in every folder", ""]
+            lines += [f"- {entry[0].upper()}{entry[1:]}" for entry in shared_prose]
+            lines.append("")
+
+    lines += [
+        "A released variety's filename carries its release year in front, so a "
+        "decade folder lists in release order — which for this experiment is "
+        "close to calendar order, and that is the confounding the caveat on "
+        "every figure is about. A filename with no year is a breeding-line "
+        "designation with no release year on record.",
+        "",
+        "## Regenerating",
+        "",
+        "Written by `generate_ltcce_planting_year_variety_facets.py` as the "
+        f"`{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/` companion to "
+        f"`{annotated_root}/`, in the same run; `--no-separate-notes` "
+        "suppresses this file and every figure beside it.",
+        "",
+        "```bash",
+        "conda run -n n_response python \\",
+        "  modules/n_response_curve/reporting/"
+        "generate_ltcce_planting_year_variety_facets.py \\",
+        f"  --config scriptCONFIG.toml --season {season}"
+        + ("" if replicate is None else f" --replicate {replicate}"),
+        "```",
+        "",
+        "Because a decade is itself a directory here, a decade folder from an "
+        "earlier run that is no longer a stratum is *carried across* rather "
+        "than removed. The run prints every directory it carries; a carried "
+        "decade is stale output, and deleting it is the operator's call.",
+        "",
+    ]
+    return lines
+
+
 def default_output_dir(season: str) -> Path:
     """The faceted folder beside that season's `lines_by_variety/`."""
 
@@ -700,6 +927,24 @@ def default_output_dir(season: str) -> Path:
         / _season_token(season)
         / "by_planting_year"
         / PLANTING_YEAR_ANNOTATED_DIRNAME
+        / FACET_DIRNAME
+    )
+
+
+def figure_only_output_dir(season: str) -> Path:
+    """The plates-only twin, under the season's `figure_only/` tier.
+
+    A sibling of `figure_only/lines_by_variety/` and of the season generator's
+    own separated plates: `figure_only/` is a presentation tier, and a reader
+    who wants figures without prose wants all of them in one place.
+    """
+
+    return (
+        CLUSTERS_ROOT
+        / "by_season"
+        / _season_token(season)
+        / "by_planting_year"
+        / PLANTING_YEAR_FIGURE_ONLY_DIRNAME
         / FACET_DIRNAME
     )
 
@@ -717,7 +962,15 @@ def _parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help=f"Destination (default: that season's annotated/{FACET_DIRNAME}/)",
+        help="Destination for the annotated figures (default: that season's "
+        f"annotated/{FACET_DIRNAME}/)",
+    )
+    parser.add_argument(
+        "--figure-only-dir",
+        type=Path,
+        default=None,
+        help="Destination for the plates-only twin (default: that season's "
+        f"{PLANTING_YEAR_FIGURE_ONLY_DIRNAME}/{FACET_DIRNAME}/)",
     )
     parser.add_argument(
         "--min-factor-stratum",
@@ -733,9 +986,28 @@ def _parse_args() -> argparse.Namespace:
         help="Draw each variety alone, without the rest of its decade in grey",
     )
     parser.add_argument(
+        "--replicate",
+        default=DEFAULT_REPLICATE,
+        help="Draw only the trajectories the source records under this Rep "
+        f"value (default: {DEFAULT_REPLICATE}). Must match the value "
+        f"`{VARIETY_LINES_DIRNAME}/` was written with, or the two products "
+        "draw different lines for the same variety",
+    )
+    parser.add_argument(
+        "--all-replicates",
+        action="store_true",
+        help="Draw every recorded replicate, as this recipe originally did",
+    )
+    parser.add_argument(
         "--no-side-by-side",
         action="store_true",
         help="Write the per-variety figures only, without the per-decade sheet",
+    )
+    parser.add_argument(
+        "--no-separate-notes",
+        action="store_true",
+        help="Write the annotated figures only, without the plates-only twin "
+        f"and its {SEPARATED_NOTES_FILENAME}",
     )
     return parser.parse_args()
 
@@ -744,7 +1016,9 @@ def main() -> int:
     args = _parse_args()
     season = args.season.strip().upper()
     destination = (args.output_dir or default_output_dir(season)).resolve()
+    figure_only = (args.figure_only_dir or figure_only_output_dir(season)).resolve()
     with_backdrop = not args.no_backdrop
+    separate_notes = not args.no_separate_notes
 
     source_path, encoding = load_source_spec(
         args.config, SOURCE_NAME, relative_root=PROJECT_ROOT
@@ -764,9 +1038,19 @@ def main() -> int:
         minimum_stratum=args.min_factor_stratum,
     )
 
+    replicate = None if args.all_replicates else args.replicate.strip()
+    check_replicate(substructure, contexts, replicate)
+    recorded = recorded_replicates(substructure, contexts)
+    drawn = {
+        stratum.level: drawn_ids(stratum.trajectory_ids, contexts, replicate)
+        for stratum in substructure.strata
+    }
+    member_count = drawn_member_count(substructure, contexts, replicate)
+
     # Pinned from the parent overlay before any subsetting, exactly as the
     # season generator and `lines_by_variety/` do, so every panel here shares
-    # that frame.
+    # that frame. The colours come from the whole season for the same reason
+    # they do there: a variety keeps one colour whatever is filtered out.
     limits = shared_axis_limits(overlay)
     colours = _variety_colours(substructure, contexts)
     agreement_lines = _factor_agreement_lines(substructure)
@@ -774,33 +1058,95 @@ def main() -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.with_name(f".{destination.name}.staging.{uuid.uuid4().hex}")
     staging.mkdir()
+    notes_staging = figure_only.with_name(
+        f".{figure_only.name}.staging.{uuid.uuid4().hex}"
+    )
+    if separate_notes:
+        figure_only.parent.mkdir(parents=True, exist_ok=True)
+        notes_staging.mkdir()
     figure_count = 0
+    separated_count = 0
     counts: dict[str, int] = {}
-    reported: list[tuple[str, int, int]] = []
+    reported: list[tuple[str, int, int, int]] = []
+    decade_rows: list[dict[str, Any]] = []
+    # Set once, from the generic form of the disclosures every figure carries.
+    # `with_backdrop=False` because the notes file gives the grey its own
+    # section; the trailing entry is the disclaimer, which stays on every
+    # figure and opens the notes file.
+    shared_prose = _variety_interpretive_lines(
+        substructure,
+        substructure.strata[0],
+        agreement_lines,
+        False,
+        replicate,
+        recorded,
+        generic_level=True,
+    )[:-1]
     try:
         for stratum in substructure.strata:
             decade_stem = factor_level_stem(substructure.definition, stratum.level)
             decade_dir = staging / decade_stem
             decade_dir.mkdir()
-            members = _variety_members(stratum, contexts)
-            varieties = _stratum_varieties(stratum, contexts, colours)
+            separated_dir = notes_staging / decade_stem
+            if separate_notes:
+                separated_dir.mkdir()
+            stratum_ids = drawn[stratum.level]
+            members = _variety_members(stratum_ids, contexts)
+            varieties = _varieties_present(stratum_ids, contexts, colours)
             stems = _variety_stems(varieties)
+            decade_figures = 0
             for variety in varieties:
-                _write_variety_figure(
+                identity = _variety_identity_lines(
                     result,
-                    overlay,
                     substructure,
                     stratum,
+                    stratum_ids,
+                    variety,
+                    members[variety],
+                    replicate,
+                )
+                # The backdrop caveat belongs on a figure only when there is a
+                # backdrop to caveat, which a variety that *is* its whole
+                # decade does not have.
+                background = set(stratum_ids) - set(members[variety])
+                interpretive = _variety_interpretive_lines(
+                    substructure,
+                    stratum,
+                    agreement_lines,
+                    with_backdrop and bool(background),
+                    replicate,
+                    recorded,
+                )
+                _write_variety_figure(
+                    overlay,
+                    stratum_ids,
                     contexts,
                     colours,
                     variety,
                     members[variety],
                     decade_dir / f"{stems[variety]}.jpeg",
                     limits,
-                    agreement_lines,
+                    [*identity, *interpretive],
                     with_backdrop,
                 )
                 figure_count += 1
+                decade_figures += 1
+                if separate_notes:
+                    _write_variety_figure(
+                        overlay,
+                        stratum_ids,
+                        contexts,
+                        colours,
+                        variety,
+                        members[variety],
+                        separated_dir
+                        / f"{stems[variety]}{_SEPARATED_FIGURE_SUFFIX}",
+                        limits,
+                        [*identity, _separated_footer_line()],
+                        with_backdrop,
+                    )
+                    separated_count += 1
+
             if not args.no_side_by_side:
                 sheets = (
                     (SIDE_BY_SIDE_FILENAME, varieties, _ROSTER_ORDER_LINE),
@@ -811,63 +1157,146 @@ def main() -> int:
                     ),
                 )
                 for filename, ordered, order_line in sheets:
+                    identity = _sheet_identity_lines(
+                        substructure,
+                        stratum,
+                        stratum_ids,
+                        ordered,
+                        order_line,
+                        replicate,
+                    )
+                    interpretive = _sheet_interpretive_lines(
+                        substructure, agreement_lines, replicate, recorded
+                    )
                     _write_side_by_side(
                         result,
                         overlay,
-                        substructure,
-                        stratum,
+                        stratum_ids,
                         contexts,
                         colours,
                         members,
                         ordered,
                         decade_dir / filename,
                         limits,
-                        agreement_lines,
+                        [*identity, *interpretive],
                         with_backdrop,
-                        order_line,
                     )
                     figure_count += 1
+                    decade_figures += 1
+                    if separate_notes:
+                        _write_side_by_side(
+                            result,
+                            overlay,
+                            stratum_ids,
+                            contexts,
+                            colours,
+                            members,
+                            ordered,
+                            separated_dir
+                            / f"{Path(filename).stem}"
+                            f"{_SEPARATED_FIGURE_SUFFIX}",
+                            limits,
+                            [*identity, _separated_footer_line()],
+                            with_backdrop,
+                        )
+                        separated_count += 1
+
             counts[decade_stem] = len(varieties)
-            reported.append(
-                (stratum.level, len(stratum.trajectory_ids), len(varieties))
+            years = cluster_year_range(stratum_ids, result.contexts)
+            decade_rows.append(
+                {
+                    "folder": decade_stem,
+                    "level": substructure.definition.level_title(stratum.level),
+                    "varieties": len(varieties),
+                    "count": len(stratum_ids),
+                    "stratum_count": len(stratum.trajectory_ids),
+                    "years": (
+                        f"{years[0]}-{years[1]}" if years else "years unknown"
+                    ),
+                    "figures": decade_figures,
+                }
             )
+            reported.append(
+                (
+                    stratum.level,
+                    len(stratum_ids),
+                    len(stratum.trajectory_ids),
+                    len(varieties),
+                )
+            )
+
         (staging / README_FILENAME).write_text(
             "\n".join(
                 _readme_lines(
                     substructure,
                     contexts,
                     colours,
+                    drawn,
                     counts,
                     season,
                     figure_count,
                     args.min_factor_stratum,
                     with_backdrop,
+                    replicate,
+                    recorded,
                 )
             ),
             encoding="utf-8",
         )
-        carried = _promote(staging, destination)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
 
-    if carried:
-        noun = "directory" if len(carried) == 1 else "directories"
-        print(
-            f"Carried across {len(carried)} unmanaged {noun}: {', '.join(carried)} "
-            "— a decade folder here that is no longer a stratum is stale output"
+        if separate_notes:
+            (notes_staging / SEPARATED_NOTES_FILENAME).write_text(
+                "\n".join(
+                    _notes_lines(
+                        substructure,
+                        decade_rows,
+                        shared_prose,
+                        season,
+                        replicate,
+                        recorded,
+                        with_backdrop,
+                    )
+                ),
+                encoding="utf-8",
+            )
+            separated_count += 1
+
+        carried = _promote(staging, destination)
+        carried_separated = (
+            _promote(notes_staging, figure_only) if separate_notes else []
         )
+    finally:
+        for temporary in (staging, notes_staging):
+            if temporary.exists():
+                shutil.rmtree(temporary, ignore_errors=True)
+
+    for folder, names in ((destination, carried), (figure_only, carried_separated)):
+        if names:
+            noun = "directory" if len(names) == 1 else "directories"
+            print(
+                f"Carried across {len(names)} unmanaged {noun} under {folder}: "
+                f"{', '.join(names)} — a decade folder that is no longer a "
+                "stratum is stale output"
+            )
+    scope = (
+        "all recorded replicates"
+        if replicate is None
+        else f"recorded Rep={replicate} of {len(recorded)}"
+    )
     print(
         f"{SOURCE_NAME} {season}: {len(substructure.strata)} planting-decade "
-        f"strata, {substructure.member_count} trajectories, "
-        f"{len(colours)} varieties on the season's colours"
+        f"strata, {member_count} of {substructure.member_count} trajectories "
+        f"drawn ({scope}), {len(colours)} varieties on the season's colours"
     )
-    for level, trajectory_count, variety_count in reported:
+    for level, drawn_count, stratum_count, variety_count in reported:
         print(
-            f"  {level:8s} n={trajectory_count:4d} varieties={variety_count:3d} "
+            f"  {level:8s} n={drawn_count:4d} of {stratum_count:4d} "
+            f"varieties={variety_count:3d} "
             f"figures={variety_count + (0 if args.no_side_by_side else 2):3d}"
         )
     print(f"Wrote {figure_count} figures and 1 README under {destination}")
+    if separate_notes:
+        print(f"Wrote {separated_count} files under {figure_only}")
     return 0
 
 
