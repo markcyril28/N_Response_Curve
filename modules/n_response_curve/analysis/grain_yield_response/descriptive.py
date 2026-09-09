@@ -56,17 +56,26 @@ def _fit_polynomial(
     cluster_robust_reason_code = "NO_CLUSTER_GROUPS"
     # Cluster-robust covariance is deliberately withheld for tiny cluster counts;
     # finite-sample corrections are unstable and can emit invalid standard errors.
-    if groups is not None and cluster_count >= 4:
+    if groups is not None and residual_df <= 0:
+        cluster_robust_status = "withheld"
+        cluster_robust_reason_code = "NO_RESIDUAL_DEGREES_OF_FREEDOM"
+    elif groups is not None and cluster_count >= 4:
         robust = sm.OLS(y, design).fit(
             cov_type="cluster",
             cov_kwds={"groups": groups, "use_correction": True},
+            use_t=True,
         )
         slope_se = float(robust.bse[1])
         interval = robust.conf_int(alpha=0.05)
         slope_ci_low = float(interval[1, 0])
         slope_ci_high = float(interval[1, 1])
-        cluster_robust_status = "completed"
-        cluster_robust_reason_code = ""
+        if all(math.isfinite(value) for value in (slope_se, slope_ci_low, slope_ci_high)):
+            cluster_robust_status = "completed"
+            cluster_robust_reason_code = ""
+        else:
+            slope_se = slope_ci_low = slope_ci_high = math.nan
+            cluster_robust_status = "withheld"
+            cluster_robust_reason_code = "NONFINITE_CLUSTER_UNCERTAINTY"
     elif groups is not None:
         cluster_robust_status = "withheld"
         cluster_robust_reason_code = "FEWER_THAN_FOUR_CLUSTERS"
@@ -87,6 +96,12 @@ def _fit_polynomial(
         "cluster_count": cluster_count,
         "cluster_robust_status": cluster_robust_status,
         "cluster_robust_reason_code": cluster_robust_reason_code,
+        "cluster_robust_interval_method": (
+            "student_t_cluster_df" if cluster_robust_status == "completed" else "unavailable"
+        ),
+        "cluster_robust_interval_df": (
+            cluster_count - 1 if cluster_robust_status == "completed" else math.nan
+        ),
     }
 
 
@@ -161,7 +176,7 @@ def analyze_descriptive(
         model_rows.append(row)
 
     theil = stats.theilslopes(y, x, alpha=0.95)
-    theil_slope, theil_intercept, theil_low, theil_high = np.asarray(
+    theil_slope, theil_intercept, _, _ = np.asarray(
         theil, dtype=float
     ).tolist()
     model_rows.append(
@@ -177,11 +192,15 @@ def analyze_descriptive(
             "rss": math.nan,
             "residual_df": math.nan,
             "cluster_robust_slope_se": math.nan,
-            "cluster_robust_slope_ci95_low": theil_low,
-            "cluster_robust_slope_ci95_high": theil_high,
+            # scipy's Theil-Sen interval assumes independent rows; the repeated
+            # observations within response series do not satisfy that design.
+            "cluster_robust_slope_ci95_low": math.nan,
+            "cluster_robust_slope_ci95_high": math.nan,
             "cluster_count": int(frame[series_key].nunique()),
             "cluster_robust_status": "not_applicable",
             "cluster_robust_reason_code": "THEIL_SEN_SENSITIVITY",
+            "cluster_robust_interval_method": "unavailable",
+            "cluster_robust_interval_df": math.nan,
             "turning_point_n_kg_ha": math.nan,
             "turning_point_in_observed_domain": False,
             "equation": format_equation(
