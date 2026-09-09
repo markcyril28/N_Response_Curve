@@ -908,7 +908,7 @@ def _in_domain_attainment(
     observed_max = finite_number(attempt.observed_n_max_kg_ha)
     if rate is None or rate <= 0.0 or observed_max is None or observed_max < 0.0:
         return None
-    return 1.0 - math.exp(-rate * observed_max)
+    return -math.expm1(-rate * observed_max)
 
 
 def _asymptote_support_rows(
@@ -1006,11 +1006,13 @@ def _asymptote_support_rows(
         ):
             reasons.add("CREDIBLE_MODEL_ASYMPTOTE_CONCORDANCE_UNSUPPORTED")
         associated_prediction: Mapping[str, Any] | None = None
-        if asymptote is not None:
-            threshold = (
-                float(support_policy["minimum_in_domain_attainment_fraction"])
-                * asymptote
-            )
+        amplitude = finite_number(asymptotic.parameters.get("amplitude"))
+        if asymptote is not None and amplitude is not None and amplitude > 0.0:
+            # Match the gate's response-range definition: baseline + q * gain.
+            # q * asymptote measures a different target when baseline is nonzero.
+            threshold = asymptote - (
+                1.0 - float(support_policy["minimum_in_domain_attainment_fraction"])
+            ) * amplitude
             associated_prediction = next(
                 (
                     row
@@ -1270,28 +1272,41 @@ def _environmental_risk_rows(
     for series_uid, rows in _series_rows(records).items():
         reviewed = [
             row
-            for row in rows
+            for row in _descriptive_candidate_rows(rows)
             if row.get("analysis_grain_status") == "reviewed_treatment_mean"
             and finite_number(row.get("n_rate_kg_ha")) is not None
             and finite_number(row.get("yield_t_ha")) is not None
         ]
-        levels = sorted(
-            {
-                float(row["n_rate_kg_ha"]): float(row["yield_t_ha"])
-                for row in reviewed
-            }.items()
-        )
+        yields_by_rate: dict[float, set[float]] = {}
+        for row in reviewed:
+            yields_by_rate.setdefault(float(row["n_rate_kg_ha"]), set()).add(
+                float(row["yield_t_ha"])
+            )
+        levels = sorted(yields_by_rate)
         if len(levels) < 2:
             continue
-        highest_n, highest_yield = levels[-1]
-        lower_max_yield = max(yield_value for _, yield_value in levels[:-1])
+        highest_n = levels[-1]
+        highest_values = yields_by_rate[highest_n]
+        highest_yield = next(iter(highest_values)) if len(highest_values) == 1 else None
+        lower_unambiguous = all(len(yields_by_rate[rate]) == 1 for rate in levels[:-1])
+        lower_max_yield = (
+            max(next(iter(yields_by_rate[rate])) for rate in levels[:-1])
+            if lower_unambiguous else None
+        )
         high_n_exposure = any(bool(row.get("is_high_n")) for row in reviewed)
-        high_n_decline = highest_yield < lower_max_yield
+        # No averaging authority is declared here. Conflicting means at one
+        # rate must not silently select the last record or create a decline.
+        high_n_decline = (
+            highest_yield < lower_max_yield
+            if highest_yield is not None and lower_max_yield is not None else None
+        )
         severe_stress = any(
             row.get("severe_stress_status") == "verified_present"
             for row in reviewed
         )
         reasons = ["NO_CAUSAL_ENVIRONMENTAL_CLAIM"]
+        if high_n_decline is None:
+            reasons.append("AMBIGUOUS_TREATMENT_MEANS_AT_N_RATE")
         if high_n_exposure:
             reasons.append("OBSERVED_HIGH_N_EXPOSURE")
         if high_n_decline:
@@ -1305,6 +1320,9 @@ def _environmental_risk_rows(
             "maximum_lower_n_yield_t_ha": lower_max_yield,
             "high_n_exposure_flag": high_n_exposure,
             "yield_decline_at_highest_n_flag": high_n_decline,
+            "yield_decline_status": (
+                "available" if high_n_decline is not None else "unavailable_ambiguous_means"
+            ),
             "source_verified_severe_stress_flag": severe_stress,
         }
         output.append(
@@ -1319,7 +1337,7 @@ def _environmental_risk_rows(
                 "status": (
                     "flagged"
                     if high_n_exposure or high_n_decline or severe_stress
-                    else "no_flag_observed"
+                    else "partially_unavailable" if high_n_decline is None else "no_flag_observed"
                 ),
                 "reason_codes": tuple(sorted(reasons)),
             }
