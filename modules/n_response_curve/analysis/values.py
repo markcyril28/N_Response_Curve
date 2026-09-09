@@ -4,7 +4,7 @@ import math
 from typing import Any, Mapping
 
 
-_MISSING_TEXT_VALUES = frozenset({"na", "n/a", "not stated", "unresolved"})
+_MISSING_TEXT_VALUES = frozenset({"na", "n/a", "nan", "none", "null", "not stated", "unresolved"})
 
 
 def finite_number(value: Any) -> float | None:
