@@ -4,6 +4,9 @@ nrc_emmeans_available <- function() {
 
 nrc_run_marginal_contrasts <- function(stage) {
   specification <- stage$contract$specification
+  if (!identical(specification$engine, "r")) {
+    return(nrc_failed_result("ENGINE_ASSIGNMENT_MISMATCH", "R stage received a non-R specification"))
+  }
   contrast_specification <- specification$contrast_specification
   if (is.null(contrast_specification) || !is.list(contrast_specification)) {
     return(nrc_skip_result("CONTRAST_SPECIFICATION_REQUIRED"))
@@ -74,6 +77,10 @@ nrc_run_marginal_contrasts <- function(stage) {
   if (!nrc_emmeans_available()) {
     return(nrc_skip_result("MODEL_BASED_CONTRAST_ENGINE_UNAVAILABLE"))
   }
+  design_reason <- nrc_inference_design_reason(model_formula, analysis_data, specification)
+  if (!is.null(design_reason)) {
+    return(nrc_skip_result(design_reason))
+  }
   first_stage_weights <- NULL
   first_stage <- specification$first_stage_uncertainty
   if (!is.null(first_stage)) {
@@ -94,6 +101,7 @@ nrc_run_marginal_contrasts <- function(stage) {
     outcome_kind,
     model_kind,
     "Unsupported R model kind for marginal contrasts",
+    require_binary_glm = TRUE,
     weights = first_stage_weights
   )
   fitted <- fit$model
@@ -121,7 +129,8 @@ nrc_run_marginal_contrasts <- function(stage) {
     {
       reference_grid <- emmeans::emmeans(
         fitted,
-        specs = stats::as.formula(paste("~", factor_name))
+        specs = stats::as.formula(paste("~", factor_name)),
+        lmer.df = "asymptotic"
       )
       if (isTRUE(exact_estimand)) {
         grid_levels <- as.character(as.data.frame(reference_grid)[[factor_name]])
