@@ -4,7 +4,7 @@ This is an **exploratory diagnostic**, not a governed analysis. `ANA-11` disable
 the `curve_feature_clustering` analysis family for the current primary release,
 so nothing here may be presented as an authorized curve-feature result, and the
 record shapes below deliberately do not imitate
-`analysis/advanced_analysis.py:_clustering_result` (`stable_curve_feature_clusters`).
+`analysis/advanced_analysis.py:_clustering_result` (`exploratory_curve_feature_clusters`).
 
 Three findings in the LTCCE source drive the design, and each is enforced rather
 than assumed:
