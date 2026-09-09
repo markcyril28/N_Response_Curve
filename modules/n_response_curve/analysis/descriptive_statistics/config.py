@@ -9,6 +9,7 @@ which mixes scalar tuning keys with one binding sub-table per profiled source.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import tomllib
 from typing import Any, Mapping
@@ -248,6 +249,8 @@ def _number_list(
         if isinstance(item, bool) or not isinstance(item, (int, float)):
             raise RecipeConfigError(f"{where}.{key} must contain only numbers")
         number = float(item)
+        if not math.isfinite(number):
+            raise RecipeConfigError(f"{where}.{key} must contain only finite numbers")
         if number < minimum or (maximum is not None and number > maximum):
             bound = f"[{minimum}, {maximum}]" if maximum is not None else f">= {minimum}"
             raise RecipeConfigError(f"{where}.{key} values must be {bound}")
