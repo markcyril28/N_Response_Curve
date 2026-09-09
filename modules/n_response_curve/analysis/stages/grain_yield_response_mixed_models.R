@@ -75,6 +75,11 @@ if (length(missing_columns)) {
 if (anyNA(data$release_record_uid) || anyDuplicated(data$release_record_uid)) {
   fail("INPUT_RECORD_UID_INVALID", "release_record_uid must be unique and nonmissing")
 }
+for (key in c("release_record_uid", "response_series_uid", "study_uid", "trial_uid")) {
+  if (anyNA(data[[key]]) || any(!nzchar(trimws(as.character(data[[key]]))))) {
+    fail("INPUT_GROUP_UID_INVALID", paste(key, "must be nonmissing and nonblank"))
+  }
+}
 
 data$n_rate_kg_ha <- suppressWarnings(as.numeric(data$n_rate_kg_ha))
 data$yield_t_ha <- suppressWarnings(as.numeric(data$yield_t_ha))
@@ -128,11 +133,13 @@ if (inherits(model, "error")) {
 }
 
 convergence_messages <- model@optinfo$conv$lme4$messages
-converged <- is.null(convergence_messages)
+optimizer_code <- model@optinfo$conv$opt
+converged <- is.null(convergence_messages) &&
+  (is.null(optimizer_code) || all(optimizer_code == 0L))
 if (!converged) {
   fail(
     "MIXED_MODEL_NONCONVERGENCE",
-    paste(as.character(convergence_messages), collapse = "; ")
+    paste(c(as.character(convergence_messages), paste("optimizer code:", optimizer_code)), collapse = "; ")
   )
 }
 
