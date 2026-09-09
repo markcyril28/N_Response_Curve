@@ -32,15 +32,11 @@ from .sources import (
 )
 
 
-# Physically implausible lowland-rice grain yields. These are reader flags, not
-# exclusions: the rows stay in every table and every count. A harvested lowland
-# rice crop that produced under 0.1 t/ha is not a low yield, it is a recording
-# or unit fault — total-failure plots in these trials still record several
-# tenths of a tonne. Above 15.0 t/ha sits far beyond the highest field-scale
-# irrigated-lowland yields ever reported (attainable tropical irrigated yields
-# are near 10 t/ha), so such a value is a kg/ha-to-t/ha slip or a plot-area
-# error rather than an observation. The pair is deliberately wide, because the
-# flag exists to surface data faults and must not act as a distributional trim.
+# Screening bounds for unusual lowland-rice grain yields, not exclusions:
+# rows stay in every table and count. A flagged value needs source review;
+# it may reflect crop failure, unusual conditions, a unit/area error, or a
+# recording error. The flag alone cannot establish which explanation applies
+# and must not be used as a distributional trim.
 IMPLAUSIBLE_LOW_YIELD_T_HA = 0.1
 IMPLAUSIBLE_HIGH_YIELD_T_HA = 15.0
 
@@ -126,29 +122,26 @@ class _Distribution:
         return self.std_dev / self.mean
 
 
-def _tolerance_decimals(tolerance: float) -> int:
-    """Display precision that resolves ``tolerance`` without inventing digits."""
-
-    return max(0, min(12, int(math.ceil(-math.log10(tolerance))) + 1))
-
-
 def _snap_to_tolerance(values: pd.Series, tolerance: float) -> pd.Series:
-    """Round N rates onto the declared tolerance grid before they are compared.
+    """Group sorted rates by distance from each retained level's lowest rate.
 
-    Distinct rates must never be counted by raw float equality: 80 kg N/ha typed
-    into one study and 80 kg N/ha arriving through a conversion in another are
-    the same agronomic level but need not share a bit pattern, and counting them
-    apart would overstate how many rates a dataset actually used.
+    This is the same anchored tolerance rule used by dataset membership and
+    curve fitting. Rounding to a grid instead would split arbitrarily close
+    rates that straddle a grid boundary. Anchoring also avoids chaining a run
+    of near-neighbours into a level wider than the declared tolerance.
     """
 
-    if tolerance <= 0.0:
-        return values.astype(float)
-    snapped = np.round(values.to_numpy(dtype=float) / tolerance) * tolerance
-    # The multiply reintroduces representation noise (0.01 * 3535 becomes
-    # 35.35000000000001), which would split one grid point back into two.
-    return pd.Series(
-        np.round(snapped, _tolerance_decimals(tolerance)), index=values.index
-    )
+    numeric = values.to_numpy(dtype=float)
+    grouped = numeric.copy()
+    anchor: float | None = None
+    for position in np.argsort(numeric, kind="stable"):
+        value = float(numeric[position])
+        if not math.isfinite(value):
+            continue
+        if anchor is None or value - anchor > tolerance:
+            anchor = value
+        grouped[position] = anchor
+    return pd.Series(grouped, index=values.index)
 
 
 def _format_rate_list(rates: Sequence[float]) -> str:
@@ -492,7 +485,9 @@ def _applied_n_band(rate: float, width: float) -> tuple[int, str]:
     named for 50 rather than opening the band above it.
     """
 
-    if rate <= 0.0:
+    if rate < 0.0:
+        return -1, "<0"
+    if rate == 0.0:
         return 0, "0"
     index = int(math.ceil(rate / width))
     return index, f">{(index - 1) * width:g}–{index * width:g}"
