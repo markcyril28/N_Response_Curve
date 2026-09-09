@@ -138,6 +138,22 @@ def _clean_categorical(series: pd.Series) -> pd.Series:
     )
 
 
+def _unsupported_baseline(factor: str, observations: int) -> dict[str, object]:
+    return {
+        "factor": factor,
+        "screen_status": "baseline_rank_deficient",
+        "observations": observations,
+        **dict.fromkeys((
+            "factor_parameters_added", "base_r_squared", "augmented_r_squared",
+            "r_squared_improvement", "base_adjusted_r_squared",
+            "augmented_adjusted_r_squared", "adjusted_r_squared_improvement",
+            "partial_r_squared", "rss_reduction_fraction", "residual_df",
+        ), math.nan),
+        "comparability_warning": "N-only baseline is rank deficient on factor complete cases.",
+        "analysis_role": "descriptive_baseline_screen_not_causal",
+    }
+
+
 def _additive_categorical_screen(
     complete: pd.DataFrame,
     *,
@@ -146,9 +162,12 @@ def _additive_categorical_screen(
     y = complete["yield_t_ha"].to_numpy(dtype=float)
     n_rate = complete["n_rate_kg_ha"].to_numpy(dtype=float)
     base_design = np.column_stack([np.ones(len(complete)), n_rate])
-    base_rss, base_r_squared, base_residual_df, base_rank, _ = _fit_rss(
-        base_design, y
-    )
+    try:
+        base_rss, base_r_squared, base_residual_df, base_rank, _ = _fit_rss(
+            base_design, y
+        )
+    except ValueError:
+        return _unsupported_baseline(factor, len(complete))
     all_levels = tuple(sorted(complete[factor].unique()))
     dummies = pd.get_dummies(complete[factor], drop_first=True, dtype=float)
     dummies = dummies.reindex(sorted(dummies.columns), axis=1)
@@ -214,9 +233,12 @@ def _additive_numeric_screen(
     n_rate = complete["n_rate_kg_ha"].to_numpy(dtype=float)
     factor_values = complete[factor].to_numpy(dtype=float)
     base_design = np.column_stack([np.ones(len(complete)), n_rate])
-    base_rss, base_r_squared, base_residual_df, base_rank, _ = _fit_rss(
-        base_design, y
-    )
+    try:
+        base_rss, base_r_squared, base_residual_df, base_rank, _ = _fit_rss(
+            base_design, y
+        )
+    except ValueError:
+        return _unsupported_baseline(factor, len(complete))
     augmented = np.column_stack([base_design, factor_values])
     try:
         (
@@ -594,38 +616,49 @@ def screen_factors_beyond_series(
             rows.append({**base_row, "series_adjusted_status": "no_factor_columns"})
             continue
         augmented = np.column_stack([baseline, factor_block])
-        try:
-            (
-                augmented_rss,
-                augmented_r_squared,
-                augmented_residual_df,
-                augmented_rank,
-                _,
-            ) = _fit_rss(augmented, y)
-        except ValueError:
+        coefficients, _, augmented_rank, _ = np.linalg.lstsq(augmented, y, rcond=None)
+        added_rank = int(augmented_rank - base_rank)
+        aliased_columns = int(factor_block.shape[1] - added_rank)
+        if added_rank == 0:
             rows.append(
                 {
                     **base_row,
-                    "series_adjusted_status": "absorbed_by_series_intercepts",
+                    "series_adjusted_status": (
+                        "absorbed_by_series_intercepts" if within_series_variation == 0
+                        else "aliased_with_baseline"
+                    ),
+                    "factor_parameters_added": 0,
+                    "factor_parameters_aliased": aliased_columns,
                     "series_adjusted_baseline_r_squared": base_r_squared,
                     "series_adjusted_partial_r_squared": 0.0,
                     "residual_df": base_residual_df,
                     "absorption_note": (
-                        "The factor is a linear combination of the response-series "
-                        "indicators, so it carries no information beyond series "
-                        "identity and no separate effect is estimable."
+                        "The factor is a linear combination of the baseline's "
+                        "N-rate and response-series terms; no additional "
+                        "factor contrast is estimable."
                     ),
                 }
             )
             continue
+        # A categorical block can contain both confounded and estimable
+        # contrasts. Its fitted projection and added rank remain identifiable;
+        # rejecting the entire block would incorrectly report zero improvement.
+        residual = y - augmented @ coefficients
+        augmented_rss = float(residual @ residual)
+        tss = float((y - np.mean(y)) @ (y - np.mean(y)))
+        augmented_r_squared = float(1.0 - augmented_rss / tss) if tss > 0 else math.nan
+        augmented_residual_df = int(observations - augmented_rank)
         partial = float(1.0 - augmented_rss / base_rss) if base_rss > 0 else math.nan
         rows.append(
             {
                 **base_row,
                 "series_adjusted_status": (
-                    "fitted" if augmented_residual_df > 0 else "insufficient_residual_df"
+                    "insufficient_residual_df" if augmented_residual_df <= 0
+                    else "fitted_partially_aliased" if aliased_columns
+                    else "fitted"
                 ),
                 "factor_parameters_added": augmented_rank - base_rank,
+                "factor_parameters_aliased": aliased_columns,
                 "series_adjusted_baseline_r_squared": base_r_squared,
                 "series_adjusted_augmented_r_squared": augmented_r_squared,
                 "series_adjusted_partial_r_squared": partial,
@@ -720,6 +753,10 @@ def audit_factor_redundancy(
                 else _clean_categorical(frame[second])
             )
             overlap = first_values.notna() & second_values.notna()
+            if first_numeric:
+                overlap &= np.isfinite(first_values.to_numpy(dtype=float))
+            if second_numeric:
+                overlap &= np.isfinite(second_values.to_numpy(dtype=float))
             count = int(overlap.sum())
             row: dict[str, object] = {
                 "factor_a": first,
