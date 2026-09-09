@@ -25,6 +25,7 @@ both recipes call it directly.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -86,6 +87,8 @@ def number(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise error(f"{where}.{key} must be a number")
     result = float(value)
+    if not math.isfinite(result):
+        raise error(f"{where}.{key} must be finite")
     if result < minimum:
         raise error(f"{where}.{key} must be at least {minimum}")
     if maximum is not None and result > maximum:
