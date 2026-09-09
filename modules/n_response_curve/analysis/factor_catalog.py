@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -78,6 +79,8 @@ def _normalized_token(value: object) -> str | None:
     Kept as one function so the two cannot fold differently.
     """
 
+    if _missing(value, "categorical"):
+        return None
     token = re.sub(r"[^a-z0-9]+", "_", str(value).strip().casefold()).strip("_")
     return token or None
 
@@ -87,19 +90,32 @@ def _missing(value: object, data_type: str) -> bool:
         return True
     if data_type == "numeric":
         return finite_number(value) is None
+    if isinstance(value, (int, float)) and not math.isfinite(float(value)):
+        return True
     if isinstance(value, str):
         return is_missing_text(value)
     return False
 
 
 def _canonical_value(value: object, data_type: str) -> object:
+    if _missing(value, data_type):
+        return None
     if data_type == "numeric":
         parsed = finite_number(value)
         if parsed is None:
             return None
         return parsed
     if data_type == "boolean":
-        return bool(value)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return {
+                "true": True, "yes": True, "y": True, "1": True,
+                "false": False, "no": False, "n": False, "0": False,
+            }.get(value.strip().casefold())
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        return None
     if isinstance(value, str):
         return " ".join(value.split())
     return str(value)
@@ -184,7 +200,8 @@ def _reviewed_factor_value(
     if transformation == "logical_not":
         if len(raw_values) != 1 or raw_values[0] is None:
             return None
-        return not bool(raw_values[0])
+        value = _canonical_value(raw_values[0], "boolean")
+        return None if value is None else not value
     if transformation == "normalized_token":
         if len(raw_values) != 1 or raw_values[0] is None:
             return None
@@ -218,10 +235,12 @@ def factor_value(
         return None if minimum is None or maximum is None else maximum - minimum
     if factor_name == "p_varies_with_n":
         constant = record.get("series_p_constant")
-        return None if constant is None else not bool(constant)
+        value = _canonical_value(constant, "boolean")
+        return None if value is None else not value
     if factor_name == "k_varies_with_n":
         constant = record.get("series_k_constant")
-        return None if constant is None else not bool(constant)
+        value = _canonical_value(constant, "boolean")
+        return None if value is None else not value
     if factor_name == "recommendation_scope":
         raw_scope = record.get("recommendation_scope")
         if raw_scope is None:
@@ -229,8 +248,16 @@ def factor_value(
         return _normalized_token(raw_scope)
     for field in metadata["fields"]:
         if field in record and record[field] is not None:
-            return record[field]
+            value = _canonical_value(record[field], str(metadata["type"]))
+            if value is not None:
+                return value
     return None
+
+
+def factor_data_type(factor_name: str) -> str:
+    """Declared type, independent of how a category happens to be spelled."""
+
+    return str(_FACTOR_METADATA[factor_name]["type"])
 
 
 def build_factor_catalog(
@@ -252,7 +279,10 @@ def build_factor_catalog(
         metadata = _FACTOR_METADATA[factor_name]
         data_type = str(metadata["type"])
         values = [factor_value(record, factor_name) for record in rows]
-        observed = [_canonical_value(value, data_type) for value in values if not _missing(value, data_type)]
+        observed = [
+            normalized for value in values
+            if (normalized := _canonical_value(value, data_type)) is not None
+        ]
         entries.append(
             FactorCatalogEntry(
                 factor_name=factor_name,
@@ -270,4 +300,4 @@ def build_factor_catalog(
     return tuple(entries)
 
 
-__all__ = ["KNOWN_FACTORS", "FactorCatalogEntry", "build_factor_catalog", "factor_value"]
+__all__ = ["KNOWN_FACTORS", "FactorCatalogEntry", "build_factor_catalog", "factor_value", "factor_data_type"]
