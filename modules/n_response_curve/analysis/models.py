@@ -1176,10 +1176,12 @@ def _parameter_standard_errors(
             x,
             _parameter_mapping(model_name, parameters),
         )
-        information = jacobian.T @ jacobian
-        if np.linalg.matrix_rank(information) < len(parameters):
+        if np.linalg.matrix_rank(jacobian) < len(parameters):
             return None
-        covariance = (rss / residual_df) * np.linalg.inv(information)
+        # Forming J'J squares the condition number and can falsely lose rank
+        # for a narrow N ladder. Use the SVD-based observation influence map.
+        influence = np.linalg.pinv(jacobian)
+        covariance = (rss / residual_df) * influence @ influence.T
         variances = np.diag(covariance)
         if not np.isfinite(variances).all() or np.min(variances) < -1.0e-10:
             return None
@@ -1542,6 +1544,26 @@ def _aicc(rss: float, n_observations: int, mean_parameter_count: int) -> float |
     return float(aic + (2.0 * parameter_count * (parameter_count + 1)) / (n_observations - parameter_count - 1))
 
 
+def _domain_extrema_rates(
+    model_name: str,
+    parameters: Mapping[str, float],
+    observed_min: float,
+    observed_max: float,
+) -> np.ndarray:
+    """Endpoints and interior extrema, independent of the plotting grid."""
+
+    rates = [observed_min, observed_max]
+    if model_name == "quadratic" and parameters["curvature"] != 0.0:
+        vertex = -parameters["slope"] / (2.0 * parameters["curvature"])
+        if observed_min < vertex < observed_max:
+            rates.append(vertex)
+    if model_name in _PLATEAU_ONSET_MODELS:
+        onset = parameters["plateau_onset"]
+        if observed_min < onset < observed_max:
+            rates.append(onset)
+    return np.asarray(sorted(set(rates)), dtype=float)
+
+
 def _predictions(
     model_name: str,
     parameters: Mapping[str, float],
@@ -1626,15 +1648,8 @@ def _reported_se_delta_intervals(
         )
         if np.linalg.matrix_rank(observed_jacobian) < observed_jacobian.shape[1]:
             raise np.linalg.LinAlgError("rank-deficient parameter Jacobian")
-        bread = np.linalg.inv(observed_jacobian.T @ observed_jacobian)
-        observation_covariance = np.diag(standard_errors**2)
-        parameter_covariance = (
-            bread
-            @ observed_jacobian.T
-            @ observation_covariance
-            @ observed_jacobian
-            @ bread
-        )
+        influence = np.linalg.pinv(observed_jacobian)
+        parameter_covariance = (influence * standard_errors**2) @ influence.T
         prediction_n_rates = np.asarray(
             [float(row["n_rate_kg_ha"]) for row in predictions],
             dtype=float,
@@ -1710,11 +1725,18 @@ def _delta_feature_variances(
         and math.isfinite(float(row["fitted_mean_se_t_ha"]))
     ]
     if bounded_predictions:
-        peak = max(
-            bounded_predictions,
-            key=lambda row: float(row["predicted_yield_t_ha"]),
+        rates = _domain_extrema_rates(
+            model_name,
+            parameters,
+            min(float(row["n_rate_kg_ha"]) for row in predictions),
+            max(float(row["n_rate_kg_ha"]) for row in predictions),
         )
-        peak_variance = float(peak["fitted_mean_se_t_ha"]) ** 2
+        peak_rate = rates[np.argmax(evaluate_model(model_name, rates, parameters))]
+        # At an interior stationary maximum the derivative through its location
+        # vanishes. Evaluate the mean gradient at that exact location; a nearby
+        # plotting point is a different estimand with a different variance.
+        gradient = _parameter_jacobian(model_name, np.asarray([peak_rate]), parameters)[0]
+        peak_variance = float(gradient @ parameter_covariance @ gradient)
         if math.isfinite(peak_variance) and peak_variance > 0.0:
             variances["predicted_observed_domain_peak_yield_t_ha"] = peak_variance
     if (
@@ -1791,8 +1813,13 @@ def _optimum_summary(
     flat_response_tolerance_t_ha: float,
     parameter_rank_full: bool,
 ) -> _OptimumSummary:
-    predicted_values = [float(row["predicted_yield_t_ha"]) for row in predictions]
-    observed_domain_peak = max(predicted_values)
+    extrema = evaluate_model(
+        model_name,
+        _domain_extrema_rates(model_name, parameters, observed_min, observed_max),
+        parameters,
+    )
+    predicted_values = extrema.tolist()
+    observed_domain_peak = float(np.max(extrema))
     boundary_tolerance = optimum_boundary_tolerance_n_kg_ha
     response_tolerance = flat_response_tolerance_t_ha
     span = observed_max - observed_min
@@ -1809,8 +1836,10 @@ def _optimum_summary(
 
         lower_yield = float(evaluate_model(model_name, [observed_min], parameters)[0])
         upper_yield = float(evaluate_model(model_name, [observed_max], parameters)[0])
-        if abs(upper_yield - lower_yield) <= response_tolerance:
+        if float(np.ptp(extrema)) <= response_tolerance:
             return "FLAT_ACROSS_OBSERVED_DOMAIN", None, None
+        if abs(upper_yield - lower_yield) <= response_tolerance:
+            return "TIED_OBSERVED_DOMAIN_BOUNDARIES", None, max(lower_yield, upper_yield)
         if upper_yield > lower_yield:
             return "UPPER_OBSERVED_DOMAIN_BOUNDARY", float(observed_max), upper_yield
         return "LOWER_OBSERVED_DOMAIN_BOUNDARY", float(observed_min), lower_yield
@@ -1947,7 +1976,7 @@ def _optimum_summary(
         response_gain = (
             parameters["slope"] * max(onset - observed_min, 0.0)
             if model_name == "linear_plateau"
-            else parameters["gain"]
+            else float(np.ptp(extrema))
         )
         identifiable = (
             parameter_rank_full
@@ -2084,9 +2113,25 @@ def fit_candidate_model(
             reason_codes=("NONFINITE_OR_MISSING_OBSERVATION",),
             n_observations=n_observations,
         )
+    if not n_observations:
+        return _attempt(
+            response_series_uid=response_series_uid,
+            model_name=model_name,
+            identity_payload=identity_payload,
+            status="unsupported",
+            reason_codes=("INSUFFICIENT_DISTINCT_N_LEVELS",),
+        )
+    # Initialization and adjacent-level diagnostics require increasing N. Keep
+    # reported SEs and replication evidence paired with their observations.
+    order = np.argsort(x, kind="stable")
+    x, y = x[order], y[order]
+    evidence_rows = (
+        tuple(observation_evidence[index] for index in order)
+        if observation_evidence is not None
+        else ()
+    )
     observed_min, observed_max = _observed_bounds(x)
     distinct_levels = len(set(float(value) for value in x))
-    evidence_rows = tuple(observation_evidence or ())
     estimator_status = _estimator_grain_status(
         evidence_rows,
         n_observations,
@@ -2257,7 +2302,11 @@ def fit_candidate_model(
         observed_max,
         int(policy["plot_grid_points"]),
     )
-    predicted_grid = np.asarray([row["predicted_yield_t_ha"] for row in predictions])
+    predicted_grid = evaluate_model(
+        model_name,
+        _domain_extrema_rates(model_name, parameter_map, observed_min, observed_max),
+        parameter_map,
+    )
     if (
         not np.isfinite(predicted_grid).all()
         or np.min(predicted_grid) < minimum_yield - tolerance
@@ -2381,7 +2430,7 @@ def fit_candidate_model(
             model_name,
             parameter_map,
             x,
-            tuple(observation_evidence or ()),
+            evidence_rows,
             predictions,
             method=uncertainty_method,
         )
