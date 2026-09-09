@@ -13,6 +13,7 @@ test_that("supported factors emit raw contrasts for central BH reconciliation", 
         hypothesis_id = "H-water",
         engine = "r",
         support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 3L),
         model_kind = "lm",
         outcome_kind = "continuous",
         model_formula = "outcome ~ water_regime",
@@ -27,6 +28,7 @@ test_that("supported factors emit raw contrasts for central BH reconciliation", 
         multiplicity = list(
           method = "BH",
           family_id = "MF-primary",
+          family_scope_complete = TRUE,
           alpha = 0.05,
           expected_test_ids = list("estimand-water-v1")
         )
@@ -78,6 +80,7 @@ test_that("prespecified management estimands emit only the requested direction",
         hypothesis_id = "H-management",
         engine = "r",
         support_gates_passed = TRUE,
+        support_policy = list(minimum_residual_df = 3L),
         model_kind = "lm",
         outcome_kind = "continuous",
         model_formula = "outcome ~ recommendation_class",
@@ -95,6 +98,7 @@ test_that("prespecified management estimands emit only the requested direction",
         multiplicity = list(
           method = "BH",
           family_id = "MF-management",
+          family_scope_complete = TRUE,
           alpha = 0.05,
           expected_test_ids = list("estimand-management-v1")
         )
