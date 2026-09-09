@@ -17,7 +17,7 @@ nrc_model_converged <- function(model) {
   if (inherits(model, "merMod")) {
     messages <- model@optinfo$conv$lme4$messages
     optimizer_code <- model@optinfo$conv$opt
-    return(is.null(messages) && (is.null(optimizer_code) || identical(optimizer_code, 0L)))
+    return(is.null(messages) && (is.null(optimizer_code) || all(optimizer_code == 0L)))
   }
   if (inherits(model, "glmmTMB")) {
     return(isTRUE(model$fit$convergence == 0L) && isTRUE(model$sdr$pdHess))
@@ -89,10 +89,21 @@ nrc_model_diagnostics <- function(model, warnings = character(), input_row_count
   } else {
     as.integer(input_row_count - fitted_rows)
   }
+  binomial_model <- (inherits(model, "glm") || inherits(model, "glmmTMB")) &&
+    identical(stats::family(model)$family, "binomial")
+  probability_boundary <- if (binomial_model) {
+    probabilities <- stats::fitted(model)
+    any(!is.finite(probabilities)) ||
+      any(probabilities <= 10 * .Machine$double.eps |
+          probabilities >= 1 - 10 * .Machine$double.eps)
+  } else {
+    FALSE
+  }
   list(
     converged = nrc_model_converged(model),
     singular = singular,
-    boundary_fit = singular,
+    boundary_fit = singular ||
+      (inherits(model, "glm") && isTRUE(model$boundary)) || probability_boundary,
     input_row_count = as.integer(input_row_count),
     fitted_row_count = as.integer(fitted_rows),
     dropped_row_count = dropped_rows,
@@ -116,14 +127,37 @@ nrc_tidy_model <- function(model) {
   }
   tidy <- tryCatch({
     if (mixed) {
-      broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE)
+      broom.mixed::tidy(model, effects = "fixed", conf.int = FALSE)
     } else {
-      broom::tidy(model, conf.int = TRUE)
+      broom::tidy(model, conf.int = FALSE)
     }
   }, error = function(error) NULL)
   if (is.null(tidy) || !nrow(tidy)) {
     return(list())
   }
+  # The declared method is Wald. broom's glm default uses profile likelihood,
+  # while lmer supplies no p-values at all. Compute matching two-sided tests
+  # and intervals explicitly; finite-df OLS uses t, mixed/GLM fits use normal.
+  degrees_freedom <- if (inherits(model, "lm") && !inherits(model, "glm")) {
+    stats::df.residual(model)
+  } else {
+    Inf
+  }
+  tidy$statistic <- tidy$estimate / tidy$std.error
+  critical <- if (is.finite(degrees_freedom)) {
+    stats::qt(0.975, df = degrees_freedom)
+  } else {
+    stats::qnorm(0.975)
+  }
+  tidy$p.value <- if (is.finite(degrees_freedom)) {
+    2 * stats::pt(-abs(tidy$statistic), df = degrees_freedom)
+  } else {
+    2 * stats::pnorm(-abs(tidy$statistic))
+  }
+  tidy$conf.low <- tidy$estimate - critical * tidy$std.error
+  tidy$conf.high <- tidy$estimate + critical * tidy$std.error
+  tidy$inference_distribution <- if (is.finite(degrees_freedom)) "student_t" else "normal"
+  tidy$inference_df <- if (is.finite(degrees_freedom)) degrees_freedom else NA_real_
   nrc_frame_to_rows(as.data.frame(tidy))
 }
 
@@ -200,8 +234,15 @@ nrc_apply_factor_representations <- function(data, specification) {
     data[[factor_name]] <- factor(
       as.character(data[[factor_name]]),
       levels = ordered_levels,
-      ordered = identical(representation$data_type, "ordinal")
+      # The contract declares a reference category, not polynomial contrasts.
+      # An ordered R factor silently substitutes .L/.Q tests for those effects.
+      ordered = FALSE
     )
+    if (nlevels(data[[factor_name]]) >= 2L) {
+      stats::contrasts(data[[factor_name]]) <- stats::contr.treatment(
+        levels(data[[factor_name]]), base = 1L
+      )
+    }
     references[[factor_name]] <- reference_level
   }
   list(data = data, factor_references = references)
