@@ -160,7 +160,12 @@ nrc_write_stage_result <- function(stage, result) {
     results = result$results,
     metadata = result$metadata
   )
-  jsonlite::write_json(payload, temporary_path, auto_unbox = TRUE, null = "null", pretty = FALSE)
+  # Preserve small p-values and threshold-adjacent results across the bridge.
+  # jsonlite's default four decimal places can turn a valid p-value into zero.
+  jsonlite::write_json(
+    payload, temporary_path, auto_unbox = TRUE, null = "null",
+    na = "null", digits = NA, pretty = FALSE
+  )
   if (file.exists(output_path) && !file.remove(output_path)) {
     nrc_abort("Unable to replace an existing R stage result")
   }
