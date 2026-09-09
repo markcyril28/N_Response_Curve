@@ -242,7 +242,9 @@ def screen_series_slope_modifiers(
         )
         if kind == "binary" and raw.dtype != bool:
             values = pd.to_numeric(raw.map({True: 1.0, False: 0.0}), errors="coerce")
-        usable = values.notna() & slopes.notna()
+        usable = np.isfinite(values.to_numpy(dtype=float)) & np.isfinite(
+            slopes.to_numpy(dtype=float)
+        )
         used = int(usable.sum())
         covariate_values = values.loc[usable].to_numpy(dtype=float)
         slope_values = slopes.loc[usable].to_numpy(dtype=float)
