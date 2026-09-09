@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from ..data.provenance import stable_identifier
 from .dataset_versions import DatasetVersion
-from .factor_catalog import FactorCatalogEntry, factor_value
+from .factor_catalog import FactorCatalogEntry, factor_data_type, factor_value
 from .values import outcome_is_present, record_uids
 
 
@@ -333,6 +333,7 @@ def _support_summary(
     missing_group_count = sum(not str(row.get("study_uid") or "") for row in complete_rows)
     cell_counts: dict[str, int] = {}
     cell_studies: dict[str, set[str]] = {}
+    categorical_names = [name for name in factor_names if factor_data_type(name) != "numeric"]
     if factor_names:
         for row in complete_rows:
             cell = "|".join(
@@ -343,8 +344,8 @@ def _support_summary(
                         representation=factor_representations.get(name),
                     )
                 )
-                for name in factor_names
-            )
+                for name in categorical_names
+            ) or "all_complete_cases"
             cell_counts[cell] = cell_counts.get(cell, 0) + 1
             cell_studies.setdefault(cell, set())
             study_uid = str(row.get("study_uid") or "")
