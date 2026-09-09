@@ -26,8 +26,40 @@ nrc_formula_has_hierarchy <- function(model_formula) {
   }
   all(vapply(interactions, function(interaction) {
     components <- strsplit(interaction, ":", fixed = TRUE)[[1L]]
-    all(components %in% labels)
+    canonical <- function(parts) paste(sort(parts), collapse = ":")
+    term_keys <- vapply(strsplit(labels, ":", fixed = TRUE), canonical, character(1))
+    all(vapply(seq_len(length(components) - 1L), function(order) {
+      lower_terms <- utils::combn(components, order, FUN = canonical)
+      all(lower_terms %in% term_keys)
+    }, logical(1)))
   }, logical(1)))
+}
+
+nrc_inference_design_reason <- function(model_formula, data, specification) {
+  if (!is.null(specification$multiplicity) &&
+      !isTRUE(specification$multiplicity$family_scope_complete)) {
+    return("MULTIPLICITY_FAMILY_RECONCILIATION_REQUIRED")
+  }
+  if (!nrc_formula_has_hierarchy(model_formula)) {
+    return("INTERACTION_HIERARCHY_VIOLATION")
+  }
+  minimum_df <- specification$support_policy$minimum_residual_df
+  if (is.null(minimum_df) || !is.numeric(minimum_df) ||
+      length(minimum_df) != 1L || !is.finite(minimum_df) ||
+      minimum_df < 1 || minimum_df != as.integer(minimum_df)) {
+    return("PREDECLARED_RESIDUAL_DF_THRESHOLD_REQUIRED")
+  }
+  # Random-effect identifiers are not in the fixed-effect frame. Check them
+  # too so lmer cannot silently change the declared analysis population.
+  if (anyNA(data[all.vars(model_formula)])) {
+    return("MODEL_VARIABLES_MISSING")
+  }
+  if (any(vapply(data[all.vars(model_formula)], function(values) {
+    is.numeric(values) && any(!is.finite(values))
+  }, logical(1)))) {
+    return("MODEL_VARIABLES_NONFINITE")
+  }
+  nrc_fixed_effect_design_reason(model_formula, data, as.integer(minimum_df))
 }
 
 nrc_model_formula <- function(specification, data) {
@@ -57,6 +89,17 @@ nrc_fit_model <- function(
   fitted <- tryCatch(
     withCallingHandlers(
       {
+        if (identical(outcome_kind, "categorical")) {
+          outcome_name <- all.vars(model_formula)[[1L]]
+          outcome <- data[[outcome_name]]
+          if (is.character(outcome) || is.factor(outcome)) {
+            data[[outcome_name]] <- droplevels(factor(outcome))
+          }
+          if (model_kind %in% c("glm", "glmmTMB") &&
+              length(unique(stats::na.omit(outcome))) != 2L) {
+            nrc_abort("Binomial models require exactly two supported outcome levels")
+          }
+        }
         if (identical(outcome_kind, "continuous") && identical(model_kind, "lm")) {
           if (is.null(weights)) {
             stats::lm(model_formula, data = data)
@@ -127,24 +170,7 @@ nrc_run_mixed_models <- function(stage) {
   if (!isTRUE(specification$support_gates_passed)) {
     return(nrc_skip_result("PRECOMPUTED_SUPPORT_GATE_REQUIRED"))
   }
-  multiplicity <- specification$multiplicity
-  if (!is.null(multiplicity) && !isTRUE(multiplicity$family_scope_complete)) {
-    return(nrc_skip_result("MULTIPLICITY_FAMILY_RECONCILIATION_REQUIRED"))
-  }
-  if (!nrc_formula_has_hierarchy(model_formula)) {
-    return(nrc_skip_result("INTERACTION_HIERARCHY_VIOLATION"))
-  }
-  minimum_residual_df <- specification$support_policy$minimum_residual_df
-  if (is.null(minimum_residual_df) || !is.numeric(minimum_residual_df) ||
-        length(minimum_residual_df) != 1L || !is.finite(minimum_residual_df) ||
-        minimum_residual_df < 1 || minimum_residual_df != as.integer(minimum_residual_df)) {
-    return(nrc_skip_result("PREDECLARED_RESIDUAL_DF_THRESHOLD_REQUIRED"))
-  }
-  design_reason <- nrc_fixed_effect_design_reason(
-    model_formula,
-    analysis_data,
-    as.integer(minimum_residual_df)
-  )
+  design_reason <- nrc_inference_design_reason(model_formula, analysis_data, specification)
   if (!is.null(design_reason)) {
     return(nrc_skip_result(design_reason))
   }
