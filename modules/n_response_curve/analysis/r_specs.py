@@ -7,14 +7,15 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import linprog
 
 from .analysis_matrix import (
     AnalysisCandidate,
     first_stage_policy_reasons,
     first_stage_uncertainty_reasons,
 )
-from .factor_catalog import factor_value
-from .values import finite_number
+from .factor_catalog import factor_data_type, factor_value
+from .values import finite_number, is_missing_text
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ _FITTED_FEATURE_INFERENTIAL_FAMILIES = frozenset(
 def _present(value: object) -> bool:
     if finite_number(value) is not None:
         return True
-    return isinstance(value, (str, bool)) and bool(str(value).strip())
+    return isinstance(value, (str, bool)) and not is_missing_text(str(value))
 
 
 def _has_supported_random_intercept(
@@ -247,6 +248,8 @@ def _design_gate_reason(
     outcome_kind: str,
     observation_level: bool,
     all_factor_interactions: bool,
+    minimum_residual_df: int = 3,
+    minimum_class_events_per_parameter: int | None = None,
 ) -> str | None:
     frame = pd.DataFrame([{name: row[name] for name in factor_names} for row in rows])
     factor_blocks: dict[str, np.ndarray] = {}
@@ -254,7 +257,7 @@ def _design_gate_reason(
         values = tuple(frame[factor_name])
         if len({str(value) for value in values}) < 2:
             return "UNIDENTIFIED_FACTOR_VARIATION"
-        if all(not isinstance(value, bool) and finite_number(value) is not None for value in values):
+        if factor_data_type(factor_name) == "numeric":
             factor_blocks[factor_name] = np.asarray(
                 [float(value) for value in values],
                 dtype=float,
@@ -308,15 +311,33 @@ def _design_gate_reason(
         condition_number = np.linalg.cond(standardized)
         if not np.isfinite(condition_number) or condition_number > 1.0e8:
             return "COLLINEAR_DESIGN_MATRIX"
-    if len(rows) - rank < 3:
+    if len(rows) - rank < minimum_residual_df:
         return "INSUFFICIENT_RESIDUAL_INFORMATION"
     if outcome_kind == "categorical":
-        outcome_by_pattern: dict[tuple[str, ...], set[str]] = {}
-        for row in rows:
-            pattern = tuple(str(row[name]) for name in factor_names)
-            outcome_by_pattern.setdefault(pattern, set()).add(str(row[outcome_name]))
-        if len(outcome_by_pattern) >= 2 and all(len(outcomes) == 1 for outcomes in outcome_by_pattern.values()):
-            return "COMPLETE_SEPARATION_RISK"
+        outcomes = np.asarray([str(row[outcome_name]) for row in rows])
+        levels = np.unique(outcomes)
+        if minimum_class_events_per_parameter is not None and len(levels):
+            # A k-level factor contributes k-1 coefficients; interactions add
+            # further columns. Count events on these normalized complete cases,
+            # not on the larger registry population before exclusions.
+            required_events = minimum_class_events_per_parameter * max(rank - 1, 1)
+            if min(Counter(outcomes).values()) < required_events:
+                return "INSUFFICIENT_CLASS_EVENTS_PER_PARAMETER"
+        if len(levels) == 2:
+            # Unique continuous values make every empirical pattern "pure";
+            # that does not imply logistic separation. Test whether the actual
+            # fixed-effect design admits a strictly separating hyperplane.
+            scales = predictors.std(axis=0)
+            design = np.column_stack((np.ones(len(rows)), (predictors - predictors.mean(axis=0)) / scales))
+            signs = np.where(outcomes == levels[1], 1.0, -1.0)
+            separation = linprog(
+                np.zeros(design.shape[1]), A_ub=-signs[:, None] * design,
+                b_ub=-np.ones(len(rows)), bounds=(None, None), method="highs",
+            )
+            if separation.success:
+                return "COMPLETE_SEPARATION_RISK"
+            if separation.status != 2:  # Only proven infeasibility rules out separation.
+                return "SEPARATION_CHECK_UNRESOLVED"
     return None
 
 
@@ -748,6 +769,10 @@ def prepare_r_analysis(
             outcome_kind=outcome_kind,
             observation_level=True,
             all_factor_interactions=False,
+            minimum_residual_df=int(candidate.support_policy.get("minimum_residual_df", 3)),
+            minimum_class_events_per_parameter=candidate.support_policy.get(
+                "minimum_class_events_per_parameter"
+            ),
         )
         if gate_reason is not None:
             return RAnalysisPreparation(
@@ -832,6 +857,10 @@ def prepare_r_analysis(
             outcome_kind=outcome_kind,
             observation_level=False,
             all_factor_interactions=candidate.analysis_family == "all_supported_interactions",
+            minimum_residual_df=int(candidate.support_policy.get("minimum_residual_df", 3)),
+            minimum_class_events_per_parameter=candidate.support_policy.get(
+                "minimum_class_events_per_parameter"
+            ),
         )
         if gate_reason is not None:
             return RAnalysisPreparation(
