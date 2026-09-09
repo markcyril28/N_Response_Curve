@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+from scipy.stats import t as student_t
 from sklearn.base import clone
 from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer
@@ -518,6 +519,8 @@ def _clustering_result(
             "cluster_count": cluster_count,
             "silhouette": silhouette,
             "assignment_stability": stability,
+            "stability_method": "mean_adjusted_rand_across_random_initializations",
+            "stability_scope": "same_observations_not_sampling_uncertainty",
             "feature_names": features,
             "missing_data_policy": (
                 "factor-specific complete cases; no imputation"
@@ -537,7 +540,7 @@ def _clustering_result(
     )
     return AdvancedAnalysisResult(
         "completed",
-        "stable_curve_feature_clusters",
+        "exploratory_curve_feature_clusters",
         (),
         tuple(records),
     )
@@ -591,6 +594,7 @@ def _robustness_result(
             if len(studies) > 1
             else 0.0
         )
+        critical = float(student_t.ppf(0.975, df=len(studies) - 1))
         records.append(
             {
                 "record_type": "source_omission_sensitivity",
@@ -609,8 +613,11 @@ def _robustness_result(
                     if pooled_mean != 0.0
                     else None
                 ),
-                "interval_low": mean - 1.96 * standard_error,
-                "interval_high": mean + 1.96 * standard_error,
+                "interval_low": mean - critical * standard_error,
+                "interval_high": mean + critical * standard_error,
+                "interval_method": "student_t_independent_study_means",
+                "interval_df": len(studies) - 1,
+                "confidence_level": 0.95,
                 "interpretation_status": "DESCRIPTIVE_SOURCE_OMISSION_ONLY",
             }
         )
