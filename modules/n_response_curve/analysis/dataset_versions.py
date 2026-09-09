@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
+import math
 from typing import Any, Iterable, Mapping, Sequence
 
 from .values import finite_number
@@ -426,12 +427,16 @@ def _available_membership(
     if version_id == "D03_primary_4plus_n_levels":
         return _version(
             version_id,
-            _uids(rows for rows in primary.values() if len(_complete_n_levels(rows)) >= 4),
+            _uids(rows for rows in primary.values() if len(_complete_n_levels(
+                rows, tolerance=n_level_tolerance_kg_ha
+            )) >= 4),
         )
     if version_id == "D04_primary_5plus_n_levels":
         return _version(
             version_id,
-            _uids(rows for rows in primary.values() if len(_complete_n_levels(rows)) >= 5),
+            _uids(rows for rows in primary.values() if len(_complete_n_levels(
+                rows, tolerance=n_level_tolerance_kg_ha
+            )) >= 5),
         )
     if version_id == "D05_pk_varying_sensitivity":
         return _version(
@@ -476,7 +481,7 @@ def _available_membership(
         trimmed_groups = []
         for rows in eligible.values():
             trimmed = tuple(row for row in rows if not bool(row.get("is_high_n")))
-            if len(_complete_n_levels(trimmed)) >= 2:
+            if len(_complete_n_levels(trimmed, tolerance=n_level_tolerance_kg_ha)) >= 2:
                 trimmed_groups.append(trimmed)
         return _version(
             version_id,
@@ -566,6 +571,7 @@ def build_dataset_versions(
     if (
         isinstance(n_level_tolerance_kg_ha, bool)
         or not isinstance(n_level_tolerance_kg_ha, (int, float))
+        or not math.isfinite(float(n_level_tolerance_kg_ha))
         or float(n_level_tolerance_kg_ha) < 0.0
     ):
         raise ValueError(
