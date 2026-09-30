@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Sequence
+import re
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -64,6 +65,211 @@ _TABLE_NAMES = (
     "context_composition",
     "zero_nitrogen_checks",
 )
+
+# A small common establishment vocabulary derived from the semantically mixed
+# ``Transplanting Date`` field in the literature extraction. Blank cells remain
+# missing rather than becoming a category.
+CROP_ESTABLISHMENT_CONTEXT = "crop_establishment"
+CROP_ESTABLISHMENT_LEVELS = (
+    "Transplanted",
+    "Direct seeded",
+    "Not stated",
+)
+
+_DIRECT_SEEDED = re.compile(
+    r"\bdirect(?:ly)?[\s-]+seed(?:ed|ing)?\b", re.IGNORECASE
+)
+_ESTABLISHMENT_NOT_STATED = frozenset(
+    {"not stated", "not available", "unknown", "n/a", "na"}
+)
+
+
+def _standardize_crop_establishment_value(value: str) -> str:
+    """Classify one Transplanting Date cell without filling missing evidence."""
+
+    recorded = str(value).strip()
+    if not recorded:
+        return ""
+    normalized = " ".join(recorded.casefold().split())
+    if normalized in _ESTABLISHMENT_NOT_STATED:
+        return "Not stated"
+    if _DIRECT_SEEDED.search(recorded):
+        return "Direct seeded"
+    # The bound source field is explicitly a transplanting-date field. Any
+    # other recorded value in it is therefore evidence that transplanting took
+    # place; in the current extract these values are calendar dates.
+    return "Transplanted"
+
+
+# A common vocabulary derived only when the configured evidence supports it.
+# Zero-count levels stay in the vocabulary (and in figure captions) even though
+# a stacked bar cannot draw a zero-width segment.
+STRAW_MANAGEMENT_CONTEXT = "straw_management"
+STRAW_MANAGEMENT_COLUMN_HEADER = "standardized from source evidence"
+STRAW_MANAGEMENT_LEVELS = (
+    "Burned",
+    "Incorporated",
+    "Removed",
+    "Retained/returned",
+    "Fate unspecified",
+    "Not applicable",
+    "Not stated",
+)
+
+_STRAW_TERM = re.compile(r"\b(?:rice\s+)?st(?:r)?aw\b", re.IGNORECASE)
+_NO_STRAW_TREATMENT = re.compile(
+    r"\b(?:0|no)\s+(?:rice\s+)?st(?:r)?aw\b"
+    r"|\bcontrol\s*\(\s*no\s+residue\s*\)",
+    re.IGNORECASE,
+)
+_ALL_SUBPLOTS_STRAW_MULCH = re.compile(
+    r"all\s+subplots\s+received\s+(?:rice\s+)?st(?:r)?aw"
+    r"(?:/cowpea\s+residues)?\s+as\s+mulch",
+    re.IGNORECASE,
+)
+_STRAW_BURNED = re.compile(
+    r"(?:\bst(?:r)?aw\b[^.;]{0,80}\bburn(?:ed|ing)?\b"
+    r"|\bburn(?:ed|ing)?\b[^.;]{0,80}\bst(?:r)?aw\b)",
+    re.IGNORECASE,
+)
+_STRAW_REMOVED = re.compile(
+    r"(?:\bst(?:r)?aw\b[^.;]{0,80}\b(?:remov(?:e|ed|al)|export(?:ed)?)\b"
+    r"|\b(?:remov(?:e|ed|al)|export(?:ed)?)\b[^.;]{0,80}\bst(?:r)?aw\b)",
+    re.IGNORECASE,
+)
+_STRAW_INCORPORATED = re.compile(
+    r"(?:\bst(?:r)?aw\b[^.;]{0,100}\bincorporat(?:e|ed|ing|ion)\w*\b"
+    r"|\bincorporat(?:e|ed|ing|ion)\w*\b[^.;]{0,100}\bst(?:r)?aw\b)",
+    re.IGNORECASE,
+)
+_GENERIC_RESIDUE_INCORPORATION = re.compile(
+    r"\bincorporat(?:e|ed|ing|ion)\w*\s+of\s+different\s+plant\s+residue",
+    re.IGNORECASE,
+)
+_STRAW_RETAINED = re.compile(
+    r"(?:\bst(?:r)?aw\b[^.;]{0,80}\b(?:retain(?:ed)?|return(?:ed)?|mulch(?:ed)?)\b"
+    r"|\b(?:retain(?:ed)?|return(?:ed)?|mulch(?:ed)?)\b[^.;]{0,80}\bst(?:r)?aw\b)",
+    re.IGNORECASE,
+)
+_IN_SITU_DECOMPOSITION = re.compile(
+    r"\bscattered\s+to\s+decompose\b", re.IGNORECASE
+)
+
+
+def _standardize_straw_management_record(
+    evidence: Mapping[str, str], *, study_evidence: str = ""
+) -> str:
+    """Map one row onto the conservative straw-management vocabulary.
+
+    ``Retained/returned`` is deliberately not relabeled as ``Incorporated``:
+    return at harvest establishes where the straw went, not whether it was
+    subsequently tilled into the soil. Likewise, a zero-straw treatment is not
+    evidence that the preceding crop's straw was removed. Burned, removed, and
+    incorporated therefore require explicit straw-specific wording.
+    """
+
+    retention = str(evidence.get("retention", "")).strip().casefold()
+    direct = {
+        "burned": "Burned",
+        "burnt": "Burned",
+        "incorporated": "Incorporated",
+        "removed": "Removed",
+        "remove": "Removed",
+        "retained": "Retained/returned",
+        "returned": "Retained/returned",
+        "retained/returned": "Retained/returned",
+        "retained / returned": "Retained/returned",
+    }
+    if retention in direct:
+        return direct[retention]
+
+    applicability = str(evidence.get("applicability", "")).strip().casefold()
+    if applicability in {"non-rice", "non rice", "not applicable", "n/a"}:
+        return "Not applicable"
+
+    treatment = str(evidence.get("treatment", "")).strip()
+    organic_source = " ".join(
+        str(value).strip()
+        for key, value in evidence.items()
+        if key.startswith("organic_source") and str(value).strip()
+    )
+    application_method = str(evidence.get("application_method", "")).strip()
+    row_evidence = " | ".join(
+        value for value in (treatment, organic_source, application_method) if value
+    )
+    combined_evidence = " | ".join(
+        value for value in (row_evidence, study_evidence) if value
+    )
+
+    # This source statement applies to every subplot. It precedes action-word
+    # matching because the same sentence block discusses removal of *prunings*,
+    # which must not be misclassified as removal of rice straw.
+    if _ALL_SUBPLOTS_STRAW_MULCH.search(study_evidence):
+        return "Retained/returned"
+
+    if _NO_STRAW_TREATMENT.search(treatment):
+        return "Not stated"
+    if not _STRAW_TERM.search(row_evidence):
+        return "Not stated"
+
+    if _STRAW_BURNED.search(combined_evidence):
+        return "Burned"
+    if _STRAW_REMOVED.search(combined_evidence):
+        return "Removed"
+    if _STRAW_INCORPORATED.search(combined_evidence) or (
+        _GENERIC_RESIDUE_INCORPORATION.search(study_evidence)
+    ):
+        return "Incorporated"
+    if _IN_SITU_DECOMPOSITION.search(application_method) or _STRAW_RETAINED.search(
+        combined_evidence
+    ):
+        return "Retained/returned"
+    return "Fate unspecified"
+
+
+def _standardized_straw_management(source: ProfiledSource) -> pd.Series:
+    """Return one standardized level per physical source row."""
+
+    bindings = source.binding.straw_management
+    if not bindings:
+        return pd.Series(
+            [""] * source.data_row_count, index=source.text.index, dtype=object
+        )
+
+    fields = {
+        binding.label: source.text_series(binding).astype(str).str.strip().tolist()
+        for binding in bindings
+    }
+    row_count = source.data_row_count
+    raw_study_ids = fields.get("study_id", [""] * row_count)
+    study_keys: list[str] = []
+    current_study = ""
+    for index, raw_study_id in enumerate(raw_study_ids):
+        if raw_study_id:
+            current_study = raw_study_id
+        study_keys.append(current_study or f"__row_{index}")
+
+    evidence_by_study: dict[str, list[str]] = {}
+    for index, study_key in enumerate(study_keys):
+        parts = evidence_by_study.setdefault(study_key, [])
+        for label in ("key_findings", "notes"):
+            values = fields.get(label)
+            value = "" if values is None else values[index]
+            if value and value not in parts:
+                parts.append(value)
+
+    levels = []
+    for index, study_key in enumerate(study_keys):
+        row_evidence = {
+            label: values[index] for label, values in fields.items()
+        }
+        levels.append(
+            _standardize_straw_management_record(
+                row_evidence,
+                study_evidence=" | ".join(evidence_by_study[study_key]),
+            )
+        )
+    return pd.Series(levels, index=source.text.index, dtype=object)
 
 
 @dataclass(frozen=True)
@@ -384,6 +590,88 @@ def _temporal_rows(
 # --------------------------------------------------------------------------
 
 
+def _straw_management_rows(
+    source: ProfiledSource,
+    observations: pd.DataFrame,
+    config: DescriptiveStatisticsConfig,
+) -> list[dict[str, Any]]:
+    """Summarize the common straw vocabulary on the harmonized population."""
+
+    if observations.empty or not source.binding.straw_management:
+        return []
+    total = int(observations.shape[0])
+    threshold = _context_level_threshold(config)
+    positions = _aligned_row_positions(source, observations)
+    levels = _standardized_straw_management(source).to_numpy()[positions]
+    frame = observations.assign(_level=levels)
+
+    rows: list[dict[str, Any]] = []
+    for level in STRAW_MANAGEMENT_LEVELS:
+        group = frame.loc[frame["_level"] == level]
+        count = int(group.shape[0])
+        if count < threshold:
+            continue
+        distribution = _Distribution.of(group["yield_t_ha"])
+        rows.append(
+            {
+                **_source_keys(source),
+                "context_label": STRAW_MANAGEMENT_CONTEXT,
+                "column_header": STRAW_MANAGEMENT_COLUMN_HEADER,
+                "level_value": level,
+                "observation_count": count,
+                "share": count / total if total else math.nan,
+                "mean_n_kg_ha": float(group["n_rate_kg_ha"].mean()),
+                "mean_yield_t_ha": distribution.mean,
+                "median_yield_t_ha": distribution.median,
+            }
+        )
+    return rows
+
+
+def _crop_establishment_rows(
+    source: ProfiledSource,
+    observations: pd.DataFrame,
+    config: DescriptiveStatisticsConfig,
+) -> list[dict[str, Any]]:
+    """Summarize transplanted/direct-seeded evidence on the governed rows."""
+
+    binding = source.binding.crop_establishment
+    if observations.empty or binding is None:
+        return []
+    total = int(observations.shape[0])
+    threshold = _context_level_threshold(config)
+    positions = _aligned_row_positions(source, observations)
+    levels = (
+        source.text_series(binding)
+        .astype(str)
+        .map(_standardize_crop_establishment_value)
+        .to_numpy()[positions]
+    )
+    frame = observations.assign(_level=levels)
+
+    rows: list[dict[str, Any]] = []
+    for level in CROP_ESTABLISHMENT_LEVELS:
+        group = frame.loc[frame["_level"] == level]
+        count = int(group.shape[0])
+        if count < threshold:
+            continue
+        distribution = _Distribution.of(group["yield_t_ha"])
+        rows.append(
+            {
+                **_source_keys(source),
+                "context_label": CROP_ESTABLISHMENT_CONTEXT,
+                "column_header": binding.header,
+                "level_value": level,
+                "observation_count": count,
+                "share": count / total if total else math.nan,
+                "mean_n_kg_ha": float(group["n_rate_kg_ha"].mean()),
+                "mean_yield_t_ha": distribution.mean,
+                "median_yield_t_ha": distribution.median,
+            }
+        )
+    return rows
+
+
 def _context_rows(
     source: ProfiledSource,
     observations: pd.DataFrame,
@@ -462,6 +750,8 @@ def build_context_composition(
         *_applied_n_band_rows(source, observations, config),
         *_year_band_rows(source, observations, config),
         *_context_rows(source, observations, config),
+        *_crop_establishment_rows(source, observations, config),
+        *_straw_management_rows(source, observations, config),
     ]
     return contracts.conform_table(
         "context_composition", _frame("context_composition", rows)
@@ -544,9 +834,9 @@ def _applied_n_band_rows(
     return rows
 
 
-# The context label under which the derived year bands are filed. Derived on the
-# same terms as the applied-N band above: the recorded year is a quantity, and
-# fifty of them is a continuum for the purpose of a composition bar.
+# The context label under which numeric year bands and recorded nonnumeric year
+# values are filed. Numeric years are a continuum for the composition bar;
+# nonnumeric source text stays visible rather than being recast as missing.
 YEAR_BAND_CONTEXT = "year_band"
 
 
@@ -563,6 +853,30 @@ def _year_band(year: int, span: int) -> tuple[int, str]:
     return start, f"{start}–{start + span - 1}"
 
 
+def _year_composition_level(
+    raw_year: str, numeric_year: Any, span: int
+) -> tuple[int, int, str] | None:
+    """Return the ordered composition key for one recorded year cell.
+
+    A finite numeric year belongs to a derived calendar band. A nonblank cell
+    that does not encode one finite numeric year is still recorded context and
+    therefore keeps its stripped source text as a level. Only a physically
+    blank source cell has no composition level.
+    """
+
+    recorded = str(raw_year).strip()
+    if not recorded:
+        return None
+    try:
+        numeric = float(numeric_year)
+    except (TypeError, ValueError):
+        numeric = math.nan
+    if math.isfinite(numeric):
+        start, label = _year_band(int(round(numeric)), span)
+        return 0, start, label
+    return 1, 0, recorded
+
+
 def _year_band_rows(
     source: ProfiledSource,
     observations: pd.DataFrame,
@@ -570,11 +884,10 @@ def _year_band_rows(
 ) -> list[dict[str, Any]]:
     """Composition of the recorded year, banded, as a context field.
 
-    Emitted in ascending band order, like the applied-N bands and for the same
-    reason. Rows with no recorded year are dropped rather than banded, and the
-    share denominator stays the source's whole harmonized total, so an undated
-    row shows as the shortfall of the shares from 1 exactly as it does in
-    ``temporal_coverage``.
+    Numeric years are emitted in ascending band order, followed by nonblank
+    values that do not encode one finite numeric year in lexical order. Blank
+    source cells are dropped, and the share denominator stays the source's
+    whole harmonized total, so a truly unrecorded year remains in the residual.
     """
 
     if observations.empty or source.binding.year is None:
@@ -582,18 +895,24 @@ def _year_band_rows(
     total = int(observations.shape[0])
     threshold = _context_level_threshold(config)
     span = config.year_band_span_years
-    dated = observations.loc[observations["year"].notna()]
-    if dated.empty:
-        return []
-    # Rounded for the same reason as in _temporal_rows: years are recorded whole,
-    # and this guards the float round-trip rather than reinterpreting a fraction.
-    years = dated["year"].astype(float).round().astype(np.int64)
-    banded = dated.assign(
-        _band=[_year_band(int(year), span) for year in years]
+    positions = _aligned_row_positions(source, observations)
+    raw_years = (
+        source.text_series(source.binding.year)
+        .astype(str)
+        .str.strip()
+        .to_numpy()[positions]
     )
+    levels = [
+        _year_composition_level(raw_year, numeric_year, span)
+        for raw_year, numeric_year in zip(raw_years, observations["year"])
+    ]
+    classified = observations.assign(_level=levels)
+    classified = classified.loc[classified["_level"].notna()]
+    if classified.empty:
+        return []
     rows: list[dict[str, Any]] = []
-    for (start, label), group in sorted(
-        banded.groupby("_band", sort=False), key=lambda item: item[0][0]
+    for (_, _, label), group in sorted(
+        classified.groupby("_level", sort=False), key=lambda item: item[0]
     ):
         count = int(group.shape[0])
         if count < threshold:
