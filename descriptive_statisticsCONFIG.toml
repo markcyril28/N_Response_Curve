@@ -180,9 +180,20 @@ nitrogen_rate = { position = 131, header = "Inorganic N_rate (kg N ha-1)" }
 yield_t_ha = { position = 283, header = "Grain Yield (t ha-1)" }
 yield_kg_ha = { position = 282, header = "Grain Yield (kg ha-1)" }
 year = { position = 31, header = "Year of Planting" }
+# Establishment is standardized from the source's Transplanting Date field:
+# explicit direct-seeded entries remain direct seeded, a recorded transplanting
+# date is evidence of transplanting, "not stated" remains stated as such, and a
+# blank cell remains Missing. Keeping this outside `context` prevents calendar
+# dates from being drawn as if each date were an establishment category.
+crop_establishment = { position = 34, header = "Transplanting Date" }
 context = [
     { position = 29, header = "Ecosystem (Irrigated/Rainfed/Upland)", label = "water_regime" },
     { position = 30, header = "Season (Dry/Wet)", label = "season" },
+    # Soil class and/or texture as the literature extraction recorded it. The
+    # vocabulary is intentionally not harmonized: taxonomic names and texture
+    # descriptions remain visible rather than being collapsed without a stated
+    # soil-classification rule.
+    { position = 40, header = "Soil_Type/ texture", label = "soil_type" },
     { position = 16, header = "Region", label = "region" },
     { position = 27, header = "Rice Variety", label = "variety" },
     # What kind of trial each record came from. Reported as recorded, including
@@ -215,6 +226,18 @@ context = [
     # Whether an organic source was applied alongside the inorganic N the
     # profile bins on. Bears directly on what the recorded rate means.
     { position = 171, header = "Organic Fertilizer (Y/N)", label = "organic_fertilizer" },
+]
+# Evidence for the standardized straw-management context. These remain source
+# columns rather than a synthetic column written back into the 302-column
+# provenance-preserving extract. Study_ID scopes findings/notes that are stated
+# once for a paper but apply to each of its treatment rows.
+straw_management = [
+    { position = 1, header = "Study_ID", label = "study_id" },
+    { position = 8, header = "Treatment", label = "treatment" },
+    { position = 172, header = "Organic fertilizer (Source_1)", label = "organic_source_1" },
+    { position = 281, header = "Biofertilization Method", label = "application_method" },
+    { position = 285, header = "Key_Findings", label = "key_findings" },
+    { position = 286, header = "Notes", label = "notes" },
 ]
 grouping = [
     { position = 1, header = "Study_ID", label = "study" },
@@ -279,8 +302,16 @@ context = [
     # Recorded as day ranges by the source, not banded here.
     { position = 28, header = "growth_duration", label = "growth_duration" },
     { position = 30, header = "soil_fertility", label = "soil_fertility" },
-    # Straw removed or returned: the residue N the next crop inherits.
-    { position = 137, header = "straw_retention", label = "straw_retention" },
+]
+# Straw is exposed through the standardized context below rather than also
+# drawing the raw retention field as a duplicate row. `straw_management` at
+# position 138 is blank on every row, so standardization uses the populated
+# cleaned retention field; `harvest_straw` distinguishes the 98 non-rice records
+# from missing rice management. Returned straw remains Retained/returned; it is
+# not inferred to have been incorporated.
+straw_management = [
+    { position = 20, header = "harvest_straw", label = "applicability" },
+    { position = 137, header = "straw_retention", label = "retention" },
 ]
 # Left unbound on purpose, so that a later reader does not take the omission for
 # an oversight:
@@ -369,15 +400,18 @@ figure_height_inches = 6.4
 
 # --- Input integrity checks ---
 [expected_inputs]
-# The three registered intake CSVs are pinned: they are stable provenance copies,
-# and a change to any of them invalidates this profile.
+# The three registered intake CSVs are pinned: a change to any of them invalidates
+# this profile. core_trial_data now resolves to the extraction-updated core table
+# (..._Nutrient_Management_Data_UPDATED.csv), which is a live extraction target rather
+# than a frozen provenance copy: re-pin this digest after every authorized
+# 24_write_cells.py --apply. The other two remain stable provenance copies.
 #
 # Deliberate deviation from grain_yield_responseCONFIG.toml: the base config hash
 # is NOT pinned here. scriptCONFIG.toml is edited in the ordinary course of
 # operating the repository, and a pinned hash would hard-fail this recipe on an
 # unrelated edit. The observed base-config hash is recorded in run_manifest.json
 # at run time instead, which preserves the audit trail without the brittleness.
-core_trial_data_sha256 = "88e492add192621382d9e198af7558882de4d666b6934ceefc1cd688e076d5de"
+core_trial_data_sha256 = "99da15cb1b2ce91b774649ef9954146ca5fa6aa8b0027527ac331bf4ec56faa0"
 ph_combined_nopt_rcm_sha256 = "2f9b05914f50b3935ad52b4d3ee2444a6d9fbd43fcf2f52719ea595e33ac9076"
 ltcce_sha256 = "f8ab7c50ca51f95c596d15e5d01ba23749dce085da050db56956efb803330ef8"
 
