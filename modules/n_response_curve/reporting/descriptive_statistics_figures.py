@@ -43,7 +43,12 @@ from matplotlib.patches import Patch
 from ..analysis.descriptive_statistics.config import DescriptiveStatisticsConfig
 from ..analysis.descriptive_statistics.agronomic import (
     APPLIED_N_BAND_CONTEXT,
+    CROP_ESTABLISHMENT_CONTEXT,
+    CROP_ESTABLISHMENT_LEVELS,
+    STRAW_MANAGEMENT_CONTEXT,
+    STRAW_MANAGEMENT_LEVELS,
     YEAR_BAND_CONTEXT,
+    _aligned_row_positions,
     _temporal_rows,
     build_context_composition,
 )
@@ -202,8 +207,32 @@ _DERIVED_CONTEXTS: tuple[tuple[str, str, str], ...] = (
         "Year",
         "The year bands are derived, not recorded: the recorded year is banded "
         "in {span:d}-year steps aligned to multiples of {span:d}, so two "
-        "datasets that overlap in time carry the same bands. Rows with no "
-        "recorded year are not banded and are shown as Missing.",
+        "datasets that overlap in time carry the same bands. Nonblank values "
+        "that do not encode one finite numeric year are shown as recorded; only "
+        "blank source cells are shown as Missing.",
+    ),
+)
+
+# Unlike the numeric bands above, this field is a conservative harmonization of
+# several configured evidence columns. It remains separate so the caption never
+# calls a standardized category an as-recorded source level.
+_STANDARDIZED_CONTEXTS: tuple[tuple[str, str, str], ...] = (
+    (
+        CROP_ESTABLISHMENT_CONTEXT,
+        "Crop establishment",
+        "Crop establishment is standardized from Transplanting Date: explicit "
+        "direct-seeded entries are Direct seeded, a recorded transplanting "
+        "date is Transplanted, 'not stated' is retained, and blank cells are "
+        "Missing.",
+    ),
+    (
+        STRAW_MANAGEMENT_CONTEXT,
+        "Straw management",
+        "Straw management is conservatively standardized from the configured "
+        "source evidence. Retained/returned is not reclassified as "
+        "Incorporated; Burned, Removed, and Incorporated require explicit "
+        "straw-specific evidence. Fate unspecified means straw was recorded "
+        "as an amendment but its disposition was not.",
     ),
 )
 
@@ -229,6 +258,7 @@ _CONTEXT_TITLES: Mapping[str, str] = dict(
     _COMPOSITION_CONTEXTS
     + _SITE_MANAGEMENT_CONTEXTS
     + tuple((key, title) for key, title, _ in _DERIVED_CONTEXTS)
+    + tuple((key, title) for key, title, _ in _STANDARDIZED_CONTEXTS)
 )
 
 # Excluded from every stacked figure by name, not by measurement: this is
@@ -244,7 +274,14 @@ _DUPLICATE_ENCODING_CONTEXTS = frozenset({"season_coded"})
 # in recipe order after the mapped rows. These priorities are source-specific
 # because each modifier ranking describes a different response-series population.
 _DATASET_CONTEXT_PRIORITY: Mapping[str, tuple[str, ...]] = {
-    "core_trial_data": ("year_band", "applied_n_band"),
+    "core_trial_data": (
+        "year_band",
+        "applied_n_band",
+        "water_regime",
+        "season",
+        CROP_ESTABLISHMENT_CONTEXT,
+        "soil_type",
+    ),
     "ltcce": ("applied_n_band", "year_band"),
 }
 
@@ -268,12 +305,14 @@ _MAXIMUM_STACKED_LEVELS = 16
 # (source_name, context_key) pairs drawn in the stacked form despite exceeding
 # ``_MAXIMUM_STACKED_LEVELS``, by explicit request rather than a raised cap.
 # Scoped to one dataset's own composition figure: raising the cap itself would
-# also pull core_trial_data's and ph_combined_nopt_rcm's variety fields into
-# their composition figures and would change what the cross-dataset figures
-# draw. ltcce's own panel is the only one asked to carry all of its bound
-# columns, so only its entry is here.
+# also pull unrelated high-cardinality fields into other panels. These entries
+# are explicit requests to show the named source field despite its long recorded
+# vocabulary; the continuous colour ramp keeps adjacent levels distinct.
 _STACKED_LEVEL_CAP_OVERRIDES: frozenset[tuple[str, str]] = frozenset(
-    {("ltcce", _VARIETY_CONTEXT)}
+    {
+        ("core_trial_data", "soil_type"),
+        ("ltcce", _VARIETY_CONTEXT),
+    }
 )
 
 # Row slots a stacked composition panel always reserves. Below this, a figure
@@ -2183,10 +2222,31 @@ def _context_residual_counts(
         return None, None
 
     residual = max(0.0, denominator - reported_total)
-    if context_key == APPLIED_N_BAND_CONTEXT:
+    if context_key in {APPLIED_N_BAND_CONTEXT, STRAW_MANAGEMENT_CONTEXT}:
         missing = 0.0
+    elif context_key == CROP_ESTABLISHMENT_CONTEXT:
+        binding = source.binding.crop_establishment
+        if binding is None:
+            return None, None
+        positions = _aligned_row_positions(source, observations)
+        values = (
+            source.text_series(binding)
+            .astype(str)
+            .str.strip()
+            .to_numpy()[positions]
+        )
+        missing = float(np.count_nonzero(values == ""))
     elif context_key == YEAR_BAND_CONTEXT:
-        missing = float(observations["year"].isna().sum())
+        if source.binding.year is None:
+            return None, None
+        positions = _aligned_row_positions(source, observations)
+        values = (
+            source.text_series(source.binding.year)
+            .astype(str)
+            .str.strip()
+            .to_numpy()[positions]
+        )
+        missing = float(np.count_nonzero(values == ""))
     else:
         binding = next(
             (
@@ -2661,9 +2721,10 @@ def _draw_stacked_composition(
 
 _COMPOSITION_FOOTNOTE = (
     "Individually reported level segments narrower than "
-    f"{_MINIMUM_LABELED_SHARE * 100:.0f}% are drawn but not labeled. Level "
-    "vocabularies are dataset-specific and are reported as recorded, not "
-    "mapped onto a common scheme. Missing segments of at least "
+    f"{_MINIMUM_LABELED_SHARE * 100:.0f}% are drawn but not labeled. Except "
+    "for fields explicitly identified as derived or standardized, level "
+    "vocabularies are dataset-specific and are reported as recorded. Missing "
+    "segments of at least "
     f"{_MINIMUM_MISSING_LABELED_SHARE * 100:.0f}% are labeled directly."
 )
 
@@ -2873,7 +2934,10 @@ def _dataset_context_plan(
 
     keys = [binding.label.strip().lower() for binding in source.binding.context]
     frame = _composition_levels(
-        tables, keys + [key for key, _, _ in _DERIVED_CONTEXTS]
+        tables,
+        keys
+        + [key for key, _, _ in _DERIVED_CONTEXTS]
+        + [key for key, _, _ in _STANDARDIZED_CONTEXTS],
     )
     drawable: list[tuple[str, str]] = []
     omitted: list[str] = []
@@ -2948,7 +3012,99 @@ def _dataset_context_plan(
             )
         else:
             drawable.append((key, title))
+
+    # Standardized contexts follow the recorded fields, which keeps the new
+    # straw row beside the other management fields at the bottom of the panel.
+    for key, title, _ in _STANDARDIZED_CONTEXTS:
+        if key == STRAW_MANAGEMENT_CONTEXT and not source.binding.straw_management:
+            continue
+        if (
+            key == CROP_ESTABLISHMENT_CONTEXT
+            and source.binding.crop_establishment is None
+        ):
+            continue
+        recorded = drawn_levels(key)
+        levels = len(recorded)
+        if levels == 0:
+            omitted.append(
+                f"{title} (no standardized level recorded at least "
+                f"{config.minimum_level_count} times)"
+            )
+        elif levels < _MINIMUM_STACKED_LEVELS:
+            omitted.append(constant_note(title, recorded))
+        elif levels > _MAXIMUM_STACKED_LEVELS:
+            omitted.append(f"{title} ({levels} levels, too many for this form)")
+        else:
+            drawable.append((key, title))
     return _prioritize_dataset_contexts(source.source_name, drawable), omitted
+
+
+def _straw_management_breakdown(bars: Sequence[_CompositionBar]) -> str:
+    """Reader-visible counts for narrow straw segments that cannot hold labels."""
+
+    bar = next(
+        (
+            candidate
+            for candidate in bars
+            if candidate.context_key == STRAW_MANAGEMENT_CONTEXT
+        ),
+        None,
+    )
+    if bar is None or bar.denominator <= 0:
+        return ""
+    counts = {
+        str(row["_level"]): int(round(float(row["_count"])))
+        for _, row in bar.levels.iterrows()
+    }
+    present = [
+        f"{level} {counts[level]:,} ({100.0 * counts[level] / bar.denominator:.1f}%)"
+        for level in STRAW_MANAGEMENT_LEVELS
+        if counts.get(level, 0) > 0
+    ]
+    zero_actions = [
+        level
+        for level in ("Burned", "Incorporated", "Removed", "Retained/returned")
+        if counts.get(level, 0) == 0
+    ]
+    summary = " Standardized straw-management counts: " + ", ".join(present) + "."
+    if zero_actions:
+        summary += (
+            " No observations were identified as "
+            + " or ".join(zero_actions)
+            + "."
+        )
+    return summary
+
+
+def _crop_establishment_breakdown(bars: Sequence[_CompositionBar]) -> str:
+    """Reader-visible counts for establishment segments too narrow to label."""
+
+    bar = next(
+        (
+            candidate
+            for candidate in bars
+            if candidate.context_key == CROP_ESTABLISHMENT_CONTEXT
+        ),
+        None,
+    )
+    if bar is None or bar.denominator <= 0:
+        return ""
+    counts = {
+        str(row["_level"]): int(round(float(row["_count"])))
+        for _, row in bar.levels.iterrows()
+    }
+    parts = [
+        f"{level} {counts[level]:,} "
+        f"({100.0 * counts[level] / bar.denominator:.1f}%)"
+        for level in CROP_ESTABLISHMENT_LEVELS
+        if counts.get(level, 0) > 0
+    ]
+    if bar.missing_count is not None and bar.missing_count > 0:
+        missing = int(round(bar.missing_count))
+        parts.append(
+            f"Missing {missing:,} ({100.0 * missing / bar.denominator:.1f}%)"
+        )
+    return " Standardized crop-establishment counts: " + ", ".join(parts) + "."
 
 
 def _farmers_practice_context_tables(
@@ -3039,6 +3195,13 @@ def _plot_one_context_composition(
         for key, _, caption in _DERIVED_CONTEXTS
         if key in drawn
     )
+    standardization = "".join(
+        " " + caption
+        for key, _, caption in _STANDARDIZED_CONTEXTS
+        if key in drawn
+    )
+    establishment_breakdown = _crop_establishment_breakdown(bars)
+    straw_breakdown = _straw_management_breakdown(bars)
     if source_name != _FARMERS_PRACTICE_PARENT_SOURCE:
         arm_title = ""
         treatment_note = ""
@@ -3079,7 +3242,8 @@ def _plot_one_context_composition(
             f"{_COMPOSITION_FOOTNOTE} Every bar is a share of this dataset's "
             "own harmonized observations, so the bars are comparable with each "
             "other and with this dataset's bars in the cross-dataset "
-            f"composition figures.{derivation}{treatment_note}{note}"
+            f"composition figures.{derivation}{standardization}"
+            f"{establishment_breakdown}{straw_breakdown}{treatment_note}{note}"
         ),
         # The source column under each field name, except where the recipe
         # bound a field to a column of the same name and the second line would
