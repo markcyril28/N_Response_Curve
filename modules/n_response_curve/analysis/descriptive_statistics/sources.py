@@ -117,6 +117,14 @@ class AgronomicBinding:
     # pair: LTCCE's ladder is nested in year-season-variety, not in its design
     # label, so the two lists deliberately differ for that source.
     series: tuple[ColumnBinding, ...]
+    # Evidence columns used to derive one conservative, common straw-management
+    # vocabulary. Kept separate from ``context`` because no one physical source
+    # column carries the standardized value in every dataset.
+    straw_management: tuple[ColumnBinding, ...] = ()
+    # A source field whose semantics distinguish direct seeding from a recorded
+    # transplanting date. Kept separate so raw calendar dates never become
+    # categorical context levels.
+    crop_establishment: ColumnBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -396,6 +404,13 @@ def _resolve_agronomic_binding(
         series=tuple(
             _verify_binding(ingested, entry, label=f"series_{index}")
             for index, entry in enumerate(raw.get("series", ()))
+        ),
+        straw_management=tuple(
+            _verify_binding(ingested, entry, label=f"straw_management_{index}")
+            for index, entry in enumerate(raw.get("straw_management", ()))
+        ),
+        crop_establishment=_resolve_binding(
+            ingested, raw, "crop_establishment", required=False
         ),
     )
 
