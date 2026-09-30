@@ -51,8 +51,9 @@ _SINGLE_BINDING_KEYS = (
     "farmers_practice_n_rate",
     "farmers_practice_yield_t_ha",
     "year",
+    "crop_establishment",
 )
-_LIST_BINDING_KEYS = ("context", "grouping", "series")
+_LIST_BINDING_KEYS = ("context", "grouping", "series", "straw_management")
 # Width of the applied-N bands the agronomic profile derives from the recorded
 # rate. 50 kg N ha⁻¹ reads as the ladder an agronomist would name (0, then up to
 # 50, up to 100, …) rather than as the recorded rates, of which the long-running
